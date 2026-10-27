@@ -1,0 +1,60 @@
+name: Build and Release MusicPad
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows Executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Set up FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          ffmpeg-version: release
+          architecture: x64
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compile with PyInstaller
+        run: |
+          pyinstaller --clean --noconfirm MusicPad.spec
+
+      - name: Prepare Release Package (ZIP with FFmpeg)
+        shell: powershell
+        run: |
+          $ffmpegPath = (Get-Command ffmpeg).Source
+          Write-Host "Found FFmpeg at: $ffmpegPath"
+          Copy-Item -Path $ffmpegPath -Destination dist\ffmpeg.exe
+          Compress-Archive -Path dist\MusicPad.exe, dist\ffmpeg.exe, README.md, musicpad.ico -DestinationPath dist\MusicPad-windows-x64.zip
+
+      - name: Upload Artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            dist/MusicPad.exe
+            dist/MusicPad-windows-x64.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true

@@ -1,0 +1,7 @@
+mutagen>=1.47.0
+sounddevice>=0.5.0
+yt-dlp>=2025.1.15
+ytmusicapi>=1.10.2
+pystray>=0.19.5
+numpy>=2.0.0
+PyAudio>=0.2.14

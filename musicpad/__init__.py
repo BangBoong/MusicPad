@@ -1,0 +1,2 @@
+"""MusicPad package."""
+
