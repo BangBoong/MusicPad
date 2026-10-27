@@ -36,17 +36,21 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Compile with PyInstaller
-        run: |
-          pyinstaller --clean --noconfirm MusicPad.spec
-
-      - name: Prepare Release Package (ZIP with FFmpeg)
+      - name: Prepare FFmpeg for embedding
         shell: powershell
         run: |
           $ffmpegPath = (Get-Command ffmpeg).Source
-          Write-Host "Found FFmpeg at: $ffmpegPath"
-          Copy-Item -Path $ffmpegPath -Destination dist\ffmpeg.exe
-          Compress-Archive -Path dist\MusicPad.exe, dist\ffmpeg.exe, README.md, musicpad.ico -DestinationPath dist\MusicPad-windows-x64.zip
+          Write-Host "Found FFmpeg at: $ffmpegPath. Copying to embed in exe..."
+          Copy-Item -Path $ffmpegPath -Destination ffmpeg.exe
+
+      - name: Compile with PyInstaller (Embedded FFmpeg)
+        run: |
+          pyinstaller --clean --noconfirm MusicPad.spec
+
+      - name: Prepare Portable ZIP Archive
+        shell: powershell
+        run: |
+          Compress-Archive -Path dist\MusicPad.exe, README.md, musicpad.ico -DestinationPath dist\MusicPad-windows-x64.zip
 
       - name: Upload Artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
