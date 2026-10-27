@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import ctypes
+import io
 import json
 import math
 import os
@@ -390,7 +392,10 @@ def _calculate_bubble_polygon(
     cx, cy = x2 - r, y2 - r
     for deg in range(0, 91, 15):
         rad = math.radians(deg)
-        pts.append((cx + r * math.cos(rad), cy + r * math.sin(rad)))
+        px = cx + r * math.cos(rad)
+        py = cy + r * math.sin(rad)
+        if px >= tail_right:
+            pts.append((px, py))
 
     # 3. Bottom edge to tail right
     pts.append((tail_right, y2))
@@ -403,7 +408,10 @@ def _calculate_bubble_polygon(
     cx, cy = x1 + r, y2 - r
     for deg in range(90, 181, 15):
         rad = math.radians(deg)
-        pts.append((cx + r * math.cos(rad), cy + r * math.sin(rad)))
+        px = cx + r * math.cos(rad)
+        py = cy + r * math.sin(rad)
+        if px <= tail_left:
+            pts.append((px, py))
 
     # 7. Left edge and top-left corner arc (180 to 270 deg)
     cx, cy = x1 + r, y1 + r
@@ -420,8 +428,8 @@ class SpeechBubble(tk.Toplevel):
     WIDTH = 320
     HEIGHT = 86
     TAIL_HEIGHT = 12
-    TAIL_WIDTH = 16
-    CORNER_RADIUS = 10
+    TAIL_WIDTH = 12
+    CORNER_RADIUS = 8
 
     def __init__(
         self,
@@ -433,7 +441,7 @@ class SpeechBubble(tk.Toplevel):
         self.master = master
         self.target_widget = target_widget
         self.theme = theme
-        self.tail_tip_x = self.WIDTH - 32
+        self.tail_tip_x = self.WIDTH - 20
 
         self._fading_out = False
         self._fade_job: Optional[str] = None
@@ -596,7 +604,6 @@ class SpeechBubble(tk.Toplevel):
         self.icon_label.configure(bg=bg, fg=accent, text=icon_char)
 
     def _reposition(self) -> None:
-        tail_tip_offset_x = self.tail_tip_x
         try:
             if (
                 self.target_widget
@@ -609,8 +616,47 @@ class SpeechBubble(tk.Toplevel):
                 bw = self.target_widget.winfo_width()
                 center_x = bx + bw // 2
                 top_y = by
-                win_x = center_x - tail_tip_offset_x
+
+                master = self.master
+                if master and master.winfo_exists() and master.winfo_ismapped():
+                    master.update_idletasks()
+                    mx = master.winfo_rootx()
+                    my = master.winfo_rooty()
+                    mw = master.winfo_width()
+                    mh = master.winfo_height()
+                    master_right = mx + mw
+                else:
+                    mx, my, mw, mh = bx - 600, by - 400, 800, 600
+                    master_right = mx + mw
+
+                # Align right edge harmoniously with master window right border (3px margin)
+                desired_margin_right = 3
+                cand_win_x = master_right - self.WIDTH - desired_margin_right
+                cand_tail_tip_x = center_x - cand_win_x
+
+                half_tail = self.TAIL_WIDTH // 2
+                min_tail_x = self.CORNER_RADIUS + half_tail + 4
+                max_tail_x = (self.WIDTH - 2) - half_tail - 2
+
+                tail_tip_x = max(min_tail_x, min(cand_tail_tip_x, max_tail_x))
+                win_x = center_x - tail_tip_x
                 win_y = top_y - self.HEIGHT - 4
+
+                min_x = mx + 2
+                max_x = master_right - self.WIDTH - 2
+                if min_x <= max_x:
+                    if win_x < min_x:
+                        win_x = min_x
+                        tail_tip_x = max(min_tail_x, min(center_x - win_x, max_tail_x))
+                    elif win_x > max_x:
+                        win_x = max_x
+                        tail_tip_x = max(min_tail_x, min(center_x - win_x, max_tail_x))
+
+                min_y = my + 2
+                if win_y < min_y:
+                    win_y = min_y
+
+                self.tail_tip_x = tail_tip_x
             else:
                 raise ValueError("Target widget not mapped")
         except Exception:
@@ -622,29 +668,15 @@ class SpeechBubble(tk.Toplevel):
                     my = master.winfo_rooty()
                     mw = master.winfo_width()
                     mh = master.winfo_height()
-                    win_x = mx + max(0, mw - self.WIDTH - 15)
+                    win_x = mx + max(0, mw - self.WIDTH - 3)
                     win_y = my + max(0, mh - self.HEIGHT - 40)
+                    self.tail_tip_x = self.WIDTH - 20
                 else:
                     win_x, win_y = 100, 100
+                    self.tail_tip_x = self.WIDTH - 20
             except Exception:
                 win_x, win_y = 100, 100
-
-        # Bound horizontally and vertically relative to master window on whichever monitor it resides
-        try:
-            master = self.master
-            if master and master.winfo_exists() and master.winfo_ismapped():
-                mx = master.winfo_rootx()
-                my = master.winfo_rooty()
-                mw = master.winfo_width()
-                min_x = mx + 2
-                max_x = mx + mw - self.WIDTH - 2
-                if min_x <= max_x:
-                    win_x = max(min_x, min(win_x, max_x))
-                min_y = my + 2
-                if win_y < min_y:
-                    win_y = min_y
-        except Exception:
-            pass
+                self.tail_tip_x = self.WIDTH - 20
 
         try:
             self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{win_x}+{win_y}")
@@ -671,8 +703,8 @@ class SpeechBubble(tk.Toplevel):
                 pass
             self._auto_close_job = None
 
-        self._redraw()
         self._reposition()
+        self._redraw()
 
         if was_visible:
             # Rapid notification update in-place: maintain full opacity without flicker or re-fading
@@ -936,7 +968,10 @@ class NotificationManager:
                 if hasattr(self.app, "state") and self.app.state() in ("iconic", "withdrawn"):
                     self.dismiss(immediate=True)
                 else:
+                    old_tail = self._bubble.tail_tip_x
                     self._bubble._reposition()
+                    if self._bubble.tail_tip_x != old_tail:
+                        self._bubble._redraw()
             except Exception:
                 pass
 
@@ -1369,7 +1404,43 @@ class MusicPadApp(tk.Tk):
             d.rounded_rectangle([(44, 28), (58, 52)], radius=5, fill=blue)
             d.line([(24, 28), (40, 48)], fill=red, width=6)
             d.line([(40, 28), (24, 48)], fill=red, width=6)
-            self._icons["mute"] = ImageTk.PhotoImage(img.resize((16, 16), Image.Resampling.LANCZOS))
+            self._icons["headphones_mute"] = ImageTk.PhotoImage(img.resize((16, 16), Image.Resampling.LANCZOS))
+
+            # Musical Note (Eighth note matching sample, 16x16)
+            b64_note_mask = (
+                "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAAAAACPAi4CAAACPklEQVR42u2WvWtUQRTFz8w8d4VEElEk"
+                "LIGAKRKwcy1UsLEwBiSIYECjYck/oAQEAyI2NmkEbdRAxMbaFLqgEbSJNn4ExBWrFNppohvEbN7cORZZ"
+                "Nw+SvN03g11OPfc3986dO2eAbf1nRZjgMKK0JboJgmD6gmYAQUcYgOgPAygU4UIABsUCdQAA2DUSCJDx"
+                "TqdDALbrljMhACOlUhwFAKDl3hEbBQCUyj3utcYb4JyWfU/2ivYF5LQo2zeTh/ICrGJ+wWizevRhWitS"
+                "xvkSh3eefU7+4fX0sd4KcJmjAAbfssYBGI8SHKjyunz4Zg7Teza7080PMaY4Y6+N2MKkUz4ABUCQezSO"
+                "UlF8AAQAxjvuPNNX/G7iGsapCTnV6w+A6Hezbae9SwCg1AMcD8gAwhcrB0MyoPo+3+XjC4n39YOXLyS0"
+                "4OULCf1c8ZmF5NPwOaQLALrnggDE/tkQgJK23S9DAFod+7YUlAGHygHTCGXb+56GADSGPv2KAgDE0PRm"
+                "X40U11RJvHYHqu+NtAxQ2jkAonTjNRiYUkSrACOCQk+HfK1U6+MkplxBqwClJX9+9FA7IG8W/7mJVBRb"
+                "bRhw5iNJZ4Ukz9U3ab3hiO6S1jqSztYagC3db8Ppm5mTVq8lrgypMjvqfdbYkPAEMvr6IOP1eOd+dCJj"
+                "Dq+crANi3s6aAH4zUYAsdyudEeAS8THHMieAL1IvwcXk1ezxGKMV0oklFy/A52c1WS+gOtXjFa9x8fWy"
+                "W5q70Q+v+G1l11+08Bhe21poLwAAAABJRU5ErkJggg=="
+            )
+            try:
+                note_mask = Image.open(io.BytesIO(base64.b64decode(b64_note_mask))).convert("L")
+                img_note = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                blue_rgb = (0, 132, 209) if blue == "#0084d1" else (0, 122, 204)
+                img_note.paste(Image.new("RGBA", (64, 64), blue_rgb + (255,)), (0, 0), mask=note_mask)
+            except Exception:
+                img_note = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                d_note = ImageDraw.Draw(img_note)
+                d_note.ellipse([(14, 40), (32, 56)], fill=blue)
+                d_note.rectangle([(27, 8), (32, 46)], fill=blue)
+                d_note.polygon([(32, 8), (46, 18), (32, 32)], fill=blue)
+
+            self._icons["note"] = ImageTk.PhotoImage(img_note.resize((16, 16), Image.Resampling.LANCZOS))
+
+            # Muted Musical Note (with bright red X across the note, 16x16)
+            img_note_mute = img_note.copy()
+            d_note_mute = ImageDraw.Draw(img_note_mute)
+            d_note_mute.line([(18, 18), (46, 46)], fill=red, width=7)
+            d_note_mute.line([(46, 18), (18, 46)], fill=red, width=7)
+            self._icons["note_mute"] = ImageTk.PhotoImage(img_note_mute.resize((16, 16), Image.Resampling.LANCZOS))
+            self._icons["mute"] = self._icons["note_mute"]
 
             # Soundpad House Small (18x18)
             img_sm = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -1690,8 +1761,8 @@ class MusicPadApp(tk.Tk):
 
         # Підменю: Категорії
         sub_cat = tk.Menu(win_menu, **menu_kw)
-        sub_cat.add_command(label="Мої звуки", command=lambda: self._select_category("my_sounds"))
-        sub_cat.add_command(label="YouTube / YouTube Music", command=lambda: self._select_category("youtube"))
+        sub_cat.add_command(label="Мої звуки", command=lambda: self._on_category_select("my_sounds"))
+        sub_cat.add_command(label="YouTube / YouTube Music", command=lambda: self._on_category_select("youtube"))
         sub_cat.add_separator()
         sub_cat.add_command(label="Перемкнути видимість категорій", command=self._toggle_left_panel)
         win_menu.add_cascade(label="Категорії", menu=sub_cat)
@@ -2686,8 +2757,12 @@ class MusicPadApp(tk.Tk):
         self.top_bar_sep2 = tk.Frame(self.top_bar, width=1, bg=c["divider"], height=18)
         self.top_bar_sep2.pack(side="left", padx=(2, 6), pady=8)
 
-        # 11. Mute button (headphones without X when sound is on, headphones with red X when muted/off)
-        init_icon = self._icons.get("mute") if float(self.volume_var.get()) <= 0.001 else self._icons.get("headphones")
+        # 11. Mute button (musical note without X when sound is on, musical note with red X when muted/off)
+        init_icon = (
+            self._icons.get("note_mute") or self._icons.get("mute")
+            if float(self.volume_var.get()) <= 0.001
+            else (self._icons.get("note") or self._icons.get("headphones"))
+        )
         self.btn_tb_mute = tk.Button(
             self.top_bar,
             image=init_icon,
@@ -2843,13 +2918,13 @@ class MusicPadApp(tk.Tk):
         self._cat_menu.add_command(label="🔍 Пошук YouTube...", command=self._open_yt_search)
 
         for w in (self.cat_item_frame, self.cat_icon_lbl, self.cat_title_lbl, self.category_count_lbl):
-            w.bind("<Button-1>", lambda _: self._select_category("my_sounds"))
+            w.bind("<Button-1>", lambda _: self._on_category_select("my_sounds"))
             w.bind("<Enter>", lambda _: self._on_cat_hover("my_sounds", True))
             w.bind("<Leave>", lambda _: self._on_cat_hover("my_sounds", False))
             w.bind("<Button-3>", lambda e: self._cat_menu.tk_popup(e.x_root, e.y_root))
 
         for w in (self.cat_yt_frame, self.cat_yt_icon_lbl, self.cat_yt_title_lbl, self.cat_yt_count_lbl):
-            w.bind("<Button-1>", lambda _: self._select_category("youtube"))
+            w.bind("<Button-1>", lambda _: self._on_category_select("youtube"))
             w.bind("<Enter>", lambda _: self._on_cat_hover("youtube", True))
             w.bind("<Leave>", lambda _: self._on_cat_hover("youtube", False))
             w.bind("<Button-3>", lambda e: self._cat_menu.tk_popup(e.x_root, e.y_root))
@@ -4663,10 +4738,13 @@ class MusicPadApp(tk.Tk):
             self.info_panel_divider.configure(bg=c["divider"])
         if hasattr(self, "info_panel") and hasattr(self.info_panel, "configure"):
             self.info_panel.configure(bg=c["info_bg"])
-        if hasattr(self, "info_house_lbl") and hasattr(self.info_house_lbl, "configure"):
-            self.info_house_lbl.configure(bg=c["info_bg"], fg=c["accent"])
-        if hasattr(self, "info_cat_name_lbl") and hasattr(self.info_cat_name_lbl, "configure"):
-            self.info_cat_name_lbl.configure(bg=c["info_bg"], fg=c["fg"])
+        if hasattr(self, "_update_category_info_panel"):
+            self._update_category_info_panel()
+        else:
+            if hasattr(self, "info_house_lbl") and hasattr(self.info_house_lbl, "configure"):
+                self.info_house_lbl.configure(bg=c["info_bg"], fg=c["accent"])
+            if hasattr(self, "info_cat_name_lbl") and hasattr(self.info_cat_name_lbl, "configure"):
+                self.info_cat_name_lbl.configure(bg=c["info_bg"], fg=c["fg"])
         if hasattr(self, "stats_frame") and hasattr(self.stats_frame, "configure"):
             self.stats_frame.configure(bg=c["info_bg"])
         if hasattr(self, "stats_r1") and hasattr(self.stats_r1, "configure"):
@@ -5151,6 +5229,109 @@ class MusicPadApp(tk.Tk):
         self._save_state()
         return new_track
 
+    def _on_category_select(self, cat: Any = None, event: Any = None) -> None:
+        """Handler for selecting a category in the sidebar, menus, or shortcuts."""
+        if isinstance(cat, tk.Event) or hasattr(cat, "widget"):
+            event = cat
+            cat = None
+
+        if cat is None and event is not None and hasattr(event, "widget"):
+            w = event.widget
+            yt_widgets = (
+                getattr(self, "cat_yt_frame", None),
+                getattr(self, "cat_yt_icon_lbl", None),
+                getattr(self, "cat_yt_title_lbl", None),
+                getattr(self, "cat_yt_count_lbl", None),
+            )
+            my_widgets = (
+                getattr(self, "cat_item_frame", None),
+                getattr(self, "cat_icon_lbl", None),
+                getattr(self, "cat_title_lbl", None),
+                getattr(self, "category_count_lbl", None),
+            )
+            if w in yt_widgets:
+                cat = "youtube"
+            elif w in my_widgets:
+                cat = "my_sounds"
+
+        if cat is None or str(cat).lower() not in ("youtube", "my_sounds"):
+            cat = getattr(self, "current_category", "my_sounds")
+
+        self._select_category(str(cat))
+
+    def _on_category_change(self, cat: Any = None, event: Any = None) -> None:
+        """Alias handler for category change."""
+        self._on_category_select(cat, event)
+
+    on_category_select = _on_category_select
+    on_category_change = _on_category_change
+
+    def _update_category_info_panel(self, cat: str | None = None) -> None:
+        """Update bottom info panel icon, text, and counter visibility based on category and theme."""
+        if cat is None:
+            cat = getattr(self, "current_category", "my_sounds")
+        c = self._get_theme_colors()
+
+        if cat == "youtube":
+            if hasattr(self, "info_house_lbl") and hasattr(self.info_house_lbl, "configure"):
+                yt_img = self._icons.get("yt_icon")
+                self.info_house_lbl.configure(
+                    image=yt_img if yt_img else "",
+                    text="▶",
+                    fg="#ff1f1f",
+                    bg=c["info_bg"],
+                )
+            if hasattr(self, "info_cat_name_lbl") and hasattr(self.info_cat_name_lbl, "configure"):
+                self.info_cat_name_lbl.configure(
+                    text="YouTube / YouTube Music",
+                    bg=c["info_bg"],
+                    fg=c["fg"],
+                )
+            if hasattr(self, "stats_frame") and hasattr(self.stats_frame, "pack_forget"):
+                if self.stats_frame.winfo_manager() == "pack":
+                    self.stats_frame.pack_forget()
+        else:
+            if hasattr(self, "info_house_lbl") and hasattr(self.info_house_lbl, "configure"):
+                house_img = self._icons.get("house_lg")
+                self.info_house_lbl.configure(
+                    image=house_img if house_img else "",
+                    text="🏠",
+                    fg=c["accent"],
+                    bg=c["info_bg"],
+                )
+            if hasattr(self, "info_cat_name_lbl") and hasattr(self.info_cat_name_lbl, "configure"):
+                self.info_cat_name_lbl.configure(
+                    text="Мої звуки",
+                    bg=c["info_bg"],
+                    fg=c["fg"],
+                )
+            if hasattr(self, "stats_frame"):
+                if hasattr(self.stats_frame, "configure"):
+                    self.stats_frame.configure(bg=c["info_bg"])
+                if hasattr(self, "stats_r1") and hasattr(self.stats_r1, "configure"):
+                    self.stats_r1.configure(bg=c["info_bg"])
+                if hasattr(self, "stats_r2") and hasattr(self.stats_r2, "configure"):
+                    self.stats_r2.configure(bg=c["info_bg"])
+                if hasattr(self, "stats_caption_labels"):
+                    for lbl in self.stats_caption_labels:
+                        if hasattr(lbl, "configure"):
+                            lbl.configure(bg=c["info_bg"], fg=c["muted_fg"])
+                if hasattr(self, "stats_sounds_lbl") and hasattr(self.stats_sounds_lbl, "configure"):
+                    self.stats_sounds_lbl.configure(bg=c["info_bg"], fg=c["fg"])
+                if hasattr(self, "stats_plays_lbl") and hasattr(self.stats_plays_lbl, "configure"):
+                    self.stats_plays_lbl.configure(bg=c["info_bg"], fg=c["fg"])
+                if hasattr(self, "stats_selected_lbl") and hasattr(self.stats_selected_lbl, "configure"):
+                    self.stats_selected_lbl.configure(bg=c["info_bg"], fg=c["fg"])
+
+                if self.stats_frame.winfo_manager() != "pack":
+                    if hasattr(self, "info_cat_name_lbl") and self.info_cat_name_lbl.winfo_manager() == "pack":
+                        self.stats_frame.pack(side="left", pady=8, after=self.info_cat_name_lbl)
+                    else:
+                        self.stats_frame.pack(side="left", pady=8)
+                self._update_stats_ui()
+
+    update_category_info_panel = _update_category_info_panel
+
     def _select_category(self, cat: str) -> None:
         self.current_category = cat
         c = self._get_theme_colors()
@@ -5165,6 +5346,7 @@ class MusicPadApp(tk.Tk):
             self.cat_yt_title_lbl.configure(bg=c["cat_unsel_bg"], fg=c["cat_unsel_fg"], font=("Segoe UI", 9))
             self.cat_yt_count_lbl.configure(bg=c["cat_unsel_bg"], fg=c["cat_unsel_fg"])
 
+            self._update_category_info_panel("my_sounds")
             self._hide_yt_search_panel()
         elif cat == "youtube":
             self.cat_yt_frame.configure(bg=c["cat_sel_bg"])
@@ -5177,6 +5359,7 @@ class MusicPadApp(tk.Tk):
             self.cat_title_lbl.configure(bg=c["cat_unsel_bg"], fg=c["cat_unsel_fg"], font=("Segoe UI", 9))
             self.category_count_lbl.configure(bg=c["cat_unsel_bg"], fg=c["cat_unsel_fg"])
 
+            self._update_category_info_panel("youtube")
             self._show_yt_search_panel()
 
     def _on_cat_hover(self, cat: str, entering: bool) -> None:
@@ -5565,9 +5748,18 @@ class MusicPadApp(tk.Tk):
             is_muted = float(self.volume_var.get()) <= 0.001
         except Exception:
             pass
-        icon_name = "mute" if is_muted else "headphones"
-        if icon_name in self._icons:
-            self.btn_tb_mute.configure(image=self._icons[icon_name])
+        icon_name = "note_mute" if is_muted else "note"
+        fallback_icon = "mute" if is_muted else "headphones"
+        img = self._icons.get(icon_name) or self._icons.get(fallback_icon)
+        if img:
+            self.btn_tb_mute.configure(image=img, text="")
+        else:
+            c = self._get_theme_colors()
+            self.btn_tb_mute.configure(
+                image="",
+                text="♪✕" if is_muted else "♪",
+                fg="#ff2020" if is_muted else c["accent"],
+            )
 
     def _toggle_mute(self) -> None:
         curr = float(self.volume_var.get())

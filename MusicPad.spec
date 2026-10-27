@@ -18,7 +18,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=ffmpeg_binaries,
-    datas=[('musicpad.png', '.')] + ytmusicapi_datas,
+    datas=[('musicpad.png', '.'), ('assets', 'assets')] + ytmusicapi_datas,
     hiddenimports=['wave', 'queue', 'pystray._win32'],
     hookspath=[],
     hooksconfig={},

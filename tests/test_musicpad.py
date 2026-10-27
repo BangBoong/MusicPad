@@ -569,6 +569,9 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     self.assertEqual(app.current_category, "youtube")
                     self.assertEqual(app.yt_search_frame.winfo_manager(), "place")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("yt_icon", "")))
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
 
                     # Perform search
                     mock_results = [
@@ -608,6 +611,10 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     self.assertEqual(app.current_category, "my_sounds")
                     self.assertEqual(app.yt_search_frame.winfo_manager(), "")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("house_lg", "")))
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+                    self.assertEqual(app.stats_sounds_lbl.cget("text"), "1")
                 finally:
                     app._exit()
 
@@ -1018,30 +1025,49 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 app = main.MusicPadApp()
                 try:
                     app.update()
-                    # 1. Unmuted (volume = 1.0) -> icon is headphones without cross
-                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["headphones"]))
+                    # 1. Left headphones button remains headphones
+                    self.assertEqual(app.btn_tb_phones.cget("image"), str(app._icons["headphones"]))
 
-                    # 2. Toggle mute -> volume = 0.0 -> icon is mute with cross
+                    # 2. Unmuted (volume = 1.0) -> icon is single musical note
+                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note"]))
+                    self.assertEqual(app._icons["mute"], app._icons["note_mute"])
+
+                    # 3. Toggle mute -> volume = 0.0 -> icon is note with red X
                     app._toggle_mute()
                     app.update()
                     self.assertEqual(float(app.volume_var.get()), 0.0)
+                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note_mute"]))
                     self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["mute"]))
 
-                    # 3. Toggle mute again -> volume restored -> icon is headphones
+                    # 4. Toggle mute again -> volume restored -> icon returns to note
                     app._toggle_mute()
                     app.update()
                     self.assertGreater(float(app.volume_var.get()), 0.0)
-                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["headphones"]))
+                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note"]))
 
-                    # 4. Volume changed to 0 via slider
+                    # 5. Volume changed to 0 via slider trace
                     app.volume_var.set(0.0)
                     app.update()
-                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["mute"]))
+                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note_mute"]))
 
-                    # 5. Volume changed to > 0 via slider
+                    # 6. Volume changed to > 0 via slider trace
                     app.volume_var.set(0.65)
                     app.update()
-                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["headphones"]))
+                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note"]))
+
+                    # 7. Fallback when PIL icons are missing
+                    orig_icons = app._icons
+                    app._icons = {}
+                    app._update_mute_icon()
+                    self.assertEqual(app.btn_tb_mute.cget("text"), "♪")
+                    app.volume_var.set(0.0)
+                    app._update_mute_icon()
+                    self.assertEqual(app.btn_tb_mute.cget("text"), "♪✕")
+                    self.assertEqual(app.btn_tb_mute.cget("fg"), "#ff2020")
+                    app._icons = orig_icons
+                    app.volume_var.set(0.8)
+                    app._update_mute_icon()
+                    self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note"]))
                 finally:
                     app._exit()
 
@@ -1481,6 +1507,245 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     self.assertTrue(app._settings_window.winfo_viewable())
                     self.assertEqual(app._settings_window.title(), "Налаштування")
+                finally:
+                    app._exit()
+
+    def test_category_selection_bottom_info_panel_adaptation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "test_cat_panel.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+
+                    # 1. Initial State ("my_sounds")
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("house_lg", "")))
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+                    self.assertEqual(app.stats_sounds_lbl.cget("text"), "0")
+                    self.assertEqual(app.stats_selected_lbl.cget("text"), "0")
+                    self.assertEqual(app.stats_plays_lbl.cget("text"), "0")
+
+                    # 2. Switch to YouTube category via _on_category_select
+                    app._on_category_select("youtube")
+                    app.update()
+                    self.assertEqual(app.current_category, "youtube")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("yt_icon", "")))
+                    self.assertEqual(app.info_house_lbl.cget("fg"), "#ff1f1f")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+                    # btn_wrench remains intact on far right
+                    self.assertTrue(app.btn_wrench.winfo_exists())
+
+                    # 3. Idempotent call
+                    app._on_category_select("youtube")
+                    app.update()
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+
+                    # 4. Add tracks, select one, and increment play count
+                    t1 = LocalTrack(title="Track 1", path="track1.wav", duration=60.0)
+                    t2 = LocalTrack(title="Track 2", path="track2.wav", duration=120.0)
+                    app.local_tracks.extend([t1, t2])
+                    app._filter_tracks()
+                    app.playback_count = 7
+                    app.track_list.selection_set("0")
+
+                    # 5. Switch back to "my_sounds" via _on_category_select
+                    app._on_category_select("my_sounds")
+                    app.update()
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("house_lg", "")))
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+
+                    # Check pack order: info_cat_name_lbl before stats_frame before btn_wrench
+                    slaves = app.info_panel.pack_slaves()
+                    self.assertIn(app.info_cat_name_lbl, slaves)
+                    self.assertIn(app.stats_frame, slaves)
+                    self.assertIn(app.btn_wrench, slaves)
+                    idx_lbl = slaves.index(app.info_cat_name_lbl)
+                    idx_stats = slaves.index(app.stats_frame)
+                    idx_btn = slaves.index(app.btn_wrench)
+                    self.assertLess(idx_lbl, idx_stats)
+                    self.assertLess(idx_stats, idx_btn)
+
+                    # Check that counters were restored with their actual current values
+                    self.assertEqual(app.stats_sounds_lbl.cget("text"), "2")
+                    self.assertEqual(app.stats_selected_lbl.cget("text"), "1")
+                    self.assertEqual(app.stats_plays_lbl.cget("text"), "7")
+
+                    # 6. Test theme switching adaptability
+                    # In dark mode:
+                    c_dark = app._get_theme_colors()
+                    self.assertEqual(app.theme, "dark")
+                    self.assertEqual(app.info_panel.cget("bg"), c_dark["info_bg"])
+                    self.assertEqual(app.stats_frame.cget("bg"), c_dark["info_bg"])
+                    self.assertEqual(app.info_cat_name_lbl.cget("fg"), c_dark["fg"])
+                    self.assertEqual(app.info_house_lbl.cget("fg"), c_dark["accent"])
+
+                    # Toggle to light mode
+                    app._toggle_theme()
+                    app.update()
+                    self.assertEqual(app.theme, "light")
+                    c_light = app._get_theme_colors()
+                    self.assertEqual(app.info_panel.cget("bg"), c_light["info_bg"])
+                    self.assertEqual(app.stats_frame.cget("bg"), c_light["info_bg"])
+                    self.assertEqual(app.info_cat_name_lbl.cget("fg"), c_light["fg"])
+                    self.assertEqual(app.info_house_lbl.cget("fg"), c_light["accent"])
+
+                    # Switch to YouTube in light mode
+                    app._on_category_select("youtube")
+                    app.update()
+                    self.assertEqual(app.info_panel.cget("bg"), c_light["info_bg"])
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    self.assertEqual(app.info_cat_name_lbl.cget("fg"), c_light["fg"])
+                    self.assertEqual(app.info_house_lbl.cget("fg"), "#ff1f1f")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+
+                    # Toggle theme while on YouTube tab
+                    app._toggle_theme()
+                    app.update()
+                    self.assertEqual(app.theme, "dark")
+                    c_dark = app._get_theme_colors()
+                    self.assertEqual(app.info_panel.cget("bg"), c_dark["info_bg"])
+                    self.assertEqual(app.info_cat_name_lbl.cget("fg"), c_dark["fg"])
+                    self.assertEqual(app.info_house_lbl.cget("fg"), "#ff1f1f")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+
+                    # Switch back to my_sounds in dark theme
+                    app._on_category_select("my_sounds")
+                    app.update()
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+                    self.assertEqual(app.stats_frame.cget("bg"), c_dark["info_bg"])
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.info_house_lbl.cget("fg"), c_dark["accent"])
+
+                    # 7. Fallback without PIL icons
+                    orig_icons = app._icons
+                    app._icons = {}
+                    app._update_category_info_panel("youtube")
+                    self.assertEqual(app.info_house_lbl.cget("text"), "▶")
+                    self.assertEqual(app.info_house_lbl.cget("fg"), "#ff1f1f")
+                    app._update_category_info_panel("my_sounds")
+                    self.assertEqual(app.info_house_lbl.cget("text"), "🏠")
+                    self.assertEqual(app.info_house_lbl.cget("fg"), c_dark["accent"])
+                    app._icons = orig_icons
+
+                    # 8. Test public aliases: on_category_select and on_category_change
+                    self.assertTrue(callable(app.on_category_select))
+                    self.assertTrue(callable(app.on_category_change))
+                    self.assertTrue(callable(app.update_category_info_panel))
+                    app.on_category_select("youtube")
+                    app.update()
+                    self.assertEqual(app.current_category, "youtube")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+
+                    app.on_category_change("my_sounds")
+                    app.update()
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+
+                    # Verify background uniformity on stats_frame and all child widgets
+                    c_current = app._get_theme_colors()
+                    self.assertEqual(app.stats_frame.cget("bg"), c_current["info_bg"])
+                    self.assertEqual(app.stats_r1.cget("bg"), c_current["info_bg"])
+                    self.assertEqual(app.stats_r2.cget("bg"), c_current["info_bg"])
+                    for lbl in app.stats_caption_labels:
+                        self.assertEqual(lbl.cget("bg"), c_current["info_bg"])
+                        self.assertEqual(lbl.cget("fg"), c_current["muted_fg"])
+                    self.assertEqual(app.stats_sounds_lbl.cget("bg"), c_current["info_bg"])
+                    self.assertEqual(app.stats_selected_lbl.cget("bg"), c_current["info_bg"])
+                    self.assertEqual(app.stats_plays_lbl.cget("bg"), c_current["info_bg"])
+
+                    # 9. Test event callback simulation (e.g. if bound directly to widget)
+                    class MockEvent:
+                        def __init__(self, widget):
+                            self.widget = widget
+                    mock_yt_event = MockEvent(app.cat_yt_frame)
+                    app._on_category_select(mock_yt_event)
+                    app.update()
+                    self.assertEqual(app.current_category, "youtube")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+
+                    mock_my_event = MockEvent(app.cat_item_frame)
+                    app._on_category_select(mock_my_event)
+                    app.update()
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+
+                    # 10. Robustness with None / unexpected category argument
+                    app._on_category_select(None)
+                    app.update()
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+                finally:
+                    app._exit()
+
+    def test_category_selection_edge_cases_and_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "test_cat_edge.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+
+                    # 1. Open YouTube search via _open_yt_search
+                    app._open_yt_search()
+                    app.update()
+                    self.assertEqual(app.current_category, "youtube")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+
+                    # 2. Add track and update playback count while in YouTube mode
+                    t = LocalTrack(title="Test Track", path="test.wav", duration=45.0)
+                    app.local_tracks.append(t)
+                    app.playback_count += 3
+                    app._update_stats_ui()
+                    app.update()
+
+                    # stats_frame must remain hidden and not pop back up
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+
+                    # 3. Hovering on category items should not change current category or info panel
+                    app._on_cat_hover("my_sounds", entering=True)
+                    self.assertEqual(app.current_category, "youtube")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    app._on_cat_hover("my_sounds", entering=False)
+                    self.assertEqual(app.current_category, "youtube")
+
+                    # 4. Settings wrench button click while on YouTube mode
+                    self.assertTrue(app.btn_wrench.winfo_exists())
+                    app.btn_wrench.invoke()
+                    app.update()
+                    self.assertIsNotNone(app._settings_window)
+                    self.assertTrue(app._settings_window.winfo_exists())
+                    # Category and info panel remain on YouTube
+                    self.assertEqual(app.current_category, "youtube")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "YouTube / YouTube Music")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "")
+                    app._settings_window.destroy()
+                    app._settings_window = None
+
+                    # 5. Close search panel via bottom "Закрити" button
+                    app.btn_yt_close.invoke()
+                    app.update()
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("house_lg", "")))
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+                    self.assertEqual(app.stats_sounds_lbl.cget("text"), "1")
+                    self.assertEqual(app.stats_plays_lbl.cget("text"), "3")
+
+                    # 6. Invalid / unrecognized category string defaults safely to current_category
+                    app._on_category_select("nonexistent_category")
+                    app.update()
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.stats_frame.winfo_manager(), "pack")
                 finally:
                     app._exit()
 
