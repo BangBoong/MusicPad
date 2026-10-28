@@ -880,6 +880,12 @@ class AudioEngine:
 
     @staticmethod
     def find_ffmpeg() -> Optional[str]:
+        if getattr(sys, "frozen", False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                bundled = Path(meipass) / "ffmpeg.exe"
+                if bundled.is_file():
+                    return str(bundled)
         found = shutil.which("ffmpeg")
         if found:
             return found
@@ -898,6 +904,39 @@ class AudioEngine:
                     return str(candidate)
             except OSError:
                 continue
+        return None
+
+    @staticmethod
+    def find_ffprobe() -> Optional[str]:
+        if getattr(sys, "frozen", False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                bundled = Path(meipass) / "ffprobe.exe"
+                if bundled.is_file():
+                    return str(bundled)
+        found = shutil.which("ffprobe")
+        if found:
+            return found
+        root_dir = _app_root_dir()
+        exe_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else root_dir
+        candidates = [
+            Path(getattr(sys, "_MEIPASS", root_dir)) / "ffprobe.exe",
+            exe_dir / "ffprobe.exe",
+            root_dir / "ffprobe.exe",
+            Path(__file__).resolve().parent.parent / "ffprobe.exe",
+            Path.home() / "Downloads" / "ffmpeg-9.0.2-full_build" / "ffmpeg-9.0.2-full_build" / "bin" / "ffprobe.exe",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.is_file():
+                    return str(candidate)
+            except OSError:
+                continue
+        ffmpeg_bin = AudioEngine.find_ffmpeg()
+        if ffmpeg_bin:
+            sibling = Path(ffmpeg_bin).with_name("ffprobe.exe")
+            if sibling.is_file():
+                return str(sibling)
         return None
 
     @staticmethod

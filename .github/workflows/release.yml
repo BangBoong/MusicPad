@@ -24,11 +24,15 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Set up FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        with:
-          ffmpeg-version: release
-          architecture: x64
+      - name: Install FFmpeg via Chocolatey
+        shell: powershell
+        run: |
+          choco install ffmpeg -y --no-progress
+          $chocoBin = "C:\ProgramData\chocolatey\bin"
+          if (Test-Path $chocoBin) {
+            echo $chocoBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:PATH = "$chocoBin;$env:PATH"
+          }
 
       - name: Install dependencies
         run: |
@@ -36,14 +40,48 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Prepare FFmpeg for embedding
+      - name: Prepare FFmpeg and FFprobe for embedding
         shell: powershell
         run: |
-          $ffmpegPath = (Get-Command ffmpeg).Source
-          Write-Host "Found FFmpeg at: $ffmpegPath. Copying to embed in exe..."
-          Copy-Item -Path $ffmpegPath -Destination ffmpeg.exe
+          # Locate real binaries from Chocolatey lib directory (>5MB to bypass ~40KB shims)
+          $realFfmpeg = Get-ChildItem -Path "C:\ProgramData\chocolatey\lib" -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 5MB } | Select-Object -First 1
+          if (-not $realFfmpeg) {
+            $cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue
+            if ($cmd) { $realFfmpeg = Get-Item $cmd.Source }
+          }
 
-      - name: Compile with PyInstaller (Embedded FFmpeg)
+          $realFfprobe = Get-ChildItem -Path "C:\ProgramData\chocolatey\lib" -Recurse -Filter "ffprobe.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 5MB } | Select-Object -First 1
+          if (-not $realFfprobe) {
+            $cmd = Get-Command ffprobe -ErrorAction SilentlyContinue
+            if ($cmd) { $realFfprobe = Get-Item $cmd.Source }
+          }
+
+          if (-not $realFfmpeg -or -not (Test-Path $realFfmpeg.FullName)) {
+            throw "Failed to locate real ffmpeg.exe"
+          }
+          if (-not $realFfprobe -or -not (Test-Path $realFfprobe.FullName)) {
+            throw "Failed to locate real ffprobe.exe"
+          }
+
+          Write-Host "Found real FFmpeg at: $($realFfmpeg.FullName) (Size: $($realFfmpeg.Length) bytes)"
+          Write-Host "Found real FFprobe at: $($realFfprobe.FullName) (Size: $($realFfprobe.Length) bytes)"
+
+          # Copy real binaries to root directory so MusicPad.spec embeds them directly
+          Copy-Item -Path $realFfmpeg.FullName -Destination "ffmpeg.exe" -Force
+          Copy-Item -Path $realFfprobe.FullName -Destination "ffprobe.exe" -Force
+
+          # Add directory of real binaries to PATH and GITHUB_PATH
+          $binDir = $realFfmpeg.DirectoryName
+          if (Test-Path $binDir) {
+            echo $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:PATH = "$binDir;$env:PATH"
+          }
+
+          # Verify binaries
+          .\ffmpeg.exe -version
+          .\ffprobe.exe -version
+
+      - name: Compile with PyInstaller (Embedded FFmpeg and FFprobe)
         run: |
           pyinstaller --clean --noconfirm MusicPad.spec
 

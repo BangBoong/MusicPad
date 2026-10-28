@@ -79,8 +79,16 @@ def _probe_wav_duration(path: Path) -> float:
 
 
 def _probe_ffprobe_metadata(path: Path) -> tuple[Optional[str], float]:
-    ffprobe = shutil.which("ffprobe")
+    ffprobe: Optional[str] = None
     ffmpeg_bin: Optional[str] = None
+    try:
+        from musicpad.audio_engine import AudioEngine
+
+        ffprobe = AudioEngine.find_ffprobe()
+    except Exception:
+        pass
+    if not ffprobe:
+        ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         try:
             from musicpad.audio_engine import AudioEngine

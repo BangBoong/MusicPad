@@ -6,13 +6,24 @@ from PyInstaller.utils.hooks import collect_data_files
 ytmusicapi_datas = collect_data_files('ytmusicapi')
 
 ffmpeg_binaries = []
-# Look for ffmpeg in PATH or local directory to bundle it inside the executable
-ffmpeg_path = shutil.which("ffmpeg")
-if not ffmpeg_path and Path("ffmpeg.exe").is_file():
+# Look for ffmpeg and ffprobe in local directory or PATH to bundle inside the executable
+ffmpeg_path = None
+if Path("ffmpeg.exe").is_file():
     ffmpeg_path = str(Path("ffmpeg.exe").resolve())
+elif shutil.which("ffmpeg"):
+    ffmpeg_path = shutil.which("ffmpeg")
 
 if ffmpeg_path:
     ffmpeg_binaries.append((ffmpeg_path, '.'))
+
+ffprobe_path = None
+if Path("ffprobe.exe").is_file():
+    ffprobe_path = str(Path("ffprobe.exe").resolve())
+elif shutil.which("ffprobe"):
+    ffprobe_path = shutil.which("ffprobe")
+
+if ffprobe_path:
+    ffmpeg_binaries.append((ffprobe_path, '.'))
 
 a = Analysis(
     ['main.py'],

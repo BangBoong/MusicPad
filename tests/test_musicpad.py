@@ -2358,6 +2358,61 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 Path(main.__file__).resolve().parent / ".cache" / "youtube",
             )
 
+    def test_ffmpeg_and_ffprobe_embedding_and_workflow(self) -> None:
+        import sys
+        from musicpad.audio_engine import AudioEngine
+        import musicpad.library as lib
+
+        # 1. Verify find_ffmpeg and find_ffprobe under frozen mode priority
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            dummy_ffmpeg = tmp_path / "ffmpeg.exe"
+            dummy_ffprobe = tmp_path / "ffprobe.exe"
+            dummy_ffmpeg.write_bytes(b"dummy_ffmpeg")
+            dummy_ffprobe.write_bytes(b"dummy_ffprobe")
+
+            orig_frozen = getattr(sys, "frozen", False)
+            orig_meipass = getattr(sys, "_MEIPASS", None)
+            try:
+                sys.frozen = True
+                sys._MEIPASS = str(tmp_path)
+                self.assertEqual(AudioEngine.find_ffmpeg(), str(dummy_ffmpeg))
+                self.assertEqual(AudioEngine.find_ffprobe(), str(dummy_ffprobe))
+
+                # Verify library metadata probe uses AudioEngine.find_ffprobe
+                dummy_audio = tmp_path / "sample.mp3"
+                dummy_audio.write_bytes(b"dummy")
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout='{"format": {"duration": "12.5", "tags": {"title": "Test Title"}}}')
+                    title, dur = lib._probe_ffprobe_metadata(dummy_audio)
+                    self.assertEqual(title, "Test Title")
+                    self.assertAlmostEqual(dur, 12.5)
+                    self.assertEqual(mock_run.call_args[0][0][0], str(dummy_ffprobe))
+            finally:
+                if orig_frozen:
+                    sys.frozen = orig_frozen
+                elif hasattr(sys, "frozen"):
+                    delattr(sys, "frozen")
+                if orig_meipass is not None:
+                    sys._MEIPASS = orig_meipass
+                elif hasattr(sys, "_MEIPASS"):
+                    delattr(sys, "_MEIPASS")
+
+        # 2. Verify MusicPad.spec contains both ffmpeg and ffprobe bundling
+        spec_text = Path("MusicPad.spec").read_text(encoding="utf-8")
+        self.assertIn("ffmpeg_path", spec_text)
+        self.assertIn("ffprobe_path", spec_text)
+        self.assertIn("ffmpeg_binaries.append((ffmpeg_path, '.'))", spec_text)
+        self.assertIn("ffmpeg_binaries.append((ffprobe_path, '.'))", spec_text)
+
+        # 3. Verify .github/workflows/release.yml has no FedericoCarboni dependency and uses choco + both binaries
+        wf_text = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertNotIn("FedericoCarboni/setup-ffmpeg", wf_text)
+        self.assertIn("choco install ffmpeg -y --no-progress", wf_text)
+        self.assertIn("ffmpeg.exe", wf_text)
+        self.assertIn("ffprobe.exe", wf_text)
+        self.assertIn("Prepare FFmpeg and FFprobe for embedding", wf_text)
+
 
 if __name__ == "__main__":
     unittest.main()
