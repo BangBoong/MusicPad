@@ -1570,7 +1570,7 @@ class AudioEngine:
                         or self._pending_track is not None
                         or self._ring_buffer.available() > 0
                     )
-                    if read_frames > 0:
+                    if read_frames > 0 and self._active_track is not None:
                         self._position_seconds += read_frames / SAMPLE_RATE
                         if self._volume != 1.0:
                             track_float = track_float * self._volume

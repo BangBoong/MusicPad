@@ -1024,9 +1024,11 @@ class TestMusicPadAppGUI(unittest.TestCase):
             with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
                 app = main.MusicPadApp()
                 try:
-                    app.update()
-                    # 1. Left headphones button remains headphones
-                    self.assertEqual(app.btn_tb_phones.cget("image"), str(app._icons["headphones"]))
+                    # 1. Removed toolbar buttons are absent and Play/Pause button remains unaffected
+                    self.assertFalse(hasattr(app, "btn_tb_play"))
+                    self.assertFalse(hasattr(app, "btn_tb_phones"))
+                    self.assertFalse(hasattr(app, "btn_tb_mic"))
+                    self.assertEqual(app.pause_button.cget("image"), str(app._icons["play"]))
 
                     # 2. Unmuted (volume = 1.0) -> icon is single musical note
                     self.assertEqual(app.btn_tb_mute.cget("image"), str(app._icons["note"]))
@@ -1091,11 +1093,17 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     tab_names = [nb.tab(i, 'text') for i in range(len(nb.tabs()))]
                     self.assertEqual(tab_names, ['Аудіо', 'Гарячі клавіші', 'Інтерфейс', 'Пристрої'])
 
-                    # Check Tab 1: Audio controls
+                    # Check Tab 1: Audio controls (strictly volume normalization only)
                     self.assertEqual(app.norm_volume_val.get(), '89,0 дБ')
                     self.assertEqual(app.norm_mode_var.get(), 'dynamic')
-                    self.assertFalse(app.block_voice_var.get())
-                    self.assertFalse(app.ducking_enabled_var.get())
+                    self.assertFalse(hasattr(app, "block_voice_var"))
+                    self.assertFalse(hasattr(app, "voice_act_enabled_var"))
+                    self.assertFalse(hasattr(app, "mic_latency_var"))
+                    self.assertFalse(hasattr(app, "karaoke_latency_var"))
+                    self.assertFalse(hasattr(app, "ducking_enabled_var"))
+                    audio_lfs = [w for w in app.tab_audio.winfo_children() if isinstance(w, main.ttk.LabelFrame)]
+                    self.assertEqual(len(audio_lfs), 1)
+                    self.assertEqual(audio_lfs[0].cget("text"), "Нормалізація гучності")
 
                     # Check Tab 2: Hotkeys table
                     hk_items = app.special_hotkeys_tree.get_children()
@@ -1746,6 +1754,570 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.current_category, "my_sounds")
                     self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
                     self.assertEqual(app.stats_frame.winfo_manager(), "pack")
+                finally:
+                    app._exit()
+
+    def test_interface_tab_cleaned_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app._open_settings()
+                    app.update()
+
+                    # 1. Group 1: General (formerly "Мова")
+                    self.assertEqual(app.grp_general.cget("text"), "Загальне")
+                    self.assertEqual(app.lbl_lang.cget("text"), "Мова: ")
+                    self.assertTrue(hasattr(app, "cb_lang"))
+                    self.assertIn("English", app.cb_lang["values"])
+                    # Ensure Date format combobox was removed
+                    self.assertFalse(hasattr(app, "cb_date_fmt"))
+
+                    # 2. Group 2: Toolbar (only Style)
+                    self.assertEqual(app.grp_toolbar.cget("text"), "Панель інструментів")
+                    self.assertEqual(app.lbl_style.cget("text"), "Стиль: ")
+                    self.assertTrue(hasattr(app, "cb_tb_style"))
+                    # Ensure scale, size, colors, refresh rate, mic level, linear volume were removed from interface tab
+                    self.assertFalse(hasattr(app, "cb_tb_scale"))
+                    self.assertFalse(hasattr(app, "cb_tb_size"))
+                    self.assertFalse(hasattr(app, "cb_tb_color"))
+                    self.assertFalse(hasattr(app, "scale_pos_rate"))
+                    self.assertFalse(hasattr(app, "chk_show_mic_lvl"))
+                    self.assertFalse(hasattr(app, "chk_linear_vol"))
+
+                    # 3. Ensure Playback mode group is completely removed
+                    self.assertFalse(hasattr(app, "grp_playback_mode"))
+
+                    # 4. Group 3: Miscellaneous (only remember playback state)
+                    self.assertEqual(app.grp_misc.cget("text"), "Різне")
+                    self.assertTrue(hasattr(app, "chk_remember_playback"))
+                    self.assertEqual(
+                        app.chk_remember_playback.cget("text"),
+                        "Запам'ятовувати стан відтворення при виході з програми",
+                    )
+                    # Count children in grp_misc - should only have the 1 checkbutton
+                    misc_children = [
+                        c for c in app.grp_misc.winfo_children()
+                        if isinstance(c, main.ttk.Checkbutton)
+                    ]
+                    self.assertEqual(len(misc_children), 1)
+                finally:
+                    app._exit()
+
+    def test_english_localization_dynamic_switching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    # 1. Initial Ukrainian default
+                    menu_btn_texts = [b.cget("text") for b in app._menu_buttons.values()]
+                    self.assertIn("Файл", menu_btn_texts)
+                    self.assertIn("Редагування", menu_btn_texts)
+                    self.assertIn("Відтворення", menu_btn_texts)
+                    self.assertIn("Вікно", menu_btn_texts)
+                    self.assertEqual(app.track_list.heading("index")["text"], "Інд...")
+                    self.assertEqual(app.track_list.heading("title")["text"], "Тег")
+                    self.assertEqual(app.track_list.heading("duration")["text"], "Тр...")
+                    self.assertEqual(app.track_list.heading("hotkey")["text"], "Сполучення ...")
+                    self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
+
+                    # 2. Open settings and switch to English
+                    app._open_settings()
+                    app.update()
+                    app.lang_var.set("English")
+                    app._apply_settings()
+                    app.update()
+
+                    # Verify dynamic English localization
+                    self.assertTrue(app._is_english())
+                    menu_btn_texts_en = [b.cget("text") for b in app._menu_buttons.values()]
+                    self.assertIn("File", menu_btn_texts_en)
+                    self.assertIn("Edit", menu_btn_texts_en)
+                    self.assertIn("Playback", menu_btn_texts_en)
+                    self.assertIn("Window", menu_btn_texts_en)
+
+                    # Main window elements
+                    self.assertEqual(app.track_list.heading("index")["text"], "Ind...")
+                    self.assertEqual(app.track_list.heading("title")["text"], "Title")
+                    self.assertEqual(app.track_list.heading("duration")["text"], "Dur...")
+                    self.assertEqual(app.track_list.heading("hotkey")["text"], "Hot key...")
+                    self.assertEqual(app.cat_title_lbl.cget("text"), "My Sounds")
+                    self.assertEqual(app.lbl_stats_sounds.cget("text"), "Sounds: ")
+                    self.assertEqual(app.lbl_stats_plays.cget("text"), "Playback count: ")
+                    self.assertEqual(app.lbl_stats_sel.cget("text"), "Selected: ")
+                    self.assertEqual(app.status_var.get(), "Settings saved and applied.")
+
+                    # Settings dialog elements
+                    nb = app.settings_notebook
+                    tab_names = [nb.tab(i, "text") for i in range(len(nb.tabs()))]
+                    self.assertEqual(tab_names, ["Audio", "Hotkeys", "Interface", "Devices"])
+                    self.assertEqual(app.grp_general.cget("text"), "General")
+                    self.assertEqual(app.lbl_lang.cget("text"), "Language: ")
+                    self.assertEqual(app.grp_toolbar.cget("text"), "Toolbar")
+                    self.assertEqual(app.lbl_style.cget("text"), "Style: ")
+                    self.assertEqual(app.grp_misc.cget("text"), "Miscellaneous")
+                    self.assertEqual(
+                        app.chk_remember_playback.cget("text"),
+                        "Remember playback state on exit",
+                    )
+                    self.assertEqual(app.btn_settings_reset.cget("text"), "Reset")
+                    self.assertEqual(app.btn_settings_ok.cget("text"), "OK")
+                    self.assertEqual(app.btn_settings_cancel.cget("text"), "Cancel")
+                    self.assertEqual(app.btn_settings_apply.cget("text"), "Apply")
+
+                    # 3. Switch back to Ukrainian
+                    app.lang_var.set("Українська")
+                    app._apply_settings()
+                    app.update()
+                    self.assertFalse(app._is_english())
+                    menu_btn_texts_uk = [b.cget("text") for b in app._menu_buttons.values()]
+                    self.assertIn("Файл", menu_btn_texts_uk)
+                    self.assertIn("Редагування", menu_btn_texts_uk)
+                    self.assertEqual(app.track_list.heading("title")["text"], "Тег")
+                    self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.status_var.get(), "Налаштування збережено та застосовано.")
+                finally:
+                    app._exit()
+
+    def test_interactive_track_seeking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app.current_duration = 200.0
+                    app.seek_scale.to = 200.0
+                    app.seek_scale.winfo_width = lambda: 400
+                    app.engine = MagicMock()
+                    mock_seek = app.engine.seek
+
+                    # 1. Click / Press at x=200 (middle of 400px width = 50% = 100s)
+                    press_ev = type("Event", (), {"x": 200, "widget": app.seek_scale})()
+                    app.seek_scale._on_press(press_ev)
+                    self.assertTrue(app._seeking_drag)
+                    self.assertAlmostEqual(app.seek_var.get(), 100.0, delta=1.0)
+                    self.assertEqual(app.time_display_var.get(), "1:40")
+                    mock_seek.assert_called_with(app.seek_var.get())
+
+                    # 2. Drag / Motion to x=300 (75% = 150s)
+                    motion_ev = type("Event", (), {"x": 300, "widget": app.seek_scale})()
+                    app.seek_scale._on_motion(motion_ev)
+                    self.assertTrue(app._seeking_drag)
+                    self.assertAlmostEqual(app.seek_var.get(), 150.0, delta=1.0)
+                    self.assertEqual(app.time_display_var.get(), "2:30")
+
+                    # 3. Release at x=300
+                    release_ev = type("Event", (), {"x": 300, "widget": app.seek_scale})()
+                    app.seek_scale._on_release(release_ev)
+                    self.assertFalse(app._seeking_drag)
+                    self.assertAlmostEqual(app.seek_var.get(), 150.0, delta=1.0)
+                    mock_seek.assert_called_with(app.seek_var.get())
+                finally:
+                    app._exit()
+
+    def test_playback_state_persistence_on_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            sample_track = main.LocalTrack(
+                title="Song A",
+                path=str(Path(tmp) / "song_a.wav"),
+                duration=120.0,
+            )
+            Path(sample_track.path).write_bytes(b"dummy")
+
+            # Part 1: remember_playback_state is True
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app1 = main.MusicPadApp()
+                try:
+                    app1.update()
+                    app1.local_tracks = [sample_track]
+                    app1._filter_tracks()
+                    app1.current_index = 0
+                    app1.current_duration = 120.0
+                    app1.seek_var.set(45.5)
+                    app1.volume_var.set(80.0)
+                    app1.is_paused = True
+                    app1.remember_playback_state_var.set(True)
+                    app1._save_state()
+
+                    # Inspect JSON written to disk
+                    saved_data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertIn("playback_state", saved_data)
+                    ps = saved_data["playback_state"]
+                    self.assertIsNotNone(ps)
+                    self.assertEqual(ps["title"], "Song A")
+                    self.assertEqual(ps["path"], sample_track.path)
+                    self.assertAlmostEqual(ps["position"], 45.5)
+                    self.assertEqual(ps["status"], "paused")
+                finally:
+                    app1._exit()
+
+            # Now launch a new app and load state
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                with patch.object(main.MusicPadApp, "_is_mocked_env", return_value=False):
+                    app2 = main.MusicPadApp()
+                    try:
+                        app2.update()
+                        self.assertEqual(app2.current_index, 0)
+                        self.assertAlmostEqual(app2.seek_var.get(), 45.5)
+                        self.assertEqual(app2.time_display_var.get(), "0:45")
+                        self.assertEqual(app2.now_playing_var.get(), "Зараз грає: Song A")
+                        self.assertTrue(app2.is_paused)
+                        self.assertEqual(app2.pause_button.cget("text"), "▶ Продовжити")
+
+                        # Part 2: If unchecked, clean default state
+                        app2.remember_playback_state_var.set(False)
+                        app2._save_state()
+                        saved_data2 = json.loads(cfg_file.read_text(encoding="utf-8"))
+                        self.assertIsNone(saved_data2["playback_state"])
+                    finally:
+                        app2._exit()
+
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                with patch.object(main.MusicPadApp, "_is_mocked_env", return_value=False):
+                    app3 = main.MusicPadApp()
+                    try:
+                        app3.update()
+                        self.assertEqual(app3.current_index, -1)
+                        self.assertEqual(app3.seek_var.get(), 0.0)
+                        self.assertEqual(app3.time_display_var.get(), "0:00")
+                        self.assertEqual(app3.now_playing_var.get(), "Нічого не відтворюється")
+                    finally:
+                        app3._exit()
+
+    def test_seek_resumes_playback_from_restored_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            sample_track = main.LocalTrack(
+                title="Song B",
+                path=str(Path(tmp) / "song_b.wav"),
+                duration=120.0,
+            )
+            Path(sample_track.path).write_bytes(b"dummy")
+
+            # Save state as paused at 30.0s
+            saved_state = {
+                "tracks": [{"title": sample_track.title, "path": sample_track.path, "duration": 120.0, "hotkey": "", "is_url": False}],
+                "remember_playback_state": True,
+                "settings_custom": {"remember_playback_state": True},
+                "playback_state": {
+                    "title": sample_track.title,
+                    "path": sample_track.path,
+                    "duration": 120.0,
+                    "is_url": False,
+                    "position": 30.0,
+                    "volume": 75.0,
+                    "status": "paused",
+                },
+            }
+            cfg_file.write_text(json.dumps(saved_state), encoding="utf-8")
+
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                with patch.object(main.MusicPadApp, "_is_mocked_env", return_value=False):
+                    app = main.MusicPadApp()
+                    try:
+                        app.update()
+                        self.assertTrue(app.is_paused)
+                        self.assertFalse(app.is_playing)
+                        self.assertEqual(app.current_index, 0)
+                        self.assertAlmostEqual(app.seek_var.get(), 30.0)
+
+                        # User clicks or drags to 60.0s and releases mouse
+                        app.seek_var.set(60.0)
+                        app._on_seek_release(None)
+
+                        # Playback must now be active from 60.0s
+                        self.assertFalse(app.is_paused)
+                        self.assertTrue(app.is_playing)
+                        self.assertIn("Пауза", app.pause_button.cget("text"))
+                    finally:
+                        app._exit()
+
+    def test_timeline_slider_disabled_and_boundary_scrubbing(self) -> None:
+        root = main.tk.Tk()
+        try:
+            var = main.tk.DoubleVar(value=10.0)
+            slider = main.SoundpadTimelineSlider(root, variable=var, to=100.0)
+            slider.winfo_width = lambda: 400
+            callback_called = []
+            slider.bind("<ButtonRelease-1>", lambda _: callback_called.append(True))
+
+            # When disabled, clicks and motion should be ignored
+            slider.configure(state="disabled")
+            self.assertTrue(slider.is_disabled())
+            ev = type("Event", (), {"x": 200, "widget": slider})()
+            slider._on_press(ev)
+            self.assertFalse(slider._drag)
+            slider._on_motion(ev)
+            slider._on_release(ev)
+            self.assertEqual(var.get(), 10.0)
+            self.assertEqual(len(callback_called), 0)
+
+            # When normal, boundary scrubbing should clamp cleanly
+            slider.configure(state="normal")
+            self.assertFalse(slider.is_disabled())
+            # Beyond right edge
+            ev_over = type("Event", (), {"x": 9999, "widget": slider})()
+            slider._on_press(ev_over)
+            self.assertEqual(var.get(), 100.0)
+            # Beyond left edge
+            ev_under = type("Event", (), {"x": -500, "widget": slider})()
+            slider._on_motion(ev_under)
+            self.assertEqual(var.get(), 0.0)
+            slider._on_release(ev_under)
+            self.assertEqual(len(callback_called), 1)
+        finally:
+            root.destroy()
+
+    def test_english_mode_theme_and_completion_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_en.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app.lang_var.set("English")
+                    app._apply_settings()
+                    app.update()
+
+                    # 1. Theme toggle sets English tb_style_var ("Dark" / "Light")
+                    app.theme = "dark"
+                    app._toggle_theme()
+                    self.assertEqual(app.tb_style_var.get(), "Light")
+                    app._toggle_theme()
+                    self.assertEqual(app.tb_style_var.get(), "Dark")
+
+                    # 2. Track finished event uses English localization
+                    app.is_playing = True
+                    app._on_finished()
+                    app.update()
+                    self.assertEqual(app.pause_button.cget("text"), "▶ Play")
+                    self.assertEqual(app.now_playing_var.get(), "Nothing is playing")
+
+                    # 3. Track title notification uses English localization
+                    app._on_track_title("Awesome Song")
+                    app.update()
+                    self.assertEqual(app.now_playing_var.get(), "Now playing: Awesome Song")
+
+                    # 4. Settings dialog opened after switching language
+                    app._open_settings()
+                    app.update()
+                    self.assertEqual(app._settings_window.title(), "Settings")
+                    nb = app.settings_notebook
+                    self.assertEqual([nb.tab(i, "text") for i in range(len(nb.tabs()))], ["Audio", "Hotkeys", "Interface", "Devices"])
+                finally:
+                    app._exit()
+
+    def test_toolbar_controls_layout_and_play_pause_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_tb.json"
+            dummy_wav = Path(tmp) / "test_track.wav"
+            dummy_wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00D\xac\x00\x00\x88X\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00")
+
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                with patch.object(main.MusicPadApp, "_is_mocked_env", return_value=False):
+                    app = main.MusicPadApp()
+                    try:
+                        app.update()
+                        # 1. First 3 left buttons and their obsolete methods must be deleted
+                        self.assertFalse(hasattr(app, "btn_tb_play"))
+                        self.assertFalse(hasattr(app, "btn_tb_phones"))
+                        self.assertFalse(hasattr(app, "btn_tb_mic"))
+                        self.assertFalse(hasattr(app, "_play_headphones_only"))
+                        self.assertFalse(hasattr(app, "_play_mic_only"))
+
+                        # 2. Remaining elements left of timer shifted to the left in exact order
+                        tb_children = app.top_bar.winfo_children()
+                        self.assertIn(app.pause_button, tb_children)
+                        self.assertIn(app.btn_tb_stop, tb_children)
+                        self.assertIn(app.btn_tb_prev, tb_children)
+                        self.assertIn(app.btn_tb_next, tb_children)
+                        self.assertIn(app.top_bar_sep1, tb_children)
+                        self.assertIn(app.time_label, tb_children)
+                        self.assertIn(app.seek_scale, tb_children)
+
+                        p_idx = tb_children.index(app.pause_button)
+                        s_idx = tb_children.index(app.btn_tb_stop)
+                        pr_idx = tb_children.index(app.btn_tb_prev)
+                        n_idx = tb_children.index(app.btn_tb_next)
+                        sep_idx = tb_children.index(app.top_bar_sep1)
+                        t_idx = tb_children.index(app.time_label)
+                        sk_idx = tb_children.index(app.seek_scale)
+                        self.assertTrue(p_idx < s_idx < pr_idx < n_idx < sep_idx < t_idx < sk_idx)
+
+                        # 3. Initial stopped state shows Play button
+                        self.assertEqual(app.pause_button.cget("text"), "▶ Відтворити")
+                        self.assertEqual(app.pause_button.cget("image"), str(app._icons["play"]))
+
+                        # 4. Add a track and start playback via pause_button
+                        track = main.LocalTrack(title="Test Song", path=str(dummy_wav), duration=10.0)
+                        app.local_tracks = [track]
+                        app._filter_tracks()
+
+                        # Click play/pause toggle when stopped -> starts playback
+                        app.pause_button.invoke()
+                        app.update()
+                        self.assertTrue(app.is_playing)
+                        self.assertFalse(app.is_paused)
+                        self.assertEqual(app.pause_button.cget("text"), "⏸ Пауза")
+                        self.assertEqual(app.pause_button.cget("image"), str(app._icons["pause"]))
+
+                        # Click play/pause toggle when playing -> pauses playback
+                        app.pause_button.invoke()
+                        app.update()
+                        self.assertTrue(app.is_paused)
+                        self.assertEqual(app.pause_button.cget("text"), "▶ Продовжити")
+                        self.assertEqual(app.pause_button.cget("image"), str(app._icons["play"]))
+
+                        # Click play/pause toggle when paused -> resumes playback
+                        app.pause_button.invoke()
+                        app.update()
+                        self.assertFalse(app.is_paused)
+                        self.assertEqual(app.pause_button.cget("text"), "⏸ Пауза")
+                        self.assertEqual(app.pause_button.cget("image"), str(app._icons["pause"]))
+
+                        # Click Stop -> stops playback, resets to Play
+                        app.btn_tb_stop.invoke()
+                        app.update()
+                        self.assertFalse(app.is_playing)
+                        self.assertFalse(app.is_paused)
+                        self.assertEqual(app.pause_button.cget("text"), "▶ Відтворити")
+                        self.assertEqual(app.pause_button.cget("image"), str(app._icons["play"]))
+                    finally:
+                        app._exit()
+
+    def test_audio_tab_simplified_and_localization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_audio_tab.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app._open_settings()
+                    app.update()
+
+                    # 1. Verify Audio Tab in Ukrainian (default)
+                    nb = app.settings_notebook
+                    self.assertEqual(nb.tab(0, "text"), "Аудіо")
+
+                    audio_frames = [w for w in app.tab_audio.winfo_children() if isinstance(w, main.ttk.LabelFrame)]
+                    self.assertEqual(len(audio_frames), 1)
+                    self.assertEqual(audio_frames[0].cget("text"), "Нормалізація гучності")
+
+                    # Verify ramp canvas and theming
+                    self.assertTrue(hasattr(app, "c_ramp"))
+                    c_dark = app._get_theme_colors()
+                    self.assertEqual(str(app.c_ramp.cget("bg")), c_dark["table_bg"])
+
+                    # Switch to Light Theme and verify c_ramp adapts
+                    app._toggle_theme()
+                    app.update()
+                    c_light = app._get_theme_colors()
+                    self.assertEqual(str(app.c_ramp.cget("bg")), c_light["table_bg"])
+
+                    # 2. Switch language to English and verify Audio Tab re-renders in English
+                    app.lang_var.set("English")
+                    app._apply_settings()
+                    app.update()
+
+                    self.assertEqual(nb.tab(0, "text"), "Audio")
+                    audio_frames_en = [w for w in app.tab_audio.winfo_children() if isinstance(w, main.ttk.LabelFrame)]
+                    self.assertEqual(len(audio_frames_en), 1)
+                    self.assertEqual(audio_frames_en[0].cget("text"), "Volume normalization")
+
+                    # Attack multiple theme toggles in English mode
+                    for _ in range(4):
+                        app._toggle_theme()
+                        app.update()
+                        cur_c = app._get_theme_colors()
+                        self.assertEqual(str(app.c_ramp.cget("bg")), cur_c["table_bg"])
+                        self.assertEqual(str(app.c_ramp.cget("highlightbackground")), cur_c["divider"])
+
+                    # 3. Verify reset restores default normalization settings cleanly
+                    app.norm_volume_val.set("92,0 дБ")
+                    app.norm_mode_var.set("fixed")
+                    app._reset_settings_to_defaults()
+                    self.assertEqual(app.norm_volume_val.get(), "89,0 дБ")
+                    self.assertEqual(app.norm_mode_var.get(), "dynamic")
+                finally:
+                    app._exit()
+
+    def test_soundpad_button_and_playback_edge_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_edge.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    # 1. Test SoundpadButton icon mapping with unicode symbols and lowercase strings
+                    btn = app.pause_button
+                    btn.configure(text="⏸")
+                    self.assertEqual(btn.cget("image"), str(app._icons["pause"]))
+                    btn.configure(text="▶")
+                    self.assertEqual(btn.cget("image"), str(app._icons["play"]))
+                    btn.configure(text="pause")
+                    self.assertEqual(btn.cget("image"), str(app._icons["pause"]))
+                    btn.configure(text="play")
+                    self.assertEqual(btn.cget("image"), str(app._icons["play"]))
+
+                    # Test bracket dictionary assignment btn["text"] = ...
+                    btn["text"] = "⏸"
+                    self.assertEqual(btn.cget("image"), str(app._icons["pause"]))
+                    btn["text"] = "▶"
+                    self.assertEqual(btn.cget("image"), str(app._icons["play"]))
+                    btn["text"] = "⏸ Pause"
+                    self.assertEqual(btn.cget("image"), str(app._icons["pause"]))
+                    btn["text"] = "▶ Play"
+                    self.assertEqual(btn.cget("image"), str(app._icons["play"]))
+
+                    # 2. Test rapid Play/Pause clicks on empty playlist
+                    self.assertEqual(len(app.local_tracks), 0)
+                    for _ in range(5):
+                        app._toggle_pause()
+                        app.update()
+                    self.assertFalse(app.is_playing)
+                    self.assertFalse(app.is_paused)
+                    self.assertEqual(btn.cget("image"), str(app._icons["play"]))
+
+                    # 3. Test space key shortcut guard when entry is focused vs not focused
+                    toggle_called = []
+                    orig_toggle = app._toggle_pause
+                    app._toggle_pause = lambda: toggle_called.append(True)
+                    try:
+                        # Entry focused (via search bar)
+                        app._toggle_search_bar()
+                        app.update()
+                        self.assertTrue(app._is_entry_focused())
+                        app.event_generate("<space>")
+                        app.update()
+                        self.assertEqual(len(toggle_called), 0)
+
+                        # Close search bar and focus treeview (not entry)
+                        app._close_search_bar()
+                        app.track_list.focus_set()
+                        app.update()
+                        self.assertFalse(app._is_entry_focused())
+                        app.event_generate("<space>")
+                        app.update()
+                        self.assertEqual(len(toggle_called), 1)
+                    finally:
+                        app._toggle_pause = orig_toggle
+
+                    # 4. Test _selected_track when visible track is not in local_tracks
+                    orphan_track = main.LocalTrack(title="Orphan", path="orphan.mp3", duration=5.0)
+                    app.visible_tracks = [orphan_track]
+                    app.track_list.insert("", "end", iid="0", values=("1", "Orphan", "0:05", ""))
+                    app.track_list.selection_set("0")
+                    app.update()
+                    res = app._selected_track()
+                    self.assertIsNotNone(res)
+                    self.assertEqual(res[0], orphan_track)
+                    self.assertEqual(res[1], 0)
                 finally:
                     app._exit()
 
