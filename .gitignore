@@ -1,7 +1,26 @@
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized / Python caches
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+
+# C/C++ compiled objects and binaries
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.exe
+*.lib
+*.a
+*.exp
+*.pdb
+*.ilk
+
+# Native build and binary output folders
+native/bin/
+native/build/
+native/apo-spike/
 
 # PyInstaller / Distribution / Packaging
 build/
@@ -27,7 +46,8 @@ env/
 env.bak/
 venv.bak/
 
-# IDE and editor settings
+# AI assistant & IDE workspace configuration
+.agent/
 .vscode/
 .idea/
 *.swp
@@ -40,7 +60,11 @@ ehthumbs_vista.db
 Desktop.ini
 $RECYCLE.BIN/
 
-# Testing and coverage
+# Testing, reports, logs and temporary files
 .pytest_cache/
 .coverage
 htmlcov/
+report.json
+*.log
+*.tmp
+*.bak

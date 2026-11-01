@@ -1,0 +1,13 @@
+LIBRARY "musicpad_apo.dll"
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE
+    mpad_dsp_process_voice
+    mpad_dsp_mix_inplace
+    mpad_dsp_clamp_inplace
+    mpad_shm_available_to_read
+    mpad_shm_available_to_write
+    mpad_shm_write_samples
+    mpad_dsp_process_shm_block

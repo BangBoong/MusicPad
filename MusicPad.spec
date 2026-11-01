@@ -25,10 +25,17 @@ elif shutil.which("ffprobe"):
 if ffprobe_path:
     ffmpeg_binaries.append((ffprobe_path, '.'))
 
+native_binaries = []
+for dll_name in ("musicpad_apo.dll", "musicpad_dsp.dll"):
+    dll_path = Path("native") / "bin" / dll_name
+    if dll_path.is_file():
+        native_binaries.append((str(dll_path.resolve()), '.'))
+        native_binaries.append((str(dll_path.resolve()), 'native/bin'))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=ffmpeg_binaries,
+    binaries=ffmpeg_binaries + native_binaries,
     datas=[('musicpad.png', '.'), ('assets', 'assets')] + ytmusicapi_datas,
     hiddenimports=['wave', 'queue', 'pystray._win32'],
     hookspath=[],

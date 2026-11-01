@@ -32,7 +32,21 @@ try:
 except ModuleNotFoundError:
     pystray = None  # type: ignore[assignment]
 
-from musicpad.audio_engine import AudioEngine, AudioEngineError, StreamTrack
+from musicpad.apo_installer import (
+    DriverStatus,
+    find_endpoint_for_sounddevice,
+    get_driver_status,
+    list_capture_endpoints,
+    run_driver_cli,
+    run_driver_helper_uac,
+)
+from musicpad.audio_engine import (
+    ROUTING_MODE_INJECTION,
+    ROUTING_MODE_VIRTUAL_CABLE,
+    AudioEngine,
+    AudioEngineError,
+    StreamTrack,
+)
 from musicpad.library import LocalTrack, SUPPORTED_EXTENSIONS, format_duration, scan_file, scan_folder
 
 
@@ -3627,6 +3641,12 @@ class MusicPadApp(tk.Tk):
         self.recording_devices_checked: dict[str, bool] = {}
         if not hasattr(self, "track_source_var"):
             self.track_source_var = tk.StringVar(value=DEFAULT_TRACK_SOURCE)
+        if not hasattr(self, "routing_mode_var"):
+            self.routing_mode_var = tk.StringVar(value=ROUTING_MODE_VIRTUAL_CABLE)
+        if not hasattr(self, "target_mic_guid_var"):
+            self.target_mic_guid_var = tk.StringVar(value="")
+        if not hasattr(self, "driver_status_var"):
+            self.driver_status_var = tk.StringVar(value="Не встановлено")
 
     def _create_scrollable_tab(self, notebook: ttk.Notebook, tab_title: str) -> ttk.Frame:
         tab_container = ttk.Frame(notebook)
@@ -4015,13 +4035,71 @@ class MusicPadApp(tk.Tk):
         container = ttk.Frame(f)
         container.pack(fill="both", expand=True, padx=8, pady=6)
 
-        # 1. Фізичний мікрофон (Вхід)
-        g_mic = ttk.LabelFrame(container, text="1. Фізичний мікрофон (Вхід)", padding=8)
+        # 0. Режим маршрутизації та Драйвер MusicPad
+        self.g_routing_mode = ttk.LabelFrame(
+            container,
+            text="Режим маршрутизації та Драйвер MusicPad",
+            padding=8,
+        )
+        self.g_routing_mode.pack(fill="x", pady=(0, 6))
+
+        ttk.Radiobutton(
+            self.g_routing_mode,
+            text="Ін'єкція в мікрофон (рекомендовано, без VB-Cable)",
+            variable=self.routing_mode_var,
+            value=ROUTING_MODE_INJECTION,
+            command=self._on_routing_mode_changed,
+        ).pack(anchor="w", pady=1)
+
+        ttk.Radiobutton(
+            self.g_routing_mode,
+            text="Віртуальний кабель (запасний режим)",
+            variable=self.routing_mode_var,
+            value=ROUTING_MODE_VIRTUAL_CABLE,
+            command=self._on_routing_mode_changed,
+        ).pack(anchor="w", pady=1)
+
+        r_drv_status = ttk.Frame(self.g_routing_mode)
+        r_drv_status.pack(fill="x", pady=(4, 2))
+        ttk.Label(r_drv_status, text="Драйвер MusicPad: ", width=16, anchor="w").pack(side="left")
+        self.lbl_driver_status = ttk.Label(
+            r_drv_status,
+            textvariable=self.driver_status_var,
+            wraplength=390,
+            justify="left",
+        )
+        self.lbl_driver_status.pack(side="left", fill="x", expand=True)
+
+        r_drv_btns = ttk.Frame(self.g_routing_mode)
+        r_drv_btns.pack(fill="x", pady=(4, 2))
+        self.btn_install_driver = ttk.Button(
+            r_drv_btns,
+            text="Встановити драйвер (UAC)",
+            command=self._install_driver_uac_action,
+        )
+        self.btn_install_driver.pack(side="left", padx=(0, 6))
+
+        self.btn_repair_driver = ttk.Button(
+            r_drv_btns,
+            text="Ремонтувати драйвер (UAC)",
+            command=self._repair_driver_uac_action,
+        )
+        self.btn_repair_driver.pack(side="left", padx=(0, 6))
+
+        self.btn_uninstall_driver = ttk.Button(
+            r_drv_btns,
+            text="Видалити драйвер (UAC)",
+            command=self._uninstall_driver_uac_action,
+        )
+        self.btn_uninstall_driver.pack(side="left")
+
+        # 1. Цільовий мікрофон (Вхід)
+        g_mic = ttk.LabelFrame(container, text="1. Цільовий мікрофон (Вхід)", padding=8)
         g_mic.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
             g_mic,
-            text="Пристрій захоплення мови (фізичний мікрофон / гарнітура):\nСюди надходить голос користувача для трансляції у Discord та ігри.",
+            text="Цільовий мікрофон захоплення мови (фізичний мікрофон / гарнітура):\nСюди надходить голос та ін'єктуються треки для Discord та ігор.",
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(0, 4))
@@ -4064,8 +4142,8 @@ class MusicPadApp(tk.Tk):
         self.combo_track_source.bind("<<ComboboxSelected>>", self._track_source_changed)
         self.combo_track_source.pack(side="left", fill="x", expand=True)
 
-        # 3. Навушники (лише трек) [Вихід]
-        g_hp = ttk.LabelFrame(container, text="3. Навушники (лише трек) [Вихід]", padding=8)
+        # 3. Моніторинг (Навушники) [Вихід]
+        g_hp = ttk.LabelFrame(container, text="3. Моніторинг (Навушники) [Вихід]", padding=8)
         g_hp.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
@@ -4090,29 +4168,32 @@ class MusicPadApp(tk.Tk):
         self.monitor_combo = self.combo_headphones
 
         # 4. Віртуальний кабель (мікс для Discord) [Вихід]
-        g_cable = ttk.LabelFrame(container, text="4. Віртуальний кабель (мікс для Discord) [Вихід]", padding=8)
-        g_cable.pack(fill="x", pady=(0, 6))
+        self.g_virtual_cable = ttk.LabelFrame(
+            container, text="4. Віртуальний кабель (мікс для Discord) [Вихід]", padding=8
+        )
+        self.g_virtual_cable.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
-            g_cable,
-            text="Головний вихід програми (пристрій «CABLE Input (VB-Audio Virtual Cable)»):\nСюди надсилається суміш мікрофона і треку з захистом від кліпінгу.",
+            self.g_virtual_cable,
+            text="Запасний вихід програми (пристрій «CABLE Input (VB-Audio Virtual Cable)»):\nСюди надсилається суміш мікрофона і треку в режимі віртуального кабелю.",
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(0, 4))
 
-        r_cable = ttk.Frame(g_cable)
+        r_cable = ttk.Frame(self.g_virtual_cable)
         r_cable.pack(fill="x", pady=2)
         ttk.Label(r_cable, text="CABLE Input: ", width=15, anchor="w").pack(side="left")
         self.combo_virtual_cable = ttk.Combobox(
             r_cable,
             textvariable=self.output_var,
             values=list(self.output_map) if hasattr(self, "output_map") else [],
-            state="readonly",
+            state="disabled" if self.routing_mode_var.get() == ROUTING_MODE_INJECTION else "readonly",
             width=50,
         )
         self.combo_virtual_cable.bind("<<ComboboxSelected>>", self._output_changed)
         self.combo_virtual_cable.pack(side="left", fill="x", expand=True)
         self.output_combo = self.combo_virtual_cable
+        self.cb_settings_cable = self.combo_virtual_cable
 
         # Нижній рядок: перевірка конфігурації + кнопка Оновити список
         b_frame = ttk.Frame(container)
@@ -4129,6 +4210,131 @@ class MusicPadApp(tk.Tk):
             text="⟳ Оновити список",
             command=self._load_devices,
         ).pack(side="right")
+
+        self._refresh_driver_status(notify_on_issue=False)
+
+    def _resolve_selected_mic_guid(self) -> str:
+        mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
+        try:
+            endpoints = list_capture_endpoints()
+        except Exception:
+            endpoints = []
+        ep = find_endpoint_for_sounddevice(mic_label, endpoints)
+        if ep is not None:
+            self.target_mic_guid_var.set(ep.guid)
+            return ep.guid
+        cur_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
+        if cur_guid:
+            return cur_guid
+        if endpoints:
+            self.target_mic_guid_var.set(endpoints[0].guid)
+            return endpoints[0].guid
+        return ""
+
+    def _refresh_driver_status(self, notify_on_issue: bool = False) -> DriverStatus:
+        target_guid = self._resolve_selected_mic_guid()
+        try:
+            status = get_driver_status(target_guid)
+        except Exception as exc:
+            status = DriverStatus(
+                state="not_installed",
+                installed_endpoint_guid="",
+                target_endpoint_guid=target_guid,
+                reason=f"Не встановлено ({exc})",
+            )
+        if hasattr(self, "driver_status_var"):
+            self.driver_status_var.set(status.message)
+        if hasattr(self, "combo_virtual_cable") and self.combo_virtual_cable is not None:
+            try:
+                if self.combo_virtual_cable.winfo_exists():
+                    is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
+                    self.combo_virtual_cable.configure(state="disabled" if is_inj else "readonly")
+            except Exception:
+                pass
+        if (
+            notify_on_issue
+            and hasattr(self, "routing_mode_var")
+            and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
+            and status.state != "active"
+        ):
+            self.notify_error(f"Драйвер MusicPad: {status.message}")
+        return status
+
+    def _on_routing_mode_changed(self) -> None:
+        mode = (
+            self.routing_mode_var.get()
+            if hasattr(self, "routing_mode_var")
+            else ROUTING_MODE_VIRTUAL_CABLE
+        )
+        target_guid = self._resolve_selected_mic_guid()
+        status = self._refresh_driver_status(notify_on_issue=(mode == ROUTING_MODE_INJECTION))
+        if hasattr(self, "engine"):
+            if hasattr(self.engine, "set_target_endpoint_guid"):
+                self.engine.set_target_endpoint_guid(target_guid)
+            if hasattr(self.engine, "set_routing_mode"):
+                self.engine.set_routing_mode(mode)
+        if mode == ROUTING_MODE_INJECTION:
+            self.status_var.set(f"Режим маршрутизації: Ін'єкція в мікрофон ({status.message})")
+        else:
+            self.status_var.set("Режим маршрутизації: Віртуальний кабель")
+        self._save_state()
+
+    @staticmethod
+    def _unpack_uac_result(res: Any) -> tuple[bool, str]:
+        if isinstance(res, tuple) and len(res) >= 2:
+            return bool(res[0]), str(res[1])
+        if isinstance(res, int):
+            return (res == 0), ("" if res == 0 else f"код {res}")
+        return bool(res), ""
+
+    def _install_driver_uac_action(self) -> None:
+        target_guid = self._resolve_selected_mic_guid()
+        if not target_guid:
+            self.notify_error("Спочатку виберіть Цільовий мікрофон у списку.")
+            return
+        confirm = messagebox.askyesno(
+            "Встановлення Драйвера MusicPad (UAC)",
+            "Для роботи режиму «Ін'єкція в мікрофон» без платного EV-сертифіката "
+            "MusicPad зареєструє локальний APO-драйвер на вибраному мікрофоні, "
+            "увімкне режим завантаження локальної APO (DisableProtectedAudioDG=1) "
+            "та перезапустить службу аудіо Windows (1–2 секунди).\n\n"
+            "Продовжити встановлення?",
+            parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+        )
+        if not confirm:
+            return
+        ok, msg = self._unpack_uac_result(run_driver_helper_uac("install", target_guid))
+        if ok:
+            self.routing_mode_var.set(ROUTING_MODE_INJECTION)
+            self._on_routing_mode_changed()
+            self.notify_info("Драйвер MusicPad встановлено. Увімкнено режим «Ін'єкція в мікрофон».")
+        else:
+            self._refresh_driver_status(notify_on_issue=False)
+            self.notify_error(f"Встановлення драйвера скасовано або не вдалося: {msg}")
+
+    def _repair_driver_uac_action(self) -> None:
+        target_guid = self._resolve_selected_mic_guid()
+        if not target_guid:
+            self.notify_error("Спочатку виберіть Цільовий мікрофон у списку.")
+            return
+        ok, msg = self._unpack_uac_result(run_driver_helper_uac("repair", target_guid))
+        if ok:
+            self._refresh_driver_status(notify_on_issue=False)
+            self.notify_info("Драйвер MusicPad успішно відновлено для вибраного мікрофона.")
+        else:
+            self._refresh_driver_status(notify_on_issue=False)
+            self.notify_error(f"Ремонт драйвера скасовано або не вдався: {msg}")
+
+    def _uninstall_driver_uac_action(self) -> None:
+        target_guid = self._resolve_selected_mic_guid()
+        ok, msg = self._unpack_uac_result(run_driver_helper_uac("uninstall", target_guid))
+        if ok:
+            self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+            self._on_routing_mode_changed()
+            self.notify_info("Драйвер MusicPad видалено. Увімкнено режим «Віртуальний кабель».")
+        else:
+            self._refresh_driver_status(notify_on_issue=False)
+            self.notify_error(f"Видалення драйвера скасовано або не вдалося: {msg}")
 
     def _build_settings_bottom_bar(self) -> None:
         c = self._get_theme_colors()
@@ -4259,6 +4465,8 @@ class MusicPadApp(tk.Tk):
         if hasattr(self, "monitor_combo") and hasattr(self, "monitor_map"):
             self.monitor_combo["values"] = list(self.monitor_map)
 
+        self._refresh_driver_status(notify_on_issue=False)
+
         if not hasattr(self, "rec_devices_tree") or self.rec_devices_tree is None or not self.rec_devices_tree.winfo_exists():
             return
         for item in self.rec_devices_tree.get_children():
@@ -4346,6 +4554,8 @@ class MusicPadApp(tk.Tk):
         self.check_device_config_on_launch_var.set(True)
         if hasattr(self, "track_source_var"):
             self.track_source_var.set(DEFAULT_TRACK_SOURCE)
+        if hasattr(self, "routing_mode_var"):
+            self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
 
         self._sync_settings_to_dialog()
         self._apply_language()
@@ -4364,6 +4574,12 @@ class MusicPadApp(tk.Tk):
             self._apply_language()
         if hasattr(self, "always_on_top_var"):
             self.attributes("-topmost", self.always_on_top_var.get())
+        target_guid = self._resolve_selected_mic_guid()
+        if hasattr(self, "routing_mode_var") and hasattr(self, "engine"):
+            if hasattr(self.engine, "set_target_endpoint_guid"):
+                self.engine.set_target_endpoint_guid(target_guid)
+            if hasattr(self.engine, "set_routing_mode"):
+                self.engine.set_routing_mode(self.routing_mode_var.get())
         if hasattr(self, "output_var") and hasattr(self, "engine"):
             out_name = self.output_var.get()
             if hasattr(self, "output_map") and out_name in self.output_map:
@@ -4377,6 +4593,7 @@ class MusicPadApp(tk.Tk):
             mon_name = self.monitor_var.get()
             if hasattr(self, "monitor_map") and mon_name in self.monitor_map:
                 self.engine.set_monitor_device(self.monitor_map[mon_name])
+        self._refresh_driver_status(notify_on_issue=False)
         self._save_state()
         self.status_var.set(self._tr("settings_saved"))
 
@@ -5179,6 +5396,8 @@ class MusicPadApp(tk.Tk):
                     ),
                 )
                 self.monitor_var.set(headphone)
+            self._resolve_selected_mic_guid()
+            self._refresh_driver_status(notify_on_issue=False)
             self.status_var.set(
                 "VB-Cable знайдено."
                 if cable is not None
@@ -5191,6 +5410,12 @@ class MusicPadApp(tk.Tk):
         out_dev = self.output_map.get(self.output_var.get())
         in_dev = self.input_map.get(self.mix_mic_var.get()) if self.mic_enabled.get() else None
         mon_dev = self.monitor_map.get(self.monitor_var.get())
+        routing_mode = (
+            self.routing_mode_var.get()
+            if hasattr(self, "routing_mode_var")
+            else ROUTING_MODE_VIRTUAL_CABLE
+        )
+        target_guid = self._resolve_selected_mic_guid()
         if not hasattr(self, "engine"):
             self.engine = AudioEngine(
                 out_dev,
@@ -5199,9 +5424,15 @@ class MusicPadApp(tk.Tk):
                 self._show_error,
                 self._on_finished,
                 self._on_track_title,
+                routing_mode=routing_mode,
+                target_endpoint_guid=target_guid,
             )
             self.engine.on_position = self._on_position
         else:
+            if hasattr(self.engine, "set_target_endpoint_guid"):
+                self.engine.set_target_endpoint_guid(target_guid)
+            if hasattr(self.engine, "set_routing_mode"):
+                self.engine.set_routing_mode(routing_mode)
             self.engine.set_output_device(out_dev)
             self.engine.set_monitor_device(mon_dev)
             self.engine.set_input_device(in_dev)
@@ -6151,8 +6382,12 @@ class MusicPadApp(tk.Tk):
         chosen = self.input_var.get()
         if chosen in self.input_map and self.mix_mic_var.get() != chosen:
             self.mix_mic_var.set(chosen)
-        if hasattr(self, "engine") and self.mic_enabled.get():
-            self.engine.set_input_device(self.input_map.get(chosen))
+        ep_guid = self._resolve_selected_mic_guid()
+        if hasattr(self, "engine"):
+            self.engine.set_target_endpoint_guid(ep_guid)
+            if self.mic_enabled.get():
+                self.engine.set_input_device(self.input_map.get(chosen))
+        self._refresh_driver_status(notify_on_issue=False)
         self.status_var.set(f"Мікрофон змінено: {chosen}")
         self._save_state()
 
@@ -6160,9 +6395,13 @@ class MusicPadApp(tk.Tk):
         chosen = self.mix_mic_var.get()
         if chosen in self.input_map and self.input_var.get() != chosen:
             self.input_var.set(chosen)
-        if hasattr(self, "engine") and self.mic_enabled.get():
-            self.engine.set_input_device(self.input_map.get(chosen))
-            self.status_var.set("Мікрофон змінено та застосовано.")
+        ep_guid = self._resolve_selected_mic_guid()
+        if hasattr(self, "engine"):
+            self.engine.set_target_endpoint_guid(ep_guid)
+            if self.mic_enabled.get():
+                self.engine.set_input_device(self.input_map.get(chosen))
+                self.status_var.set("Мікрофон змінено та застосовано.")
+        self._refresh_driver_status(notify_on_issue=False)
         self._save_state()
 
     def _monitor_changed(self, _event: Optional[tk.Event] = None) -> None:
@@ -6382,6 +6621,8 @@ class MusicPadApp(tk.Tk):
                 "output": self.output_var.get(),
                 "mix_mic": self.mix_mic_var.get(),
                 "monitor": self.monitor_var.get(),
+                "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
+                "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                 "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
                 "volume": self.volume_var.get(),
                 "mic_volume": self.mic_volume_var.get(),
@@ -6492,6 +6733,8 @@ class MusicPadApp(tk.Tk):
                     "check_device_config_on_launch": self.check_device_config_on_launch_var.get(),
                     "recording_devices_checked": getattr(self, "recording_devices_checked", {}),
                     "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
+                    "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
+                    "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                 }
             self._config_path().write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -6516,6 +6759,13 @@ class MusicPadApp(tk.Tk):
                 self.input_var.set(saved_mic)
             if data.get("monitor") in self.monitor_map:
                 self.monitor_var.set(data["monitor"])
+            saved_routing = data.get("routing_mode")
+            if saved_routing in (ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION) and hasattr(self, "routing_mode_var"):
+                self.routing_mode_var.set(str(saved_routing))
+            elif hasattr(self, "routing_mode_var"):
+                self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+            if "target_mic_guid" in data and hasattr(self, "target_mic_guid_var") and data["target_mic_guid"]:
+                self.target_mic_guid_var.set(str(data["target_mic_guid"]))
             if "track_source" in data and hasattr(self, "track_source_var"):
                 self.track_source_var.set(str(data["track_source"]))
             if "volume" in data:
@@ -6578,6 +6828,10 @@ class MusicPadApp(tk.Tk):
                     self.recording_devices_checked.update(sc["recording_devices_checked"])
                 if "track_source" in sc and hasattr(self, "track_source_var"):
                     self.track_source_var.set(str(sc["track_source"]))
+                if "routing_mode" in sc and sc["routing_mode"] in (ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION) and hasattr(self, "routing_mode_var"):
+                    self.routing_mode_var.set(str(sc["routing_mode"]))
+                if "target_mic_guid" in sc and sc["target_mic_guid"] and hasattr(self, "target_mic_guid_var"):
+                    self.target_mic_guid_var.set(str(sc["target_mic_guid"]))
             folder = data.get("folder")
             folder_valid = bool(folder and folder != "Папку не вибрано" and Path(folder).is_dir())
             if folder_valid:
@@ -6675,6 +6929,16 @@ class MusicPadApp(tk.Tk):
             if data.get("mic_enabled"):
                 self.mic_enabled.set(True)
                 self._mic_setting_changed()
+            resolved_guid = self._resolve_selected_mic_guid()
+            if hasattr(self, "engine"):
+                self.engine.set_routing_mode(
+                    self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE
+                )
+                self.engine.set_target_endpoint_guid(resolved_guid)
+            notify_launch = bool(
+                hasattr(self, "check_device_config_on_launch_var") and self.check_device_config_on_launch_var.get()
+            )
+            self._refresh_driver_status(notify_on_issue=notify_launch)
             if pruned:
                 self._save_state()
         except Exception:
@@ -6889,9 +7153,26 @@ def _run_self_test(report_path: str) -> int:
     return 0 if result.get("ok") else 1
 
 
+def _parse_and_run_driver_cli(argv: list[str]) -> Optional[int]:
+    if len(argv) >= 3 and argv[1] == "--driver":
+        action = argv[2].strip().lower()
+        ep_guid = ""
+        for idx in range(3, len(argv)):
+            if argv[idx] == "--endpoint-guid" and idx + 1 < len(argv):
+                ep_guid = argv[idx + 1]
+                break
+        return run_driver_cli(action, ep_guid)
+    return None
+
+
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
         import os
 
         os._exit(_run_self_test(sys.argv[2]))
+    driver_rc = _parse_and_run_driver_cli(sys.argv)
+    if driver_rc is not None:
+        import os
+
+        os._exit(driver_rc)
     MusicPadApp().mainloop()

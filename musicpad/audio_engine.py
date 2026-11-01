@@ -45,6 +45,10 @@ except ModuleNotFoundError:
     YTMusic = None  # type: ignore[assignment]
 
 
+from musicpad.dsp_core import DspCore
+from musicpad.injection_shm import ApoRuntimeStatus, InjectionShm
+
+
 SAMPLE_RATE = 48000
 CHANNELS = 2
 DEFAULT_BLOCKSIZE = 384
@@ -52,6 +56,9 @@ MIN_BLOCKSIZE = 256
 MAX_BLOCKSIZE = 512
 CHUNK_BYTES = 4096
 SOFT_KNEE_THRESHOLD = 0.8912509  # -1 dBFS threshold for transparent soft knee
+
+ROUTING_MODE_VIRTUAL_CABLE = "virtual_cable"
+ROUTING_MODE_INJECTION = "injection"
 
 
 class Float32RingBuffer:
@@ -731,6 +738,9 @@ class AudioEngine:
         on_position: Optional[Callable[[float], None]] = None,
         monitor_mic: bool = True,
         blocksize: int = DEFAULT_BLOCKSIZE,
+        routing_mode: str = ROUTING_MODE_VIRTUAL_CABLE,
+        target_endpoint_guid: Optional[str] = None,
+        shm_path: Optional[Union[Path, str]] = None,
     ) -> None:
         self.output_device = output_device
         self.input_device = input_device
@@ -740,6 +750,16 @@ class AudioEngine:
         self.on_track_title = on_track_title
         self.on_position = on_position
         self.blocksize = max(MIN_BLOCKSIZE, min(MAX_BLOCKSIZE, int(blocksize)))
+        self.routing_mode = (
+            routing_mode
+            if routing_mode in (ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION)
+            else ROUTING_MODE_VIRTUAL_CABLE
+        )
+        self.target_endpoint_guid = target_endpoint_guid
+        self._shm_path = shm_path
+        self._dsp_core = DspCore()
+        self._injection_shm: Optional[InjectionShm] = None
+        self._lease_warning_reported = False
         self._ring_buffer = Float32RingBuffer(capacity_frames=65536, channels=CHANNELS)
         self._process: Optional[subprocess.Popen[bytes]] = None
         self._stream: Optional[Any] = None
@@ -750,7 +770,10 @@ class AudioEngine:
         self._devices_dirty = threading.Event()
         self._track_dirty = threading.Event()
         self._decoder_finished = threading.Event()
-        self._keep_mic_alive = input_device is not None
+        self._keep_mic_alive = (
+            input_device is not None
+            or (self.routing_mode == ROUTING_MODE_INJECTION and bool(target_endpoint_guid))
+        )
         self._pending_track: Optional[StreamTrack] = None
         self._active_track: Optional[StreamTrack] = None
         self._active_resolved_source: Optional[str] = None
@@ -840,6 +863,47 @@ class AudioEngine:
         for c in range(CHANNELS):
             out[:, c] = np.interp(x_new, x_old, stereo[:, c])
         return out
+
+    @staticmethod
+    def resample_float32_channels(
+        data: np.ndarray,
+        source_rate: int,
+        target_rate: int,
+        target_channels: int = CHANNELS,
+    ) -> np.ndarray:
+        """
+        Convert float32 stereo/multi-channel PCM to target sample rate and channel count
+        (e.g. matching APO hardware format in injection mode).
+        """
+        t_ch = max(1, int(target_channels))
+        if data is None or data.size == 0 or np is None:
+            return np.zeros((0, t_ch), dtype=np.float32)
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, CHANNELS if arr.size % CHANNELS == 0 else 1)
+
+        if source_rate > 0 and target_rate > 0 and source_rate != target_rate and arr.shape[0] >= 2:
+            src_frames = arr.shape[0]
+            dst_frames = max(1, round(src_frames * target_rate / source_rate))
+            x_old = np.linspace(0.0, src_frames - 1, num=src_frames, dtype=np.float32)
+            x_new = np.linspace(0.0, src_frames - 1, num=dst_frames, dtype=np.float32)
+            resampled = np.empty((dst_frames, arr.shape[1]), dtype=np.float32)
+            for c in range(arr.shape[1]):
+                resampled[:, c] = np.interp(x_new, x_old, arr[:, c])
+            arr = resampled
+
+        curr_ch = arr.shape[1]
+        if curr_ch == t_ch:
+            return arr
+        if t_ch == 1:
+            return np.mean(arr, axis=1, keepdims=True).astype(np.float32)
+        if curr_ch == 1:
+            return np.repeat(arr, t_ch, axis=1).astype(np.float32)
+        if curr_ch > t_ch:
+            return arr[:, :t_ch].astype(np.float32)
+        # Pad remaining channels by repeating first channel
+        pad_ch = np.repeat(arr[:, :1], t_ch - curr_ch, axis=1)
+        return np.concatenate([arr, pad_ch], axis=1).astype(np.float32)
 
     @staticmethod
     def mix_float32(
@@ -1049,6 +1113,140 @@ class AudioEngine:
             best_non_hdmi if best_non_hdmi is not None else fallback
         )
 
+    def _compute_keep_mic_alive(self) -> bool:
+        if self.routing_mode == ROUTING_MODE_INJECTION:
+            return bool(self.target_endpoint_guid) or self.input_device is not None
+        return self.input_device is not None
+
+    def _ensure_injection_shm(self) -> Optional[InjectionShm]:
+        with self._lock:
+            if self.routing_mode != ROUTING_MODE_INJECTION:
+                return None
+            if self._injection_shm is None:
+                try:
+                    self._injection_shm = (
+                        InjectionShm(self._shm_path)
+                        if self._shm_path is not None
+                        else InjectionShm()
+                    )
+                    self._injection_shm.open()
+                except Exception as exc:
+                    self._injection_shm = None
+                    if self.on_error:
+                        self.on_error(f"Не вдалося відкрити спільну пам'ять ін'єкції: {exc}")
+                    return None
+            if not self._injection_shm.has_lease:
+                acquired = self._injection_shm.acquire_writer_lease()
+                if not acquired and not self._lease_warning_reported:
+                    self._lease_warning_reported = True
+                    if self.on_error:
+                        self.on_error("Інша копія MusicPad вже використовує режим ін'єкції.")
+                elif acquired:
+                    self._lease_warning_reported = False
+            if self._injection_shm.has_lease:
+                self._injection_shm.update_control(
+                    mic_gain=self._mic_volume,
+                    mic_mute=self._mic_muted,
+                    track_playing=bool(
+                        self._active_track is not None
+                        and self._route_mic
+                        and not self._pause_event.is_set()
+                    ),
+                    passthrough=False,
+                    target_endpoint_guid=self.target_endpoint_guid or "",
+                )
+            return self._injection_shm
+
+    def _close_injection_shm(self) -> None:
+        with self._lock:
+            shm = self._injection_shm
+            self._injection_shm = None
+            self._lease_warning_reported = False
+        if shm is not None:
+            try:
+                shm.close()
+            except Exception:
+                pass
+
+    def get_apo_runtime_status(self) -> Optional[ApoRuntimeStatus]:
+        with self._lock:
+            shm = self._injection_shm
+        if shm is not None:
+            try:
+                return shm.get_apo_status()
+            except Exception:
+                return None
+        try:
+            temp_shm = (
+                InjectionShm(self._shm_path)
+                if self._shm_path is not None
+                else InjectionShm()
+            )
+            temp_shm.open()
+            try:
+                return temp_shm.get_apo_status()
+            finally:
+                temp_shm.close()
+        except Exception:
+            return None
+
+    def set_routing_mode(self, mode: str) -> None:
+        norm = (
+            mode
+            if mode in (ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION)
+            else ROUTING_MODE_VIRTUAL_CABLE
+        )
+        with self._lock:
+            changed = self.routing_mode != norm
+            self.routing_mode = norm
+            self._keep_mic_alive = self._compute_keep_mic_alive()
+            if changed:
+                self._devices_dirty.set()
+            has_music = self._process is not None or self._pending_track is not None
+            keep_alive = self._keep_mic_alive
+        if norm != ROUTING_MODE_INJECTION:
+            self._close_injection_shm()
+        else:
+            self._ensure_injection_shm()
+        if not keep_alive and not has_music:
+            self._stop_worker()
+            return
+        if self._thread is None or not self._thread.is_alive():
+            self._start_worker()
+
+    def set_target_endpoint_guid(self, guid: Optional[str]) -> None:
+        with self._lock:
+            changed = self.target_endpoint_guid != guid
+            self.target_endpoint_guid = guid
+            self._keep_mic_alive = self._compute_keep_mic_alive()
+            if changed:
+                self._devices_dirty.set()
+            has_music = self._process is not None or self._pending_track is not None
+            keep_alive = self._keep_mic_alive
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.update_control(
+                    mic_gain=self._mic_volume,
+                    mic_mute=self._mic_muted,
+                    track_playing=bool(
+                        self._active_track is not None
+                        and self._route_mic
+                        and not self._pause_event.is_set()
+                    ),
+                    passthrough=False,
+                    target_endpoint_guid=guid or "",
+                )
+            except Exception:
+                pass
+        if self.routing_mode == ROUTING_MODE_INJECTION and guid:
+            self._ensure_injection_shm()
+        if not keep_alive and not has_music:
+            self._stop_worker()
+            return
+        if self._thread is None or not self._thread.is_alive():
+            self._start_worker()
+
     def set_output_device(self, device_index: Optional[int]) -> None:
         with self._lock:
             changed = self.output_device != device_index
@@ -1060,11 +1258,12 @@ class AudioEngine:
         with self._lock:
             changed = self.input_device != device_index
             self.input_device = device_index
-            self._keep_mic_alive = device_index is not None
+            self._keep_mic_alive = self._compute_keep_mic_alive()
             if changed:
                 self._devices_dirty.set()
             has_music = self._process is not None or self._pending_track is not None
-        if device_index is None:
+            keep_alive = self._keep_mic_alive
+        if not keep_alive:
             if not has_music:
                 self._stop_worker()
             return
@@ -1080,15 +1279,54 @@ class AudioEngine:
 
     def set_mic_muted(self, muted: bool) -> None:
         self._mic_muted = bool(muted)
+        with self._lock:
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.update_control(
+                    mic_gain=self._mic_volume,
+                    mic_mute=self._mic_muted,
+                    track_playing=bool(
+                        self._active_track is not None
+                        and self._route_mic
+                        and not self._pause_event.is_set()
+                    ),
+                    passthrough=False,
+                    target_endpoint_guid=self.target_endpoint_guid,
+                )
+            except Exception:
+                pass
 
     def set_monitor_mic(self, enabled: bool) -> None:
-        self._monitor_mic = bool(enabled)
+        val = bool(enabled)
+        with self._lock:
+            changed = self._monitor_mic != val
+            self._monitor_mic = val
+            if changed and self.routing_mode == ROUTING_MODE_INJECTION:
+                self._devices_dirty.set()
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, float(volume)))
 
     def set_mic_volume(self, volume: float) -> None:
         self._mic_volume = max(0.0, min(2.0, float(volume)))
+        with self._lock:
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.update_control(
+                    mic_gain=self._mic_volume,
+                    mic_mute=self._mic_muted,
+                    track_playing=bool(
+                        self._active_track is not None
+                        and self._route_mic
+                        and not self._pause_event.is_set()
+                    ),
+                    passthrough=False,
+                    target_endpoint_guid=self.target_endpoint_guid,
+                )
+            except Exception:
+                pass
 
     def get_position(self) -> float:
         return self._position_seconds
@@ -1138,13 +1376,19 @@ class AudioEngine:
             self._pending_track = track_obj
             self._active_track = track_obj
             self._position_seconds = max(0.0, float(getattr(track_obj, "start_pos", 0.0) or 0.0))
-            self._keep_mic_alive = self.input_device is not None
+            self._keep_mic_alive = self._compute_keep_mic_alive()
             self._pause_event.clear()
             self._ring_buffer.reset()
             self._decoder_finished.clear()
             self._track_dirty.set()
             old_process = self._process
             self._process = None
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.flush()
+            except Exception:
+                pass
         if old_process is not None and old_process.poll() is None:
             try:
                 old_process.terminate()
@@ -1174,6 +1418,12 @@ class AudioEngine:
             self._pause_event.clear()
             old_process = self._process
             self._process = None
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.flush()
+            except Exception:
+                pass
         if old_process is not None and old_process.poll() is None:
             try:
                 old_process.terminate()
@@ -1183,6 +1433,13 @@ class AudioEngine:
 
     def pause(self) -> None:
         self._pause_event.set()
+        with self._lock:
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.flush()
+            except Exception:
+                pass
 
     def resume(self) -> None:
         self._pause_event.clear()
@@ -1202,6 +1459,19 @@ class AudioEngine:
                 self._stop_event.set()
             process = self._process
             self._process = None
+            shm = self._injection_shm
+        if shm is not None and shm.has_lease:
+            try:
+                shm.flush()
+                shm.update_control(
+                    mic_gain=self._mic_volume,
+                    mic_mute=self._mic_muted,
+                    track_playing=False,
+                    passthrough=False,
+                    target_endpoint_guid=self.target_endpoint_guid,
+                )
+            except Exception:
+                pass
         if process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -1216,6 +1486,7 @@ class AudioEngine:
             self._active_track = None
             self._keep_mic_alive = False
         self._stop_worker()
+        self._close_injection_shm()
 
     def _start_worker(self) -> None:
         with self._lock:
@@ -1323,8 +1594,47 @@ class AudioEngine:
             in_dev = self.input_device
             out_dev = self.output_device
             mon_dev = self.monitor_device
+            mode = self.routing_mode
+            mon_mic = self._monitor_mic
 
         try:
+            if mode == ROUTING_MODE_INJECTION:
+                self._ensure_injection_shm()
+                # Decision 5: In injection mode, APO handles mic mixing/mute/gain.
+                # App captures microphone ONLY if local headphone mic monitoring is enabled.
+                if in_dev is not None and mon_mic and mon_dev is not None:
+                    mic_channels = self._input_channels(in_dev)
+                    mic_stream = sd.RawInputStream(
+                        samplerate=SAMPLE_RATE,
+                        channels=mic_channels,
+                        dtype="int16",
+                        device=in_dev,
+                        blocksize=bs,
+                    )
+                    mic_stream.start()
+                self._stream = None
+                if mon_dev is not None:
+                    monitor_rate = self._device_samplerate(mon_dev)
+                    try:
+                        monitor_stream = sd.RawOutputStream(
+                            samplerate=monitor_rate,
+                            channels=CHANNELS,
+                            dtype="int16",
+                            device=mon_dev,
+                            blocksize=bs,
+                        )
+                    except Exception:
+                        monitor_rate = SAMPLE_RATE
+                        monitor_stream = sd.RawOutputStream(
+                            samplerate=monitor_rate,
+                            channels=CHANNELS,
+                            dtype="int16",
+                            device=mon_dev,
+                            blocksize=bs,
+                        )
+                    monitor_stream.start()
+                return None, monitor_stream, monitor_rate, mic_stream, mic_channels
+
             if in_dev is not None:
                 mic_channels = self._input_channels(in_dev)
                 mic_stream = sd.RawInputStream(
@@ -1573,6 +1883,9 @@ class AudioEngine:
 
                 frames = self.blocksize
                 is_mock_stream = hasattr(stream, "_mock_name") or hasattr(stream, "assert_called")
+                is_mock_monitor = hasattr(monitor_stream, "_mock_name") or hasattr(
+                    monitor_stream, "assert_called"
+                )
 
                 # 1. Capture real-time physical microphone (low-latency PCM float32)
                 if mic_stream is not None and not self._mic_muted:
@@ -1643,17 +1956,56 @@ class AudioEngine:
                 with self._lock:
                     keep_mic = self._keep_mic_alive
                     has_pending = self._pending_track is not None
+                    cur_mode = self.routing_mode
                 if not keep_mic and not has_music and not has_pending:
                     break
 
-                # 3. DSP Mixing with route flags & Hybrid Soft-Knee Limiter
-                track_for_cable = track_float if self._route_mic else np.zeros_like(track_float)
-                mixed_cable = mic_float + track_for_cable
-                limited_cable = self.apply_soft_knee_limiter(mixed_cable)
-
-                # 4. Output write to virtual cable / primary output
-                out_bytes = np.clip(np.round(limited_cable * 32767.0), -32768, 32767).astype(np.int16).tobytes()
-                stream.write(out_bytes)
+                # 3 & 4. Routing output: Injection SHM vs Virtual Cable
+                if cur_mode == ROUTING_MODE_INJECTION:
+                    shm = self._ensure_injection_shm()
+                    if shm is not None and shm.has_lease:
+                        apo_status = shm.get_apo_status()
+                        track_active_for_apo = bool(
+                            has_music
+                            and self._active_track is not None
+                            and self._route_mic
+                            and not self._pause_event.is_set()
+                        )
+                        shm.update_control(
+                            mic_gain=self._mic_volume,
+                            mic_mute=self._mic_muted,
+                            track_playing=track_active_for_apo,
+                            passthrough=False,
+                            target_endpoint_guid=self.target_endpoint_guid,
+                        )
+                        if track_active_for_apo and read_frames > 0:
+                            apo_rate = (
+                                apo_status.sample_rate
+                                if apo_status.sample_rate > 0
+                                else SAMPLE_RATE
+                            )
+                            apo_ch = (
+                                apo_status.channels
+                                if apo_status.channels > 0
+                                else CHANNELS
+                            )
+                            inj_samples = self.resample_float32_channels(
+                                track_float[:read_frames],
+                                SAMPLE_RATE,
+                                apo_rate,
+                                apo_ch,
+                            )
+                            shm.write_samples(inj_samples)
+                elif stream is not None:
+                    track_for_cable = track_float if self._route_mic else np.zeros_like(track_float)
+                    mixed_cable = mic_float + track_for_cable
+                    limited_cable = self.apply_soft_knee_limiter(mixed_cable)
+                    out_bytes = (
+                        np.clip(np.round(limited_cable * 32767.0), -32768, 32767)
+                        .astype(np.int16)
+                        .tobytes()
+                    )
+                    stream.write(out_bytes)
 
                 # 5. Output write to monitor headphones/speakers
                 if monitor_stream is not None:
@@ -1667,6 +2019,12 @@ class AudioEngine:
                     if monitor_rate != SAMPLE_RATE:
                         mon_bytes = self._resample_pcm(mon_bytes, SAMPLE_RATE, monitor_rate)
                     monitor_stream.write(mon_bytes)
+
+                # Pacing when no real hardware stream is blocking the loop (e.g. injection without monitor or mocked monitor)
+                if cur_mode == ROUTING_MODE_INJECTION and mic_stream is None and (
+                    monitor_stream is None or is_mock_monitor
+                ):
+                    time.sleep(frames / SAMPLE_RATE)
         except Exception as exc:
             if not self._stop_event.is_set() and self.on_error:
                 self.on_error(str(exc))

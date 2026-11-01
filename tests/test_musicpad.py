@@ -22,13 +22,35 @@ from musicpad import library as lib_mod
 from musicpad.audio_engine import (
     CHANNELS,
     CHUNK_BYTES,
+    ROUTING_MODE_INJECTION,
+    ROUTING_MODE_VIRTUAL_CABLE,
     SAMPLE_RATE,
     AudioEngine,
     AudioEngineError,
     StreamTrack,
 )
+from musicpad.apo_installer import (
+    MUSICPAD_APO_CLSID,
+    CaptureEndpoint,
+    DriverStatus,
+    _delete_hklm_subkey_tree,
+    _enable_backup_restore_privileges,
+    _ensure_win32_prototypes,
+    _open_hklm_key_backup_restore,
+    find_endpoint_for_sounddevice,
+    get_driver_status,
+    run_driver_cli,
+)
+from musicpad.dsp_core import DspCore
+from musicpad.injection_shm import (
+    InjectionShm,
+    MPAD_HEARTBEAT_TIMEOUT_NS,
+    MPAD_RING_CAPACITY_SAMPLES,
+    MPAD_WRITER_LEASE_TIMEOUT_NS,
+    OFF_READ_SAMPLE_IDX,
+    OFF_WRITE_SAMPLE_IDX,
+)
 from musicpad.library import LocalTrack, format_duration, scan_file, scan_folder
-from musicpad.pyaudio_mixer import MixerDevices, PyAudioMixerError, RealtimePcmMixer, mix_audio
 
 
 def _create_sine_wav(path: Path, duration_sec: float = 0.25, freq: float = 440.0, rate: int = 44100) -> None:
@@ -88,41 +110,136 @@ class TestLibrary(unittest.TestCase):
                 self.assertAlmostEqual(tracks[0].duration, 187.4, places=2)
 
 
-class TestPyAudioMixer(unittest.TestCase):
-    def test_mix_audio_stereo_and_mono_and_clipping(self) -> None:
-        music = array("h", [1000, -1000, 30000, -30000]).tobytes()
-        mic_stereo = array("h", [500, 500, 10000, -10000]).tobytes()
-        mixed = array("h")
-        mixed.frombytes(mix_audio(music, mic_stereo, music_volume=1.0, mic_enabled=True))
-        self.assertEqual(list(mixed), [1500, -500, 32767, -32768])
+class TestDspCoreAndInjectionShm(unittest.TestCase):
+    def test_dsp_core_voice_chain_mix_and_clipping(self) -> None:
+        import numpy as np
 
-        mic_mono = array("h", [200, -300]).tobytes()
-        mixed_mono = array("h")
-        mixed_mono.frombytes(mix_audio(music, mic_mono, music_volume=0.5, mic_enabled=True))
-        self.assertEqual(list(mixed_mono), [700, -300, 14700, -15300])
+        dsp = DspCore()
+        self.assertTrue(dsp.is_native_loaded)
 
-        muted = array("h")
-        muted.frombytes(mix_audio(music, mic_stereo, music_volume=0.5, mic_enabled=False))
-        self.assertEqual(list(muted), [500, -500, 15000, -15000])
+        mic = np.array([[0.25, -0.25], [0.95, -0.95]], dtype=np.float32)
+        track = np.array([[0.25, 0.50], [0.80, -0.80]], dtype=np.float32)
+        mixed = dsp.mix_voice_and_track(mic, track, frames=2, channels=2, mic_gain=1.0, mic_mute=False)
+        self.assertAlmostEqual(float(mixed[0, 0]), 0.50, places=5)
+        self.assertAlmostEqual(float(mixed[0, 1]), 0.25, places=5)
+        self.assertAlmostEqual(float(mixed[1, 0]), 1.0, places=5)
+        self.assertAlmostEqual(float(mixed[1, 1]), -1.0, places=5)
 
-        mismatched = array("h")
-        mismatched.frombytes(mix_audio(music, b"\x00\x00", music_volume=1.0, mic_enabled=True))
-        self.assertEqual(list(mismatched), [1000, -1000, 30000, -30000])
+        muted = dsp.mix_voice_and_track(mic, track, frames=2, channels=2, mic_gain=1.5, mic_mute=True)
+        self.assertAlmostEqual(float(muted[0, 0]), 0.25, places=5)
+        self.assertAlmostEqual(float(muted[0, 1]), 0.50, places=5)
 
-    def test_find_devices_skips_cable_output_for_mic(self) -> None:
-        fake_devices = [
-            {"name": "CABLE Output (VB-Audio Virtual)", "maxInputChannels": 2, "maxOutputChannels": 0},
-            {"name": "Microphone (5- fifine Microphone)", "maxInputChannels": 2, "maxOutputChannels": 0},
-            {"name": "CABLE Input (VB-Audio Virtual)", "maxInputChannels": 0, "maxOutputChannels": 2},
+    def test_injection_shm_ring_buffer_wrap_flush_and_lease(self) -> None:
+        import struct
+        import numpy as np
+
+        dsp = DspCore()
+        with tempfile.TemporaryDirectory() as tmp:
+            shm_path = Path(tmp) / "test_injection_v1.shm"
+            shm = InjectionShm(path=shm_path, pid=1111)
+            shm_other = InjectionShm(path=shm_path, pid=2222)
+            try:
+                self.assertTrue(shm.open(acquire_lease=True))
+                shm.touch_heartbeat(now_ns=1_000_000_000)
+
+                # Contending writer with different PID while heartbeat is fresh should be rejected
+                shm_other.open(acquire_lease=False)
+                with patch("musicpad.injection_shm._is_pid_running", return_value=True):
+                    self.assertFalse(shm_other.acquire_writer_lease(now_ns=1_000_000_000 + 10_000_000))
+                    # After lease timeout (>600ms), new writer can take over lease
+                    self.assertTrue(
+                        shm_other.acquire_writer_lease(
+                            now_ns=1_000_000_000 + MPAD_WRITER_LEASE_TIMEOUT_NS + 5_000_000
+                        )
+                    )
+                shm_other.release_writer_lease()
+                self.assertTrue(shm.acquire_writer_lease(now_ns=2_000_000_000))
+
+                # Test wrap-around near MPAD_RING_CAPACITY_SAMPLES
+                assert shm._mmap is not None
+                near_end = MPAD_RING_CAPACITY_SAMPLES - 32
+                struct.pack_into("<Q", shm._mmap, OFF_WRITE_SAMPLE_IDX, near_end)
+                struct.pack_into("<Q", shm._mmap, OFF_READ_SAMPLE_IDX, near_end)
+                frames = np.arange(64 * 2, dtype=np.float32).reshape(64, 2) / 200.0
+                written = shm.write_samples(frames, now_ns=2_000_000_000)
+                self.assertEqual(written, 128)
+                self.assertEqual(shm.available_to_read(), 128)
+
+                # Simulate APO processing via shared C core
+                shm.set_state(app_active=True, mic_mute=False, mic_gain=1.0, track_playing=True, now_ns=2_000_000_000)
+                mic_zero = np.zeros((64, 2), dtype=np.float32)
+                out_arr, active, last_flush = dsp.simulate_apo_shm_block(
+                    shm._mmap, mic_zero, sample_rate=48000.0, now_ns=2_010_000_000, last_flush_seq=0
+                )
+                self.assertEqual(active, 1)
+                self.assertTrue(np.allclose(out_arr, frames, atol=1e-6))
+                self.assertEqual(shm.available_to_read(), 0)
+
+                # Write again and verify flush() causes APO to discard buffered samples on next block
+                shm.write_samples(frames, now_ns=2_020_000_000)
+                self.assertEqual(shm.available_to_read(), 128)
+                shm.flush()
+                out_flushed, _, last_flush = dsp.simulate_apo_shm_block(
+                    shm._mmap, mic_zero, sample_rate=48000.0, now_ns=2_030_000_000, last_flush_seq=last_flush
+                )
+                self.assertEqual(shm.available_to_read(), 0)
+                self.assertTrue(np.allclose(out_flushed, 0.0, atol=1e-6))
+            finally:
+                shm_other.close()
+                shm.close()
+
+    def test_apo_installer_helpers_and_cli(self) -> None:
+        fake_eps = [
+            CaptureEndpoint(
+                guid="{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+                endpoint_name="Мікрофон",
+                adapter_name="3- fifine Microphone",
+                enhancements_enabled=True,
+                exclusive_allowed=False,
+                efx_clsid=MUSICPAD_APO_CLSID,
+            )
         ]
-        with patch.object(RealtimePcmMixer, "list_devices", return_value=fake_devices):
-            devs = RealtimePcmMixer.find_devices()
-            self.assertEqual(devs, MixerDevices(input_device_index=1, output_device_index=2))
+        ep = find_endpoint_for_sounddevice("Мікрофон (3- fifine Microphone)", endpoints=fake_eps)
+        self.assertIsNotNone(ep)
+        assert ep is not None
+        self.assertEqual(ep.guid, "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}")
 
-    def test_find_devices_errors(self) -> None:
-        with patch.object(RealtimePcmMixer, "list_devices", return_value=[]):
-            with self.assertRaises(PyAudioMixerError):
-                RealtimePcmMixer.find_devices()
+        with patch("musicpad.apo_installer.install_driver") as mock_inst, patch(
+            "musicpad.apo_installer.uninstall_driver"
+        ) as mock_uninst:
+            self.assertEqual(run_driver_cli("install", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}"), 0)
+            self.assertEqual(run_driver_cli("repair", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}"), 0)
+            self.assertEqual(run_driver_cli("uninstall"), 0)
+            self.assertEqual(run_driver_cli("unknown"), 2)
+            self.assertEqual(mock_inst.call_count, 2)
+            mock_uninst.assert_called_once()
+
+        # Win32 privilege & fallback tests
+        _ensure_win32_prototypes()
+        _enable_backup_restore_privileges()
+
+        with patch("ctypes.windll.advapi32.RegCreateKeyExW") as mock_reg:
+            def fake_create(hkey, subkey, res, cls, opts, sam, sec, phk, pdisp):
+                if opts == 4:  # REG_OPTION_BACKUP_RESTORE
+                    return 5  # ERROR_ACCESS_DENIED
+                phk._obj.value = 12345
+                return 0
+
+            mock_reg.side_effect = fake_create
+            h = _open_hklm_key_backup_restore("SOFTWARE\\MusicPadFake")
+            self.assertEqual(h, 12345)
+            self.assertEqual(mock_reg.call_count, 2)
+
+        with patch("ctypes.windll.advapi32.RegCreateKeyExW", return_value=5):
+            with patch("winreg.CreateKeyEx") as mock_winreg:
+                mock_k = MagicMock()
+                mock_k.Detach.return_value = 54321
+                mock_winreg.return_value = mock_k
+                h3 = _open_hklm_key_backup_restore("SOFTWARE\\MusicPadFake3")
+                self.assertEqual(h3, 54321)
+
+        with patch("ctypes.windll.advapi32.RegDeleteTreeW", return_value=2):
+            _delete_hklm_subkey_tree("SOFTWARE\\MusicPadFakeDelete")
 
 
 class TestAudioEngineUnit(unittest.TestCase):
@@ -2412,6 +2529,182 @@ class TestMusicPadAppGUI(unittest.TestCase):
         self.assertIn("ffmpeg.exe", wf_text)
         self.assertIn("ffprobe.exe", wf_text)
         self.assertIn("Prepare FFmpeg and FFprobe for embedding", wf_text)
+        self.assertIn("native/build.ps1", wf_text)
+
+
+class TestInjectionRoutingAndUi(unittest.TestCase):
+    def test_audio_engine_injection_mode_streams_and_shm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shm_path = Path(tmp) / "engine_injection.shm"
+            wav_path = Path(tmp) / "tone.wav"
+            _create_sine_wav(wav_path, duration_sec=0.18, freq=440.0, rate=48000)
+
+            out_streams: list[MagicMock] = []
+            in_streams: list[MagicMock] = []
+
+            def fake_out_stream(**kwargs):
+                m = MagicMock()
+                m.kwargs = kwargs
+                out_streams.append(m)
+                return m
+
+            def fake_in_stream(**kwargs):
+                m = MagicMock()
+                m.kwargs = kwargs
+                m.read.return_value = (b"\x00\x00\x00\x00" * 384, False)
+                in_streams.append(m)
+                return m
+
+            devs = [
+                {"name": "fifine Microphone", "max_input_channels": 2, "max_output_channels": 0, "default_samplerate": 48000.0},
+                {"name": "Headphones", "max_input_channels": 0, "max_output_channels": 2, "default_samplerate": 48000.0},
+                {"name": "CABLE Input", "max_input_channels": 0, "max_output_channels": 2, "default_samplerate": 48000.0},
+            ]
+            fake_sd = MagicMock()
+            fake_sd.RawOutputStream.side_effect = fake_out_stream
+            fake_sd.RawInputStream.side_effect = fake_in_stream
+            fake_sd.query_devices.side_effect = lambda idx=None: devs if idx is None else devs[int(idx)]
+
+            done = threading.Event()
+            errors: list[str] = []
+            with patch.object(ae_mod, "sd", fake_sd):
+                engine = AudioEngine(
+                    output_device=2,
+                    input_device=0,
+                    monitor_device=1,
+                    on_error=errors.append,
+                    on_finished=done.set,
+                    monitor_mic=False,
+                    routing_mode=ROUTING_MODE_INJECTION,
+                    target_endpoint_guid="{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+                    shm_path=shm_path,
+                )
+                try:
+                    engine.set_volume(0.5)
+                    engine.set_mic_volume(1.2)
+                    engine.play(StreamTrack("Tone", str(wav_path)))
+                    # Wait up to 1.0s for ffmpeg / WavPipeDecoder to write samples to InjectionShm
+                    reader_shm = InjectionShm(path=shm_path)
+                    reader_shm.open(acquire_lease=False)
+                    try:
+                        deadline = time.monotonic() + 1.0
+                        while time.monotonic() < deadline and reader_shm.available_to_read() == 0:
+                            time.sleep(0.02)
+                        self.assertEqual(errors, [])
+                        self.assertEqual(
+                            reader_shm.get_target_endpoint_guid(),
+                            "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+                        )
+                        self.assertGreater(reader_shm.available_to_read(), 0)
+                    finally:
+                        reader_shm.close()
+
+                    # Verify stop() flushes shared memory immediately
+                    engine.stop()
+                    reader_shm2 = InjectionShm(path=shm_path)
+                    reader_shm2.open(acquire_lease=False)
+                    try:
+                        import struct
+                        from musicpad.injection_shm import OFF_FLUSH_SEQ
+
+                        assert reader_shm2._mmap is not None
+                        flush_seq = struct.unpack_from("<I", reader_shm2._mmap, OFF_FLUSH_SEQ)[0]
+                        self.assertGreaterEqual(flush_seq, 1)
+                    finally:
+                        reader_shm2.close()
+
+                    # Verify that in injection mode with monitor_mic=False:
+                    # - output_device (2, CABLE Input) was NEVER opened
+                    # - input_device (0, fifine Microphone) was NEVER opened
+                    # - monitor_device (1, Headphones) WAS opened
+                    opened_out_devs = [m.kwargs.get("device") for m in out_streams]
+                    self.assertNotIn(2, opened_out_devs)
+                    self.assertIn(1, opened_out_devs)
+                    self.assertEqual(len(in_streams), 0)
+                finally:
+                    engine.shutdown()
+
+    def test_settings_devices_routing_mode_and_state_persistence(self) -> None:
+        fake_devs = [
+            {"index": 0, "name": "Мікрофон (3- fifine Microphone)", "max_input_channels": 2, "max_output_channels": 0, "hostapi": 0, "default_samplerate": 48000.0},
+            {"index": 1, "name": "Навушники (Realtek Audio)", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0, "default_samplerate": 48000.0},
+            {"index": 2, "name": "CABLE Input (VB-Audio Virtual Cable)", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0, "default_samplerate": 48000.0},
+        ]
+        fake_status = DriverStatus(
+            state="active",
+            installed_endpoint_guid="{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+            target_endpoint_guid="{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+            reason="Драйвер активний",
+        )
+        fake_ep = CaptureEndpoint(
+            guid="{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+            endpoint_name="Мікрофон",
+            adapter_name="3- fifine Microphone",
+            enhancements_enabled=True,
+            exclusive_allowed=False,
+            efx_clsid=MUSICPAD_APO_CLSID,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "musicpad_state.json"
+            with patch.object(AudioEngine, "list_devices", return_value=fake_devs), patch.object(
+                AudioEngine, "find_cable_output", return_value=2
+            ), patch.object(AudioEngine, "find_physical_mic", return_value=0), patch.object(
+                AudioEngine, "find_default_monitor", return_value=1
+            ), patch(
+                "main.find_endpoint_for_sounddevice", return_value=fake_ep
+            ), patch(
+                "main.get_driver_status", return_value=fake_status
+            ), patch.object(
+                main.MusicPadApp, "_config_path", return_value=cfg_file
+            ), patch.object(
+                main.MusicPadApp, "_is_mocked_env", return_value=False
+            ), patch.object(
+                main.MusicPadApp, "_start_hotkey_listener"
+            ):
+                app = main.MusicPadApp()
+                try:
+                    app.update_idletasks()
+                    # Default for fresh state without saved config is virtual_cable (Decision 20)
+                    self.assertEqual(app.routing_mode_var.get(), ROUTING_MODE_VIRTUAL_CABLE)
+
+                    app._open_settings()
+                    app.update_idletasks()
+                    self.assertTrue(hasattr(app, "cb_settings_cable"))
+
+                    # Switch to injection mode -> cable combobox becomes disabled
+                    app.routing_mode_var.set(ROUTING_MODE_INJECTION)
+                    app._on_routing_mode_changed()
+                    self.assertEqual(str(app.cb_settings_cable.cget("state")), "disabled")
+                    self.assertEqual(app._ensure_engine().routing_mode, ROUTING_MODE_INJECTION)
+
+                    # Test UAC helper install callback (mocked)
+                    with patch("main.messagebox.askyesno", return_value=True), patch(
+                        "main.run_driver_helper_uac", return_value=(True, "OK")
+                    ) as mock_uac:
+                        app._install_driver_uac_action()
+                        mock_uac.assert_called_once_with(
+                            "install", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}"
+                        )
+
+                    app._save_state()
+                    self.assertTrue(cfg_file.is_file())
+                    saved_data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertEqual(saved_data.get("routing_mode"), ROUTING_MODE_INJECTION)
+                    self.assertEqual(
+                        saved_data.get("target_mic_guid"),
+                        "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}",
+                    )
+                finally:
+                    app._exit()
+
+        with patch("main.run_driver_cli", return_value=0) as mock_cli:
+            rc = main._parse_and_run_driver_cli(
+                ["main.py", "--driver", "install", "--endpoint-guid", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}"]
+            )
+            self.assertEqual(rc, 0)
+            mock_cli.assert_called_once_with("install", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}")
+            self.assertIsNone(main._parse_and_run_driver_cli(["main.py"]))
 
 
 if __name__ == "__main__":
