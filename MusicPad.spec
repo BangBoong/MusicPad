@@ -32,12 +32,35 @@ for dll_name in ("musicpad_apo.dll", "musicpad_dsp.dll"):
         native_binaries.append((str(dll_path.resolve()), '.'))
         native_binaries.append((str(dll_path.resolve()), 'native/bin'))
 
+deepfilter_datas = []
+try:
+    import deepfilternet_slim as dfs
+    df_lib = Path(dfs.library_path())
+    df_model = Path(dfs.model_path())
+    if df_lib.is_file():
+        native_binaries.append((str(df_lib.resolve()), '.'))
+        native_binaries.append((str(df_lib.resolve()), '_native'))
+    if df_model.is_file():
+        deepfilter_datas.append((str(df_model.resolve()), '.'))
+        deepfilter_datas.append((str(df_model.resolve()), '_models'))
+except Exception:
+    pass
+
+df_bin = Path("native") / "bin" / "deepfilter.dll"
+df_model_bin = Path("native") / "bin" / "DeepFilterNet3_onnx.tar.gz"
+if df_bin.is_file():
+    native_binaries.append((str(df_bin.resolve()), '.'))
+    native_binaries.append((str(df_bin.resolve()), 'native/bin'))
+if df_model_bin.is_file():
+    deepfilter_datas.append((str(df_model_bin.resolve()), '.'))
+    deepfilter_datas.append((str(df_model_bin.resolve()), 'native/bin'))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=ffmpeg_binaries + native_binaries,
-    datas=[('musicpad.png', '.'), ('assets', 'assets')] + ytmusicapi_datas,
-    hiddenimports=['wave', 'queue', 'pystray._win32'],
+    datas=[('musicpad.png', '.'), ('assets', 'assets')] + ytmusicapi_datas + deepfilter_datas,
+    hiddenimports=['wave', 'queue', 'pystray._win32', 'deepfilternet_slim', 'musicpad.deepfilter_engine'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

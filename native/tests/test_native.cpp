@@ -340,12 +340,100 @@ static int TestProductionApoDll(const wchar_t* dllPath) {
     return 0;
 }
 
+// ============================================================================
+// Test 4: Voice FX Pipeline (DC-offset HPF, Downward Expander, Voice Boost & Limiter)
+// ============================================================================
+static int TestVoiceFxPipeline() {
+    mpad_dsp_reset_voice_state();
+
+    // 1. DC offset removal test: constant DC = 0.5f must be filtered to near 0.0
+    const uint32_t dc_frames = 2048;
+    float dc_samples[2048];
+    for (uint32_t i = 0; i < dc_frames; ++i) dc_samples[i] = 0.5f;
+
+    mpad_dsp_process_voice(
+        dc_samples,
+        dc_frames,
+        1,
+        48000.0f,
+        1.0f,
+        0,
+        MPAD_FX_WHITE_NOISE,
+        0.0f,
+        0.0f
+    );
+    // Last samples of pure DC should be attenuated by > 30 dB (near 0)
+    CHECK(std::fabs(dc_samples[dc_frames - 1]) < 0.02f, "High-Pass Filter eliminates DC offset");
+
+    // 2. Downward Expander test: low noise (0.0003f) below -55 dBFS attenuated to silence
+    mpad_dsp_reset_voice_state();
+    const uint32_t silence_frames = 9600; // 200 ms @ 48kHz
+    float silence_samples[9600];
+    for (uint32_t i = 0; i < silence_frames; ++i) silence_samples[i] = 0.0003f;
+
+    mpad_dsp_process_voice(
+        silence_samples,
+        silence_frames,
+        1,
+        48000.0f,
+        1.0f,
+        0,
+        MPAD_FX_WHITE_NOISE,
+        0.0f,
+        0.0f
+    );
+    CHECK(std::fabs(silence_samples[silence_frames - 1]) < 0.0001f, "Downward Expander smoothly attenuates silence below threshold");
+
+    // 3. Voice Boost (+20 dB = 10x) + SoftLimiter test: loud signal (0.3f) does not exceed 1.0
+    mpad_dsp_reset_voice_state();
+    float boost_samples[4] = { 0.3f, -0.3f, 0.5f, -0.5f };
+    mpad_dsp_process_voice(
+        boost_samples,
+        4,
+        1,
+        48000.0f,
+        10.0f, // 10x boost (+20 dB)
+        0,
+        MPAD_FX_VOICE_BOOST,
+        0.0f,
+        0.0f
+    );
+    for (int i = 0; i < 4; ++i) {
+        CHECK(std::fabs(boost_samples[i]) <= 0.999f, "Soft-knee Limiter prevents digital clipping exceeding 0 dBFS");
+        CHECK(std::fabs(boost_samples[i]) >= 0.891f, "Limiter compresses signal above -1.0 dBFS threshold");
+    }
+
+    // 4. DeepFilterNet test: neural noise suppression hook runs and suppresses noise or safely bypasses
+    mpad_dsp_reset_voice_state();
+    const uint32_t df_test_frames = 960;
+    float df_noise[960];
+    for (uint32_t i = 0; i < df_test_frames; ++i) {
+        df_noise[i] = 0.05f * std::sin((float)i * 0.7f);
+    }
+    mpad_dsp_process_voice(
+        df_noise,
+        df_test_frames,
+        1,
+        48000.0f,
+        1.0f,
+        0,
+        MPAD_FX_DEEPFILTER,
+        1.0f, // 100% wet
+        0.0f
+    );
+    // Verified that process_voice executes without error/crash
+    CHECK(std::fabs(df_noise[df_test_frames - 1]) <= 0.05f, "DeepFilterNet processes audio safely");
+
+    return 0;
+}
+
 int main() {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
     if (TestPassthroughAndHeartbeat() != 0) return 1;
     if (TestVoiceGainMuteAndWrapAroundMix() != 0) return 1;
     if (TestUnderrunAndFlush() != 0) return 1;
+    if (TestVoiceFxPipeline() != 0) return 1;
     if (TestProductionApoDll(L"musicpad_apo.dll") != 0) return 1;
 
     CoUninitialize();

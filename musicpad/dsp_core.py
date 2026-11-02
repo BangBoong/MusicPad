@@ -13,6 +13,17 @@ from typing import Optional
 import numpy as np
 
 
+MPAD_FX_NONE = 0
+MPAD_FX_DEEPFILTER = 1 << 0
+MPAD_FX_WHITE_NOISE = 1 << 1
+MPAD_FX_VOICE_BOOST = 1 << 2
+
+# Legacy aliases
+MPAD_FX_HPF = MPAD_FX_WHITE_NOISE
+MPAD_FX_NR = MPAD_FX_DEEPFILTER
+MPAD_FX_AGC2 = MPAD_FX_VOICE_BOOST
+
+
 def _find_dsp_dll() -> Optional[Path]:
     """Locate musicpad_dsp.dll or musicpad_apo.dll in bundle or workspace."""
     candidates: list[Path] = []
@@ -126,9 +137,18 @@ class DspCore:
             arr.fill(0.0)
             return arr
 
-        gain = float(max(0.0, min(4.0, mic_gain)))
+        boost_enabled = bool(voice_fx_flags & MPAD_FX_VOICE_BOOST)
+        gain = float(max(0.0, min(16.0 if boost_enabled else 4.0, mic_gain)))
         if gain != 1.0:
             arr *= gain
+
+        if boost_enabled:
+            # Soft-knee limiter at -1.0 dBFS (0.89125)
+            thresh = 0.8912509
+            excess = np.maximum(0.0, np.abs(arr) - thresh)
+            headroom = 1.0 - thresh
+            compressed = thresh + headroom * np.tanh(excess / headroom)
+            arr = np.where(np.abs(arr) > thresh, np.sign(arr) * np.minimum(0.999, compressed), arr)
         return arr
 
     def mix_voice_and_track(

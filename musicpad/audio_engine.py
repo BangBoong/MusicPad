@@ -45,7 +45,13 @@ except ModuleNotFoundError:
     YTMusic = None  # type: ignore[assignment]
 
 
-from musicpad.dsp_core import DspCore
+from musicpad.dsp_core import (
+    DspCore,
+    MPAD_FX_DEEPFILTER,
+    MPAD_FX_WHITE_NOISE,
+    MPAD_FX_VOICE_BOOST,
+)
+from musicpad.deepfilter_engine import DeepFilterEngine
 from musicpad.injection_shm import ApoRuntimeStatus, InjectionShm
 
 
@@ -858,7 +864,98 @@ class AudioEngine:
         self._monitor_mic = monitor_mic
         self._route_speakers = True
         self._route_mic = True
+        self._deepfilter_engine = DeepFilterEngine()
+        self._deepfilter_enabled = False
+        self._deepfilter_wet = 1.0
+        self._white_noise_removal = False
+        self._voice_boost_enabled = False
+        self._voice_boost_db = 0.0
         self._lock = threading.RLock()
+
+    def _compute_voice_fx_flags(self) -> int:
+        flags = 0
+        if self._deepfilter_enabled:
+            flags |= MPAD_FX_DEEPFILTER
+        if self._white_noise_removal:
+            flags |= MPAD_FX_WHITE_NOISE
+        if self._voice_boost_enabled:
+            flags |= MPAD_FX_VOICE_BOOST
+        return flags
+
+    def _effective_mic_gain(self) -> float:
+        if self._voice_boost_enabled:
+            return float(10.0 ** (self._voice_boost_db / 20.0))
+        return float(self._mic_volume)
+
+    @property
+    def deepfilter_enabled(self) -> bool:
+        with self._lock:
+            return self._deepfilter_enabled
+
+    @property
+    def deepfilter_wet(self) -> float:
+        with self._lock:
+            return self._deepfilter_wet
+
+    @property
+    def white_noise_removal(self) -> bool:
+        with self._lock:
+            return self._white_noise_removal
+
+    @property
+    def voice_boost_enabled(self) -> bool:
+        with self._lock:
+            return self._voice_boost_enabled
+
+    @property
+    def voice_boost_db(self) -> float:
+        with self._lock:
+            return self._voice_boost_db
+
+    def _sync_voice_control_to_shm(self) -> None:
+        """Push current mic gain, mute, and DSP voice FX flags to SHM."""
+        with self._lock:
+            shm = self._injection_shm
+            fx_flags = self._compute_voice_fx_flags()
+            fx_wet = self._deepfilter_wet
+            effective_gain = self._effective_mic_gain()
+            muted = self._mic_muted
+            track_active = bool(
+                self._active_track is not None
+                and self._route_mic
+                and not self._pause_event.is_set()
+            )
+            guid = self.target_endpoint_guid
+        if shm is not None and shm.has_lease:
+            try:
+                shm.update_control(
+                    mic_gain=effective_gain,
+                    mic_mute=muted,
+                    track_playing=track_active,
+                    voice_fx_flags=fx_flags,
+                    voice_fx_param1=fx_wet,
+                    passthrough=False,
+                    target_endpoint_guid=guid or "",
+                )
+            except Exception:
+                pass
+
+    def set_deepfilter_state(self, enabled: bool, wet: float = 1.0) -> None:
+        with self._lock:
+            self._deepfilter_enabled = bool(enabled)
+            self._deepfilter_wet = max(0.0, min(1.0, float(wet)))
+        self._sync_voice_control_to_shm()
+
+    def set_white_noise_removal(self, enabled: bool) -> None:
+        with self._lock:
+            self._white_noise_removal = bool(enabled)
+        self._sync_voice_control_to_shm()
+
+    def set_voice_boost(self, enabled: bool, gain_db: float = 0.0) -> None:
+        with self._lock:
+            self._voice_boost_enabled = bool(enabled)
+            self._voice_boost_db = max(0.0, min(24.0, float(gain_db)))
+        self._sync_voice_control_to_shm()
 
     def set_blocksize(self, blocksize: int) -> None:
         val = max(MIN_BLOCKSIZE, min(MAX_BLOCKSIZE, int(blocksize)))
@@ -1235,13 +1332,15 @@ class AudioEngine:
                     self._lease_warning_reported = False
             if self._injection_shm.has_lease:
                 self._injection_shm.update_control(
-                    mic_gain=self._mic_volume,
+                    mic_gain=self._effective_mic_gain(),
                     mic_mute=self._mic_muted,
                     track_playing=bool(
                         self._active_track is not None
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
+                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid or "",
                 )
@@ -1317,13 +1416,15 @@ class AudioEngine:
         if shm is not None and shm.has_lease:
             try:
                 shm.update_control(
-                    mic_gain=self._mic_volume,
+                    mic_gain=self._effective_mic_gain(),
                     mic_mute=self._mic_muted,
                     track_playing=bool(
                         self._active_track is not None
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
+                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=guid or "",
                 )
@@ -1374,13 +1475,15 @@ class AudioEngine:
         if shm is not None and shm.has_lease:
             try:
                 shm.update_control(
-                    mic_gain=self._mic_volume,
+                    mic_gain=self._effective_mic_gain(),
                     mic_mute=self._mic_muted,
                     track_playing=bool(
                         self._active_track is not None
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
+                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid,
                 )
@@ -1405,13 +1508,15 @@ class AudioEngine:
         if shm is not None and shm.has_lease:
             try:
                 shm.update_control(
-                    mic_gain=self._mic_volume,
+                    mic_gain=self._effective_mic_gain(),
                     mic_mute=self._mic_muted,
                     track_playing=bool(
                         self._active_track is not None
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
+                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid,
                 )
@@ -2031,8 +2136,27 @@ class AudioEngine:
                             mic_float = mic_float[:frames]
                         if mic_channels == 1 or mic_float.shape[1] == 1:
                             mic_float = np.repeat(mic_float[:, :1], CHANNELS, axis=1)
-                        if self._mic_volume != 1.0:
-                            mic_float = mic_float * self._mic_volume
+
+                        # Stage 1: DeepFilterNet (wet/dry)
+                        with self._lock:
+                            df_enabled = self._deepfilter_enabled
+                            df_wet = self._deepfilter_wet
+                            fx_flags = self._compute_voice_fx_flags()
+                            effective_gain = self._effective_mic_gain()
+                            muted = self._mic_muted
+
+                        if df_enabled and self._deepfilter_engine.is_available:
+                            mic_float = self._deepfilter_engine.process_buffer(mic_float, wet=df_wet)
+
+                        # Stages 2, 3, 4: White noise removal (DC HPF + Expander), Voice Boost, Limiter
+                        mic_float = self._dsp_core.process_voice(
+                            mic_float,
+                            sample_rate=SAMPLE_RATE,
+                            mic_gain=effective_gain,
+                            mic_mute=muted,
+                            voice_fx_flags=fx_flags,
+                            fx_param1=df_wet,
+                        )
                     except Exception:
                         mic_float = np.zeros((frames, CHANNELS), dtype=np.float32)
                 else:
@@ -2060,9 +2184,11 @@ class AudioEngine:
                     )
                     if shm is not None and shm.has_lease:
                         shm.update_control(
-                            mic_gain=self._mic_volume,
+                            mic_gain=self._effective_mic_gain(),
                             mic_mute=self._mic_muted,
                             track_playing=track_active_for_apo,
+                            voice_fx_flags=self._compute_voice_fx_flags(),
+                            voice_fx_param1=self._deepfilter_wet,
                             passthrough=False,
                             target_endpoint_guid=self.target_endpoint_guid,
                         )

@@ -2,7 +2,11 @@
 // Zero allocations, zero locks, real-time safe for audiodg.exe and ctypes Virtual Cable mode.
 
 #include "../include/musicpad_dsp.h"
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 
 static inline float ClampSample(float x) {
@@ -11,7 +15,157 @@ static inline float ClampSample(float x) {
     return x;
 }
 
+// Limiter threshold: -1.0 dBFS = 10^(-1/20) approx 0.8912509f
+static const float MPAD_LIMITER_THRESH = 0.891250938f;
+static const float MPAD_EXPANDER_THRESH = 0.0017782794f; // -55 dBFS
+
+static inline float SoftLimiter(float x) {
+    float abs_x = std::fabs(x);
+    if (abs_x <= MPAD_LIMITER_THRESH) {
+        return x;
+    }
+    float excess = abs_x - MPAD_LIMITER_THRESH;
+    float headroom = 1.0f - MPAD_LIMITER_THRESH;
+    float compressed = MPAD_LIMITER_THRESH + headroom * std::tanh(excess / headroom);
+    if (compressed > 0.999f) compressed = 0.999f;
+    return (x < 0.0f) ? -compressed : compressed;
+}
+
+// Internal DSP history for up to 8 channels (DC HPF + Downward Expander)
+struct MpadChannelHistory {
+    float hpf_x1 = 0.0f;
+    float hpf_x2 = 0.0f;
+    float hpf_y1 = 0.0f;
+    float hpf_y2 = 0.0f;
+    float env = 0.0f;
+    float smooth_gain = 1.0f;
+};
+
+static MpadChannelHistory s_voice_history[8] = {};
+
+// DeepFilterNet C API bindings and FIFO state for realtime APO / DSP execution
+typedef void* (*fn_df_create)(const char*, float, const char*);
+typedef float (*fn_df_process_frame)(void*, const float*, float*);
+typedef void  (*fn_df_free)(void*);
+
+static HMODULE s_df_dll = NULL;
+static fn_df_create s_df_create = nullptr;
+static fn_df_process_frame s_df_process_frame = nullptr;
+static fn_df_free s_df_free = nullptr;
+static void* s_df_state = nullptr;
+static bool s_df_init_attempted = false;
+
+static const uint32_t DF_FRAME_SIZE = 480;
+static const uint32_t DF_FIFO_CAP = 8192;
+static float s_df_fifo_in[DF_FIFO_CAP] = {};
+static uint32_t s_df_fifo_in_count = 0;
+static float s_df_fifo_out[DF_FIFO_CAP] = {};
+static uint32_t s_df_fifo_out_count = 0;
+
+static bool CheckFileExists(const char* path) {
+    if (!path || !path[0]) return false;
+    DWORD attr = GetFileAttributesA(path);
+    return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+static void InitDeepFilter() {
+    if (s_df_init_attempted) return;
+    s_df_init_attempted = true;
+
+    char baseDir[MAX_PATH] = {};
+    HMODULE hMod = NULL;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCSTR)&mpad_dsp_process_voice,
+            &hMod) && hMod) {
+        if (GetModuleFileNameA(hMod, baseDir, MAX_PATH)) {
+            char* lastSlash = strrchr(baseDir, '\\');
+            if (lastSlash) {
+                *lastSlash = '\0';
+            }
+        }
+    }
+
+    char dllPath[MAX_PATH] = {};
+    const char* dllCandidates[] = {
+        baseDir,
+        "C:\\Windows\\System32",
+        "C:\\Program Files\\MusicPad",
+        "native\\bin",
+        "."
+    };
+
+    for (const char* dir : dllCandidates) {
+        if (!dir || !dir[0]) continue;
+        char cand[MAX_PATH];
+        snprintf(cand, sizeof(cand), "%s\\deepfilter.dll", dir);
+        if (CheckFileExists(cand)) {
+            snprintf(dllPath, sizeof(dllPath), "%s", cand);
+            break;
+        }
+    }
+
+    if (!dllPath[0]) {
+        snprintf(dllPath, sizeof(dllPath), "deepfilter.dll");
+    }
+
+    s_df_dll = LoadLibraryA(dllPath);
+    if (!s_df_dll) {
+        return;
+    }
+
+    s_df_create = reinterpret_cast<fn_df_create>(reinterpret_cast<void(*)()>(GetProcAddress(s_df_dll, "df_create")));
+    s_df_process_frame = reinterpret_cast<fn_df_process_frame>(reinterpret_cast<void(*)()>(GetProcAddress(s_df_dll, "df_process_frame")));
+    s_df_free = reinterpret_cast<fn_df_free>(reinterpret_cast<void(*)()>(GetProcAddress(s_df_dll, "df_free")));
+
+    if (!s_df_create || !s_df_process_frame || !s_df_free) {
+        FreeLibrary(s_df_dll);
+        s_df_dll = NULL;
+        return;
+    }
+
+    char modelPath[MAX_PATH] = {};
+    const char* modelCandidates[] = {
+        baseDir,
+        "C:\\Windows\\System32",
+        "C:\\Program Files\\MusicPad",
+        "native\\bin",
+        "."
+    };
+
+    for (const char* dir : modelCandidates) {
+        if (!dir || !dir[0]) continue;
+        char cand[MAX_PATH];
+        snprintf(cand, sizeof(cand), "%s\\DeepFilterNet3_onnx.tar.gz", dir);
+        if (CheckFileExists(cand)) {
+            snprintf(modelPath, sizeof(modelPath), "%s", cand);
+            break;
+        }
+    }
+
+    if (!modelPath[0]) {
+        FreeLibrary(s_df_dll);
+        s_df_dll = NULL;
+        return;
+    }
+
+    s_df_state = s_df_create(modelPath, 100.0f, "error");
+}
+
 extern "C" {
+
+MPAD_DSP_API void mpad_dsp_reset_voice_state(void) {
+    for (int i = 0; i < 8; ++i) {
+        s_voice_history[i].hpf_x1 = 0.0f;
+        s_voice_history[i].hpf_x2 = 0.0f;
+        s_voice_history[i].hpf_y1 = 0.0f;
+        s_voice_history[i].hpf_y2 = 0.0f;
+        s_voice_history[i].env = 0.0f;
+        s_voice_history[i].smooth_gain = 1.0f;
+    }
+    s_df_fifo_in_count = 0;
+    s_df_fifo_out_count = 0;
+}
 
 MPAD_DSP_API void mpad_dsp_clamp_inplace(float* samples, uint32_t sample_count) {
     if (!samples) return;
@@ -31,8 +185,6 @@ MPAD_DSP_API void mpad_dsp_process_voice(
     float    fx_param1,
     float    fx_param2)
 {
-    (void)sample_rate;
-    (void)fx_param1;
     (void)fx_param2;
 
     if (!samples || frames == 0 || channels == 0) {
@@ -41,15 +193,167 @@ MPAD_DSP_API void mpad_dsp_process_voice(
 
     const uint32_t total_samples = frames * channels;
 
-    // Stage 1: Microphone Mute / Gain
+    // Mic Mute check
     if (mic_mute != 0) {
         std::memset(samples, 0, (size_t)total_samples * sizeof(float));
         return;
     }
 
+    const float sr = (sample_rate > 8000.0f) ? sample_rate : 48000.0f;
+    const uint32_t ch_limit = (channels <= 8) ? channels : 8;
+
+    // Stage 1: DeepFilterNet (wet/dry)
+    if ((voice_fx_flags & MPAD_FX_DEEPFILTER) != 0) {
+        if (!s_df_init_attempted) {
+            InitDeepFilter();
+        }
+        if (s_df_state && s_df_process_frame) {
+            float wet = fx_param1;
+            if (wet < 0.0f) wet = 0.0f;
+            if (wet > 1.0f) wet = 1.0f;
+
+            if (wet > 0.0f) {
+                float clean_mono[2048];
+                float dry_mono[2048];
+                const uint32_t proc_frames = (frames <= 2048) ? frames : 2048;
+
+                // 1. Extract mono signal
+                for (uint32_t f = 0; f < proc_frames; ++f) {
+                    if (channels == 1) {
+                        dry_mono[f] = samples[f];
+                    } else {
+                        float sum = 0.0f;
+                        for (uint32_t c = 0; c < channels; ++c) {
+                            sum += samples[f * channels + c];
+                        }
+                        dry_mono[f] = sum / (float)channels;
+                    }
+                }
+
+                // 2. Append to input FIFO
+                uint32_t space_in = (s_df_fifo_in_count < DF_FIFO_CAP) ? (DF_FIFO_CAP - s_df_fifo_in_count) : 0;
+                uint32_t to_push = (proc_frames <= space_in) ? proc_frames : space_in;
+                if (to_push > 0) {
+                    std::memcpy(&s_df_fifo_in[s_df_fifo_in_count], dry_mono, (size_t)to_push * sizeof(float));
+                    s_df_fifo_in_count += to_push;
+                }
+
+                // 3. Process complete 480-sample blocks
+                while (s_df_fifo_in_count >= DF_FRAME_SIZE) {
+                    float out_frame[DF_FRAME_SIZE];
+                    s_df_process_frame(s_df_state, s_df_fifo_in, out_frame);
+
+                    s_df_fifo_in_count -= DF_FRAME_SIZE;
+                    if (s_df_fifo_in_count > 0) {
+                        std::memmove(s_df_fifo_in, &s_df_fifo_in[DF_FRAME_SIZE], (size_t)s_df_fifo_in_count * sizeof(float));
+                    }
+
+                    uint32_t space_out = (s_df_fifo_out_count < DF_FIFO_CAP) ? (DF_FIFO_CAP - s_df_fifo_out_count) : 0;
+                    uint32_t to_out = (DF_FRAME_SIZE <= space_out) ? DF_FRAME_SIZE : space_out;
+                    if (to_out > 0) {
+                        std::memcpy(&s_df_fifo_out[s_df_fifo_out_count], out_frame, (size_t)to_out * sizeof(float));
+                        s_df_fifo_out_count += to_out;
+                    }
+                }
+
+                // 4. Retrieve clean mono
+                if (s_df_fifo_out_count >= proc_frames) {
+                    std::memcpy(clean_mono, s_df_fifo_out, (size_t)proc_frames * sizeof(float));
+                    s_df_fifo_out_count -= proc_frames;
+                    if (s_df_fifo_out_count > 0) {
+                        std::memmove(s_df_fifo_out, &s_df_fifo_out[proc_frames], (size_t)s_df_fifo_out_count * sizeof(float));
+                    }
+                } else {
+                    std::memcpy(clean_mono, dry_mono, (size_t)proc_frames * sizeof(float));
+                }
+
+                // 5. Wet/Dry blend into output samples
+                if (wet >= 1.0f) {
+                    for (uint32_t f = 0; f < proc_frames; ++f) {
+                        for (uint32_t c = 0; c < channels; ++c) {
+                            samples[f * channels + c] = clean_mono[f];
+                        }
+                    }
+                } else {
+                    for (uint32_t f = 0; f < proc_frames; ++f) {
+                        for (uint32_t c = 0; c < channels; ++c) {
+                            float orig = samples[f * channels + c];
+                            samples[f * channels + c] = (1.0f - wet) * orig + wet * clean_mono[f];
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        if (s_df_fifo_in_count > 0 || s_df_fifo_out_count > 0) {
+            s_df_fifo_in_count = 0;
+            s_df_fifo_out_count = 0;
+        }
+    }
+
+    // Stage 2: Усунення білого шуму (DC Offset HPF + Downward Expander)
+    if ((voice_fx_flags & MPAD_FX_WHITE_NOISE) != 0) {
+        // High-pass filter 35 Hz (2nd order Butterworth)
+        const float K = std::tan(3.141592653589793f * 35.0f / sr);
+        const float Q = 0.7071067811865475f;
+        const float norm = 1.0f / (1.0f + K / Q + K * K);
+        const float b0 = norm;
+        const float b1 = -2.0f * b0;
+        const float b2 = b0;
+        const float a1 = 2.0f * (K * K - 1.0f) * norm;
+        const float a2 = (1.0f - K / Q + K * K) * norm;
+
+        // Downward Expander attack (8 ms) and release (180 ms) coefficients
+        const float alpha_att = 1.0f - std::exp(-1.0f / (sr * 0.008f));
+        const float alpha_rel = 1.0f - std::exp(-1.0f / (sr * 0.180f));
+        const float thresh = MPAD_EXPANDER_THRESH;
+
+        for (uint32_t f = 0; f < frames; ++f) {
+            for (uint32_t c = 0; c < channels; ++c) {
+                const uint32_t idx = f * channels + c;
+                float x = samples[idx];
+                MpadChannelHistory& st = s_voice_history[(c < ch_limit) ? c : 0];
+
+                // 2.1 HPF for DC offset
+                float y = b0 * x + b1 * st.hpf_x1 + b2 * st.hpf_x2 - a1 * st.hpf_y1 - a2 * st.hpf_y2;
+                if (std::fabs(y) < 1e-15f) y = 0.0f;
+                st.hpf_x2 = st.hpf_x1;
+                st.hpf_x1 = x;
+                st.hpf_y2 = st.hpf_y1;
+                st.hpf_y1 = y;
+
+                // 2.2 Envelope follower
+                float abs_y = std::fabs(y);
+                if (abs_y > st.env) {
+                    st.env += alpha_att * (abs_y - st.env);
+                } else {
+                    st.env += alpha_rel * (abs_y - st.env);
+                }
+
+                // 2.3 Downward Expansion: only silence below threshold is pulled down smoothly
+                float target_gain = 1.0f;
+                if (st.env < thresh) {
+                    float r = st.env / thresh;
+                    target_gain = r * r;
+                }
+                st.smooth_gain += 0.01f * (target_gain - st.smooth_gain);
+                if (st.smooth_gain < 1e-4f) st.smooth_gain = 0.0f;
+                y *= st.smooth_gain;
+
+                samples[idx] = y;
+            }
+        }
+    }
+
+    // Stage 3 & 4: Voice Boost (0..+24 dB) and Limiter (-1.0 dBFS)
+    const bool boost_enabled = (voice_fx_flags & MPAD_FX_VOICE_BOOST) != 0;
     float gain = mic_gain;
     if (gain < 0.0f) gain = 0.0f;
-    if (gain > 4.0f) gain = 4.0f;
+    if (boost_enabled) {
+        if (gain > 16.0f) gain = 16.0f;
+    } else {
+        if (gain > 4.0f) gain = 4.0f;
+    }
 
     if (gain != 1.0f) {
         for (uint32_t i = 0; i < total_samples; ++i) {
@@ -57,12 +361,10 @@ MPAD_DSP_API void mpad_dsp_process_voice(
         }
     }
 
-    // Stage 2: Voice FX Pipeline Hook (reserved for future WebRTC APM / DeepFilterNet stages)
-    if (voice_fx_flags != MPAD_FX_NONE) {
-        // Future stages plug in here in sequence:
-        //   if (voice_fx_flags & MPAD_FX_HPF)  { ... }
-        //   if (voice_fx_flags & MPAD_FX_NR)   { ... }
-        //   if (voice_fx_flags & MPAD_FX_AGC2) { ... }
+    if (boost_enabled) {
+        for (uint32_t i = 0; i < total_samples; ++i) {
+            samples[i] = SoftLimiter(samples[i]);
+        }
     }
 }
 

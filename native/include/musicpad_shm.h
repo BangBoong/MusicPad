@@ -29,11 +29,16 @@ extern "C" {
 #define MPAD_FLAG_PASSTHROUGH       (1u << 2)  // Force pure passthrough (bypass gain, mute, and mix)
 #define MPAD_FLAG_TRACK_PLAYING     (1u << 3)  // Track is currently playing (used for underrun counting)
 
-// Voice FX flags bitmask (MusicPadShmHeader::voice_fx_flags, reserved for future stages)
+// Voice FX flags bitmask (MusicPadShmHeader::voice_fx_flags)
 #define MPAD_FX_NONE                0u
-#define MPAD_FX_HPF                 (1u << 0)
-#define MPAD_FX_NR                  (1u << 1)
-#define MPAD_FX_AGC2                (1u << 2)
+#define MPAD_FX_DEEPFILTER          (1u << 0)  // DeepFilterNet neural noise reduction
+#define MPAD_FX_WHITE_NOISE         (1u << 1)  // White noise removal (DC-offset HPF + Downward Expander)
+#define MPAD_FX_VOICE_BOOST         (1u << 2)  // Voice Boost (gain 0..+24 dB + Limiter -1.0 dBFS)
+
+// Legacy aliases for backwards compatibility
+#define MPAD_FX_HPF                 MPAD_FX_WHITE_NOISE
+#define MPAD_FX_NR                  MPAD_FX_DEEPFILTER
+#define MPAD_FX_AGC2                MPAD_FX_VOICE_BOOST
 
 // Heartbeat timeout: 300 ms in nanoseconds (300,000,000 ns)
 #define MPAD_HEARTBEAT_TIMEOUT_NS   300000000LL

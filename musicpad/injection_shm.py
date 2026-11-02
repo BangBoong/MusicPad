@@ -28,9 +28,14 @@ MPAD_FLAG_PASSTHROUGH = 1 << 2
 MPAD_FLAG_TRACK_PLAYING = 1 << 3
 
 MPAD_FX_NONE = 0
-MPAD_FX_HPF = 1 << 0
-MPAD_FX_NR = 1 << 1
-MPAD_FX_AGC2 = 1 << 2
+MPAD_FX_DEEPFILTER = 1 << 0
+MPAD_FX_WHITE_NOISE = 1 << 1
+MPAD_FX_VOICE_BOOST = 1 << 2
+
+# Legacy aliases
+MPAD_FX_HPF = MPAD_FX_WHITE_NOISE
+MPAD_FX_NR = MPAD_FX_DEEPFILTER
+MPAD_FX_AGC2 = MPAD_FX_VOICE_BOOST
 
 MPAD_HEARTBEAT_TIMEOUT_NS = 300_000_000  # 300 ms
 MPAD_WRITER_LEASE_TIMEOUT_NS = 600_000_000  # 600 ms
@@ -249,6 +254,8 @@ class InjectionShm:
         track_playing: Optional[bool] = None,
         mic_gain: Optional[float] = None,
         voice_fx_flags: Optional[int] = None,
+        voice_fx_param1: Optional[float] = None,
+        voice_fx_param2: Optional[float] = None,
         target_endpoint_guid: Optional[str] = None,
         now_ns: Optional[int] = None,
     ) -> None:
@@ -268,11 +275,17 @@ class InjectionShm:
         struct.pack_into("<I", self._mmap, OFF_ACTIVE_FLAGS, flags)
 
         if mic_gain is not None:
-            clamped_gain = float(max(0.0, min(4.0, mic_gain)))
+            clamped_gain = float(max(0.0, min(16.0, mic_gain)))
             struct.pack_into("<f", self._mmap, OFF_MIC_GAIN, clamped_gain)
 
         if voice_fx_flags is not None:
             struct.pack_into("<I", self._mmap, OFF_VOICE_FX_FLAGS, int(voice_fx_flags) & 0xFFFFFFFF)
+
+        if voice_fx_param1 is not None:
+            struct.pack_into("<f", self._mmap, OFF_VOICE_FX_PARAM1, float(voice_fx_param1))
+
+        if voice_fx_param2 is not None:
+            struct.pack_into("<f", self._mmap, OFF_VOICE_FX_PARAM2, float(voice_fx_param2))
 
         if target_endpoint_guid is not None:
             guid_str = target_endpoint_guid.strip()
@@ -293,6 +306,8 @@ class InjectionShm:
         track_playing: Optional[bool] = None,
         mic_gain: Optional[float] = None,
         voice_fx_flags: Optional[int] = None,
+        voice_fx_param1: Optional[float] = None,
+        voice_fx_param2: Optional[float] = None,
         target_endpoint_guid: Optional[str] = None,
         now_ns: Optional[int] = None,
     ) -> None:
@@ -304,6 +319,8 @@ class InjectionShm:
             track_playing=track_playing,
             mic_gain=mic_gain,
             voice_fx_flags=voice_fx_flags,
+            voice_fx_param1=voice_fx_param1,
+            voice_fx_param2=voice_fx_param2,
             target_endpoint_guid=target_endpoint_guid,
             now_ns=now_ns,
         )

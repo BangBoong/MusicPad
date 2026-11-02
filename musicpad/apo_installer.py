@@ -47,6 +47,8 @@ SPIKE_BACKUP_FILE = DATA_DIR / "spike_backup.json"
 INSTALL_DIR = Path(r"C:\Program Files\MusicPad")
 SYSTEM32_APO_DLL = Path(r"C:\Windows\System32\musicpad_apo.dll")
 SYSTEM32_SPIKE_DLL = Path(r"C:\Windows\System32\musicpad_apo_spike.dll")
+SYSTEM32_DF_DLL = Path(r"C:\Windows\System32\deepfilter.dll")
+SYSTEM32_DF_MODEL = Path(r"C:\Windows\System32\DeepFilterNet3_onnx.tar.gz")
 
 MMDEVICES_CAPTURE_SUBKEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture"
 AUDIO_CONFIG_SUBKEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Audio"
@@ -912,6 +914,31 @@ def install_driver(endpoint_guid: Optional[str] = None) -> None:
             if dsp_dll_src.resolve() != target_prog_dsp.resolve():
                 shutil.copy2(dsp_dll_src, target_prog_dsp)
 
+        # Copy DeepFilterNet native assets for audiodg.exe
+        df_dll_src = _find_built_dll("deepfilter.dll")
+        if df_dll_src is not None:
+            target_prog_df = INSTALL_DIR / "deepfilter.dll"
+            if df_dll_src.resolve() != target_prog_df.resolve():
+                shutil.copy2(df_dll_src, target_prog_df)
+            shutil.copy2(df_dll_src, SYSTEM32_DF_DLL)
+            subprocess.run(
+                ["icacls.exe", str(SYSTEM32_DF_DLL), "/grant", "*S-1-5-19:RX", "*S-1-5-32-545:RX"],
+                capture_output=True,
+                check=False,
+            )
+
+        df_model_src = _find_built_dll("DeepFilterNet3_onnx.tar.gz")
+        if df_model_src is not None:
+            target_prog_model = INSTALL_DIR / "DeepFilterNet3_onnx.tar.gz"
+            if df_model_src.resolve() != target_prog_model.resolve():
+                shutil.copy2(df_model_src, target_prog_model)
+            shutil.copy2(df_model_src, SYSTEM32_DF_MODEL)
+            subprocess.run(
+                ["icacls.exe", str(SYSTEM32_DF_MODEL), "/grant", "*S-1-5-19:RX", "*S-1-5-32-545:RX"],
+                capture_output=True,
+                check=False,
+            )
+
         # Clean up any leftover Stage 0 spike DLL/CLSIDs
         if SYSTEM32_SPIKE_DLL.is_file():
             try:
@@ -1081,7 +1108,7 @@ def uninstall_driver() -> None:
             )
         _delete_hklm_subkey_tree("SOFTWARE\\MusicPad")
 
-        for dll_file in (SYSTEM32_APO_DLL, SYSTEM32_SPIKE_DLL):
+        for dll_file in (SYSTEM32_APO_DLL, SYSTEM32_SPIKE_DLL, SYSTEM32_DF_DLL, SYSTEM32_DF_MODEL):
             if dll_file.is_file():
                 try:
                     dll_file.unlink()

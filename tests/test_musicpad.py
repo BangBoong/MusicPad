@@ -1332,10 +1332,13 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertTrue(app._settings_window.winfo_exists())
                     self.assertEqual(app._settings_window.title(), 'Налаштування')
 
-                    # Check 4 tabs
+                    # Check 6 tabs
                     nb = app.settings_notebook
                     tab_names = [nb.tab(i, 'text') for i in range(len(nb.tabs()))]
-                    self.assertEqual(tab_names, ['Аудіо', 'Гарячі клавіші', 'Інтерфейс', 'Пристрої'])
+                    self.assertEqual(
+                        tab_names,
+                        ['Аудіо', 'Шумозаглушення', 'Підсилення голосу', 'Гарячі клавіші', 'Інтерфейс', 'Пристрої'],
+                    )
 
                     # Check Tab 1: Audio controls (strictly volume normalization only)
                     self.assertEqual(app.norm_volume_val.get(), '89,0 дБ')
@@ -1715,8 +1718,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     geom = app._settings_window.geometry()
                     self.assertTrue(geom.startswith("640x760"), f"Expected 640x760 geometry, got {geom}")
 
-                    # 2. Scrollable Canvases on all 4 tabs
-                    self.assertEqual(len(app._settings_canvases), 4)
+                    # 2. Scrollable Canvases on all 6 tabs
+                    self.assertEqual(len(app._settings_canvases), 6)
                     for cnv in app._settings_canvases:
                         self.assertIsInstance(cnv, main.tk.Canvas)
                         self.assertTrue(cnv.winfo_exists())
@@ -2098,7 +2101,10 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # Settings dialog elements
                     nb = app.settings_notebook
                     tab_names = [nb.tab(i, "text") for i in range(len(nb.tabs()))]
-                    self.assertEqual(tab_names, ["Audio", "Hotkeys", "Interface", "Devices"])
+                    self.assertEqual(
+                        tab_names,
+                        ["Audio", "Noise Suppression", "Voice Boost", "Hotkeys", "Interface", "Devices"],
+                    )
                     self.assertEqual(app.grp_general.cget("text"), "General")
                     self.assertEqual(app.lbl_lang.cget("text"), "Language: ")
                     self.assertEqual(app.grp_toolbar.cget("text"), "Toolbar")
@@ -2353,7 +2359,10 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     self.assertEqual(app._settings_window.title(), "Settings")
                     nb = app.settings_notebook
-                    self.assertEqual([nb.tab(i, "text") for i in range(len(nb.tabs()))], ["Audio", "Hotkeys", "Interface", "Devices"])
+                    self.assertEqual(
+                        [nb.tab(i, "text") for i in range(len(nb.tabs()))],
+                        ["Audio", "Noise Suppression", "Voice Boost", "Hotkeys", "Interface", "Devices"],
+                    )
                 finally:
                     app._exit()
 
@@ -2832,6 +2841,85 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
             self.assertEqual(rc, 0)
             mock_cli.assert_called_once_with("install", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}")
             self.assertIsNone(main._parse_and_run_driver_cli(["main.py"]))
+
+    def test_voice_dsp_pipeline_and_ui_controls(self) -> None:
+        import numpy as np
+        from musicpad.deepfilter_engine import DeepFilterEngine
+        from musicpad.dsp_core import MPAD_FX_DEEPFILTER, MPAD_FX_WHITE_NOISE, MPAD_FX_VOICE_BOOST
+
+        # 1. Test DeepFilterEngine
+        df_eng = DeepFilterEngine()
+        self.assertTrue(df_eng.is_available)
+        raw_audio = np.random.randn(384, 2).astype(np.float32) * 0.1
+        clean = df_eng.process_buffer(raw_audio, wet=1.0)
+        self.assertEqual(clean.shape, raw_audio.shape)
+        half_clean = df_eng.process_buffer(raw_audio, wet=0.5)
+        self.assertEqual(half_clean.shape, raw_audio.shape)
+        df_eng.close()
+
+        # 2. Test AudioEngine FX control setters and flags
+        engine = AudioEngine(routing_mode=ROUTING_MODE_VIRTUAL_CABLE)
+        self.assertFalse(engine.deepfilter_enabled)
+        self.assertFalse(engine.white_noise_removal)
+        self.assertFalse(engine.voice_boost_enabled)
+        self.assertEqual(engine.voice_boost_db, 0.0)
+
+        engine.set_deepfilter_state(True, 0.85)
+        self.assertTrue(engine.deepfilter_enabled)
+        self.assertAlmostEqual(engine.deepfilter_wet, 0.85)
+
+        engine.set_white_noise_removal(True)
+        self.assertTrue(engine.white_noise_removal)
+
+        engine.set_voice_boost(True, 12.0)
+        self.assertTrue(engine.voice_boost_enabled)
+        self.assertAlmostEqual(engine.voice_boost_db, 12.0)
+
+        flags = engine._compute_voice_fx_flags()
+        self.assertEqual(flags, MPAD_FX_DEEPFILTER | MPAD_FX_WHITE_NOISE | MPAD_FX_VOICE_BOOST)
+        mult = engine._effective_mic_gain()
+        self.assertAlmostEqual(mult, 10.0 ** (12.0 / 20.0), places=2)
+
+        # 3. Test App Settings UI variables, defaults, and persistence
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_fx.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Engine must be initialized immediately at startup
+                    self.assertTrue(hasattr(app, "engine") and app.engine is not None)
+
+                    # Defaults must be OFF as requested
+                    self.assertFalse(app.deepfilter_enabled_var.get())
+                    self.assertFalse(app.white_noise_removal_var.get())
+                    self.assertFalse(app.voice_boost_enabled_var.get())
+                    self.assertEqual(app.voice_boost_db_var.get(), 0.0)
+
+                    # Toggle on and change parameters via live _on_voice_fx_changed
+                    app.deepfilter_enabled_var.set(True)
+                    app.deepfilter_wet_var.set(75.0)
+                    app.white_noise_removal_var.set(True)
+                    app.voice_boost_enabled_var.set(True)
+                    app.voice_boost_db_var.set(6.0)
+                    app._on_voice_fx_changed()
+
+                    self.assertTrue(app.engine.deepfilter_enabled)
+                    self.assertAlmostEqual(app.engine.deepfilter_wet, 0.75)
+                    self.assertTrue(app.engine.white_noise_removal)
+                    self.assertTrue(app.engine.voice_boost_enabled)
+                    self.assertAlmostEqual(app.engine.voice_boost_db, 6.0)
+
+                    # Persist state
+                    app._save_state()
+                    saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    sc = saved.get("settings_custom", {})
+                    self.assertTrue(sc.get("deepfilter_enabled"))
+                    self.assertEqual(sc.get("deepfilter_wet"), 75.0)
+                    self.assertTrue(sc.get("white_noise_removal"))
+                    self.assertTrue(sc.get("voice_boost_enabled"))
+                    self.assertEqual(sc.get("voice_boost_db"), 6.0)
+                finally:
+                    app._exit()
 
 
 if __name__ == "__main__":

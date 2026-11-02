@@ -42,6 +42,9 @@ MPAD_DSP_API void mpad_dsp_mix_inplace(
     uint32_t     sample_count
 );
 
+// Reset internal voice pipeline filter/expander history.
+MPAD_DSP_API void mpad_dsp_reset_voice_state(void);
+
 // Clamp float32 buffer in-place to [-1.0, 1.0].
 MPAD_DSP_API void mpad_dsp_clamp_inplace(
     float*   samples,

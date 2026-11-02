@@ -261,9 +261,26 @@ I18N: dict[str, dict[str, str]] = {
         # Settings dialog
         "settings_title": "Налаштування",
         "tab_audio": "Аудіо",
+        "tab_noise_reduction": "Шумозаглушення",
+        "tab_voice_boost": "Підсилення голосу",
         "tab_hotkeys": "Гарячі клавіші",
         "tab_interface": "Інтерфейс",
         "tab_devices": "Пристрої",
+        # Settings - Noise Reduction tab
+        "grp_deepfilter": "DeepFilterNet (нейромережеве шумозаглушення)",
+        "lbl_deepfilter_desc": "Нейромережеве пригнічення шуму мікрофона: видаляє навколишній шум, стукіт клавіатури та вентилятори.",
+        "chk_deepfilter_enable": "Увімкнути DeepFilterNet",
+        "lbl_deepfilter_wet": "Баланс шумозаглушення (Wet/Dry): ",
+        "lbl_deepfilter_hint": "0% — оригінальний мікрофон (Bypass), 100% — повне нейромережеве очищення.",
+        "grp_white_noise": "Усунення білого шуму",
+        "lbl_white_noise_desc": "Фільтр постійної складової (DC offset 35 Гц) та плавний експандер тиші (-55 dBFS), який повністю прибирає фонове шипіння мікрофона в паузах мови.",
+        "chk_white_noise_enable": "Увімкнути усунення білого шуму (DC-фільтр + занулення тиші)",
+        # Settings - Voice Boost tab
+        "grp_voice_boost": "Підсилення голосу (Voice Boost)",
+        "lbl_voice_boost_desc": "Підсилення сигналу цільового мікрофона від 0 до +24 дБ із захисним м'яким лімітером (-1.0 dBFS) для запобігання перевантаженню та кліпінгу.",
+        "chk_voice_boost_enable": "Увімкнути підсилення голосу",
+        "lbl_voice_boost_gain": "Рівень підсилення: ",
+        "lbl_voice_boost_limiter_note": "Захисний Soft-Knee Limiter (-1.0 dBFS) активний: плавно стискає надмірні піки та захищає від цифрового тріску.",
         # Settings - Audio tab
         "grp_audio_norm": "Нормалізація гучності",
         "lbl_audio_norm_desc": "Налаштовує гучність відтворюваного аудиофайлу так, щоб інші люди чули ваш голос і ваші звуки з однаковою гучністю.",
@@ -396,9 +413,26 @@ I18N: dict[str, dict[str, str]] = {
         # Settings dialog
         "settings_title": "Settings",
         "tab_audio": "Audio",
+        "tab_noise_reduction": "Noise Suppression",
+        "tab_voice_boost": "Voice Boost",
         "tab_hotkeys": "Hotkeys",
         "tab_interface": "Interface",
         "tab_devices": "Devices",
+        # Settings - Noise Reduction tab
+        "grp_deepfilter": "DeepFilterNet (Neural Noise Suppression)",
+        "lbl_deepfilter_desc": "Neural microphone noise suppression: eliminates background noise, keyboard clicks, and fans.",
+        "chk_deepfilter_enable": "Enable DeepFilterNet",
+        "lbl_deepfilter_wet": "Noise Suppression Balance (Wet/Dry): ",
+        "lbl_deepfilter_hint": "0% — original mic (Bypass), 100% — full neural filtering.",
+        "grp_white_noise": "White Noise Removal",
+        "lbl_white_noise_desc": "DC offset filter (35 Hz) and smooth downward expander (-55 dBFS) that zeroes background hiss during speech pauses.",
+        "chk_white_noise_enable": "Enable white noise removal (DC filter + silence gating)",
+        # Settings - Voice Boost tab
+        "grp_voice_boost": "Voice Boost",
+        "lbl_voice_boost_desc": "Target microphone gain from 0 to +24 dB with a soft-knee limiter (-1.0 dBFS) preventing clipping and distortion.",
+        "chk_voice_boost_enable": "Enable Voice Boost",
+        "lbl_voice_boost_gain": "Boost Level: ",
+        "lbl_voice_boost_limiter_note": "Soft-Knee Limiter (-1.0 dBFS) is active: smoothly compresses loud peaks without harsh clipping.",
         # Settings - Audio tab
         "grp_audio_norm": "Volume normalization",
         "lbl_audio_norm_desc": "Adjusts the volume of the played audio file so that other people hear your voice and your sounds at the same volume.",
@@ -1334,7 +1368,7 @@ class MusicPadApp(tk.Tk):
         self._seeking_drag = False
         self._pressed_hotkeys: set[str] = set()
         self.hide_to_tray = tk.BooleanVar(value=True)
-        self.mic_enabled = tk.BooleanVar(value=False)
+        self.mic_enabled = tk.BooleanVar(value=True)
         self.mic_muted = tk.BooleanVar(value=False)
         self.monitor_mic = tk.BooleanVar(value=False)
         self.hotkeys_enabled = tk.BooleanVar(value=True)
@@ -1383,6 +1417,10 @@ class MusicPadApp(tk.Tk):
         self._build_ui()
         self._load_devices()
         self._load_saved_state()
+        try:
+            self._ensure_engine()
+        except Exception:
+            pass
         self.status_var.set("")
         self._setup_windows_dark_mode()
         self._apply_dark_title_bar(self)
@@ -1450,12 +1488,18 @@ class MusicPadApp(tk.Tk):
             self._settings_window.title(self._tr("settings_title"))
             if hasattr(self, "settings_notebook") and hasattr(self.settings_notebook, "tabs"):
                 tabs = self.settings_notebook.tabs()
-                tab_keys = ["tab_audio", "tab_hotkeys", "tab_interface", "tab_devices"]
+                tab_keys = ["tab_audio", "tab_noise_reduction", "tab_voice_boost", "tab_hotkeys", "tab_interface", "tab_devices"]
                 for i in range(min(len(tabs), len(tab_keys))):
                     self.settings_notebook.tab(i, text=self._tr(tab_keys[i]))
 
             if hasattr(self, "_build_tab_audio"):
                 self._build_tab_audio()
+
+            if hasattr(self, "_build_tab_noise_reduction"):
+                self._build_tab_noise_reduction()
+
+            if hasattr(self, "_build_tab_voice_boost"):
+                self._build_tab_voice_boost()
 
             if hasattr(self, "_build_tab_interface"):
                 self._build_tab_interface()
@@ -3581,6 +3625,13 @@ class MusicPadApp(tk.Tk):
         self.norm_volume_val = tk.StringVar(value="89,0 дБ")
         self.norm_mode_var = tk.StringVar(value="dynamic")
 
+        # Noise Reduction & Voice Boost Tabs
+        self.deepfilter_enabled_var = tk.BooleanVar(value=False)
+        self.deepfilter_wet_var = tk.DoubleVar(value=100.0)
+        self.white_noise_removal_var = tk.BooleanVar(value=False)
+        self.voice_boost_enabled_var = tk.BooleanVar(value=False)
+        self.voice_boost_db_var = tk.DoubleVar(value=0.0)
+
         # Hotkeys Tab
         self.special_hotkeys_dict: dict[str, str] = {
             "Зупинити відтворення": "",
@@ -3717,11 +3768,15 @@ class MusicPadApp(tk.Tk):
 
         self._settings_canvases = []
         self.tab_audio = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_audio") if hasattr(self, "_tr") else "Аудіо")
+        self.tab_noise_reduction = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_noise_reduction") if hasattr(self, "_tr") else "Шумозаглушення")
+        self.tab_voice_boost = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_voice_boost") if hasattr(self, "_tr") else "Підсилення голосу")
         self.tab_hotkeys = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_hotkeys") if hasattr(self, "_tr") else "Гарячі клавіші")
         self.tab_interface = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_interface") if hasattr(self, "_tr") else "Інтерфейс")
         self.tab_devices = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_devices") if hasattr(self, "_tr") else "Пристрої")
 
         self._build_tab_audio()
+        self._build_tab_noise_reduction()
+        self._build_tab_voice_boost()
         self._build_tab_hotkeys()
         self._build_tab_interface()
         self._build_tab_devices()
@@ -3840,6 +3895,233 @@ class MusicPadApp(tk.Tk):
                 else "Фіксоване регулювання застосовує постійне статичне підсилення або послаблення аудіо.",
             ),
         ).pack(side="left", padx=6)
+
+        if hasattr(f, "_canvas") and f._canvas.winfo_exists():
+            f.update_idletasks()
+            bbox = f._canvas.bbox("all")
+            if bbox:
+                f._canvas.configure(scrollregion=bbox)
+            sb = getattr(f, "_scrollbar", None)
+            if sb and sb.winfo_exists():
+                if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
+                    sb.pack_forget()
+
+    def _on_voice_fx_changed(self) -> None:
+        if not hasattr(self, "engine") or self.engine is None:
+            if hasattr(self, "output_map") and hasattr(self, "_ensure_engine"):
+                try:
+                    self._ensure_engine()
+                except Exception:
+                    pass
+            return
+
+        df_enabled = self.deepfilter_enabled_var.get() if hasattr(self, "deepfilter_enabled_var") else False
+        df_wet = (self.deepfilter_wet_var.get() / 100.0) if hasattr(self, "deepfilter_wet_var") else 1.0
+        if hasattr(self.engine, "set_deepfilter_state"):
+            self.engine.set_deepfilter_state(df_enabled, df_wet)
+
+        wn_enabled = self.white_noise_removal_var.get() if hasattr(self, "white_noise_removal_var") else False
+        if hasattr(self.engine, "set_white_noise_removal"):
+            self.engine.set_white_noise_removal(wn_enabled)
+
+        vb_enabled = self.voice_boost_enabled_var.get() if hasattr(self, "voice_boost_enabled_var") else False
+        vb_db = self.voice_boost_db_var.get() if hasattr(self, "voice_boost_db_var") else 0.0
+        if hasattr(self.engine, "set_voice_boost"):
+            self.engine.set_voice_boost(vb_enabled, vb_db)
+
+        if hasattr(self, "_save_state") and not getattr(self, "_loading_state", False):
+            try:
+                self._save_state()
+            except Exception:
+                pass
+
+    def _build_tab_noise_reduction(self) -> None:
+        if not hasattr(self, "tab_noise_reduction"):
+            return
+        f = self.tab_noise_reduction
+        for child in f.winfo_children():
+            child.destroy()
+
+        c = self._get_theme_colors()
+
+        # Group 1: DeepFilterNet
+        g1 = ttk.LabelFrame(
+            f,
+            text=self._tr("grp_deepfilter") if hasattr(self, "_tr") else "DeepFilterNet (нейромережеве шумозаглушення)",
+            padding=8,
+        )
+        g1.pack(fill="x", pady=(2, 6))
+
+        ttk.Label(
+            g1,
+            text=self._tr("lbl_deepfilter_desc")
+            if hasattr(self, "_tr")
+            else "Нейромережеве пригнічення шуму мікрофона: видаляє навколишній шум, стукіт клавіатури та вентилятори.",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 4))
+
+        chk_df = ttk.Checkbutton(
+            g1,
+            text=self._tr("chk_deepfilter_enable") if hasattr(self, "_tr") else "Увімкнути DeepFilterNet",
+            variable=self.deepfilter_enabled_var,
+            command=self._on_voice_fx_changed,
+        )
+        chk_df.pack(anchor="w", pady=(2, 4))
+
+        row_wet = ttk.Frame(g1)
+        row_wet.pack(fill="x", pady=2)
+        ttk.Label(
+            row_wet,
+            text=self._tr("lbl_deepfilter_wet") if hasattr(self, "_tr") else "Баланс шумозаглушення (Wet/Dry): ",
+        ).pack(side="left")
+
+        current_wet = int(self.deepfilter_wet_var.get()) if hasattr(self, "deepfilter_wet_var") else 100
+        self.lbl_df_wet_val = ttk.Label(row_wet, text=f"{current_wet}%", width=6)
+        self.lbl_df_wet_val.pack(side="right")
+
+        def _on_df_wet_slide(val: str) -> None:
+            try:
+                v = int(float(val))
+                self.deepfilter_wet_var.set(v)
+                if hasattr(self, "lbl_df_wet_val") and self.lbl_df_wet_val.winfo_exists():
+                    self.lbl_df_wet_val.configure(text=f"{v}%")
+                self._on_voice_fx_changed()
+            except Exception:
+                pass
+
+        scale_wet = ttk.Scale(
+            row_wet,
+            from_=0,
+            to=100,
+            variable=self.deepfilter_wet_var,
+            command=_on_df_wet_slide,
+        )
+        scale_wet.pack(side="left", fill="x", expand=True, padx=6)
+
+        ttk.Label(
+            g1,
+            text=self._tr("lbl_deepfilter_hint")
+            if hasattr(self, "_tr")
+            else "0% — оригінальний мікрофон (Bypass), 100% — повне нейромережеве очищення.",
+            font=("Segoe UI", 8),
+            foreground=c.get("fg_dim", "#888888"),
+        ).pack(anchor="w", pady=(2, 2))
+
+        # Group 2: Усунення білого шуму (DC-фільтр + Downward Expander)
+        g2 = ttk.LabelFrame(
+            f,
+            text=self._tr("grp_white_noise") if hasattr(self, "_tr") else "Усунення білого шуму",
+            padding=8,
+        )
+        g2.pack(fill="x", pady=(2, 6))
+
+        ttk.Label(
+            g2,
+            text=self._tr("lbl_white_noise_desc")
+            if hasattr(self, "_tr")
+            else "Фільтр постійної складової (DC offset 35 Гц) та плавний експандер тиші (-55 dBFS), який повністю прибирає фонове шипіння мікрофона в паузах мови.",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 4))
+
+        chk_wn = ttk.Checkbutton(
+            g2,
+            text=self._tr("chk_white_noise_enable")
+            if hasattr(self, "_tr")
+            else "Увімкнути усунення білого шуму (DC-фільтр + занулення тиші)",
+            variable=self.white_noise_removal_var,
+            command=self._on_voice_fx_changed,
+        )
+        chk_wn.pack(anchor="w", pady=2)
+
+        if hasattr(f, "_canvas") and f._canvas.winfo_exists():
+            f.update_idletasks()
+            bbox = f._canvas.bbox("all")
+            if bbox:
+                f._canvas.configure(scrollregion=bbox)
+            sb = getattr(f, "_scrollbar", None)
+            if sb and sb.winfo_exists():
+                if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
+                    sb.pack_forget()
+
+    def _build_tab_voice_boost(self) -> None:
+        if not hasattr(self, "tab_voice_boost"):
+            return
+        f = self.tab_voice_boost
+        for child in f.winfo_children():
+            child.destroy()
+
+        c = self._get_theme_colors()
+
+        g = ttk.LabelFrame(
+            f,
+            text=self._tr("grp_voice_boost") if hasattr(self, "_tr") else "Підсилення голосу (Voice Boost)",
+            padding=8,
+        )
+        g.pack(fill="x", pady=(2, 6))
+
+        ttk.Label(
+            g,
+            text=self._tr("lbl_voice_boost_desc")
+            if hasattr(self, "_tr")
+            else "Підсилення сигналу цільового мікрофона від 0 до +24 дБ із захисним м'яким лімітером (-1.0 dBFS) для запобігання перевантаженню та кліпінгу.",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 4))
+
+        chk_vb = ttk.Checkbutton(
+            g,
+            text=self._tr("chk_voice_boost_enable") if hasattr(self, "_tr") else "Увімкнути підсилення голосу",
+            variable=self.voice_boost_enabled_var,
+            command=self._on_voice_fx_changed,
+        )
+        chk_vb.pack(anchor="w", pady=(2, 6))
+
+        row_gain = ttk.Frame(g)
+        row_gain.pack(fill="x", pady=2)
+        ttk.Label(
+            row_gain,
+            text=self._tr("lbl_voice_boost_gain") if hasattr(self, "_tr") else "Рівень підсилення: ",
+        ).pack(side="left")
+
+        current_db = float(self.voice_boost_db_var.get()) if hasattr(self, "voice_boost_db_var") else 0.0
+        current_mult = 10.0 ** (current_db / 20.0)
+        self.lbl_vb_val = ttk.Label(
+            row_gain,
+            text=f"+{current_db:.1f} дБ ({current_mult:.1f}x)",
+            width=18,
+        )
+        self.lbl_vb_val.pack(side="right")
+
+        def _on_vb_slide(val: str) -> None:
+            try:
+                db = float(val)
+                self.voice_boost_db_var.set(db)
+                mult = 10.0 ** (db / 20.0)
+                if hasattr(self, "lbl_vb_val") and self.lbl_vb_val.winfo_exists():
+                    self.lbl_vb_val.configure(text=f"+{db:.1f} дБ ({mult:.1f}x)")
+                self._on_voice_fx_changed()
+            except Exception:
+                pass
+
+        scale_vb = ttk.Scale(
+            row_gain,
+            from_=0.0,
+            to=24.0,
+            variable=self.voice_boost_db_var,
+            command=_on_vb_slide,
+        )
+        scale_vb.pack(side="left", fill="x", expand=True, padx=6)
+
+        ttk.Label(
+            g,
+            text=self._tr("lbl_voice_boost_limiter_note")
+            if hasattr(self, "_tr")
+            else "Захисний Soft-Knee Limiter (-1.0 dBFS) активний: плавно стискає надмірні піки та захищає від цифрового тріску.",
+            font=("Segoe UI", 8),
+            foreground=c.get("fg_dim", "#888888"),
+        ).pack(anchor="w", pady=(6, 2))
 
         if hasattr(f, "_canvas") and f._canvas.winfo_exists():
             f.update_idletasks()
@@ -4572,6 +4854,17 @@ class MusicPadApp(tk.Tk):
             self.track_source_var.set(DEFAULT_TRACK_SOURCE)
         if hasattr(self, "routing_mode_var"):
             self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+        if hasattr(self, "deepfilter_enabled_var"):
+            self.deepfilter_enabled_var.set(False)
+        if hasattr(self, "deepfilter_wet_var"):
+            self.deepfilter_wet_var.set(100.0)
+        if hasattr(self, "white_noise_removal_var"):
+            self.white_noise_removal_var.set(False)
+        if hasattr(self, "voice_boost_enabled_var"):
+            self.voice_boost_enabled_var.set(False)
+        if hasattr(self, "voice_boost_db_var"):
+            self.voice_boost_db_var.set(0.0)
+        self._on_voice_fx_changed()
 
         self._sync_settings_to_dialog()
         self._apply_language()
@@ -4609,6 +4902,7 @@ class MusicPadApp(tk.Tk):
             mon_name = self.monitor_var.get()
             if hasattr(self, "monitor_map") and mon_name in self.monitor_map:
                 self.engine.set_monitor_device(self.monitor_map[mon_name])
+        self._on_voice_fx_changed()
         self._refresh_driver_status(notify_on_issue=False)
         self._save_state()
         self.status_var.set(self._tr("settings_saved"))
@@ -5460,6 +5754,11 @@ class MusicPadApp(tk.Tk):
                 self.engine.set_mic_volume(self.mic_volume_var.get())
         self.engine.set_volume(self.volume_var.get())
         self.engine.set_mic_muted(self.mic_muted.get())
+        if hasattr(self, "_on_voice_fx_changed"):
+            try:
+                self._on_voice_fx_changed()
+            except Exception:
+                pass
         return self.engine
 
     def _choose_folder(self) -> None:
@@ -6716,6 +7015,11 @@ class MusicPadApp(tk.Tk):
                 data["settings_custom"] = {
                     "norm_volume": self.norm_volume_val.get(),
                     "norm_mode": self.norm_mode_var.get(),
+                    "deepfilter_enabled": self.deepfilter_enabled_var.get() if hasattr(self, "deepfilter_enabled_var") else False,
+                    "deepfilter_wet": self.deepfilter_wet_var.get() if hasattr(self, "deepfilter_wet_var") else 100.0,
+                    "white_noise_removal": self.white_noise_removal_var.get() if hasattr(self, "white_noise_removal_var") else False,
+                    "voice_boost_enabled": self.voice_boost_enabled_var.get() if hasattr(self, "voice_boost_enabled_var") else False,
+                    "voice_boost_db": self.voice_boost_db_var.get() if hasattr(self, "voice_boost_db_var") else 0.0,
                     "special_hotkeys": getattr(self, "special_hotkeys_dict", {}),
                     "numpad_alt": self.numpad_alt_var.get(),
                     "numpad_ctrl_alt": self.numpad_ctrl_alt_var.get(),
@@ -6765,6 +7069,7 @@ class MusicPadApp(tk.Tk):
         cfg_file = self._config_path()
         if not cfg_file.is_file():
             return
+        self._loading_state = True
         try:
             data = json.loads(cfg_file.read_text(encoding="utf-8"))
             if data.get("output") in self.output_map:
@@ -6807,6 +7112,16 @@ class MusicPadApp(tk.Tk):
             if sc and hasattr(self, "norm_volume_val"):
                 if "norm_volume" in sc: self.norm_volume_val.set(sc["norm_volume"])
                 if "norm_mode" in sc: self.norm_mode_var.set(sc["norm_mode"])
+                if "deepfilter_enabled" in sc and hasattr(self, "deepfilter_enabled_var"):
+                    self.deepfilter_enabled_var.set(bool(sc["deepfilter_enabled"]))
+                if "deepfilter_wet" in sc and hasattr(self, "deepfilter_wet_var"):
+                    self.deepfilter_wet_var.set(float(sc["deepfilter_wet"]))
+                if "white_noise_removal" in sc and hasattr(self, "white_noise_removal_var"):
+                    self.white_noise_removal_var.set(bool(sc["white_noise_removal"]))
+                if "voice_boost_enabled" in sc and hasattr(self, "voice_boost_enabled_var"):
+                    self.voice_boost_enabled_var.set(bool(sc["voice_boost_enabled"]))
+                if "voice_boost_db" in sc and hasattr(self, "voice_boost_db_var"):
+                    self.voice_boost_db_var.set(float(sc["voice_boost_db"]))
                 if "special_hotkeys" in sc and isinstance(sc["special_hotkeys"], dict):
                     self.special_hotkeys_dict.update(sc["special_hotkeys"])
                 if "numpad_alt" in sc: self.numpad_alt_var.set(bool(sc["numpad_alt"]))
@@ -6848,6 +7163,7 @@ class MusicPadApp(tk.Tk):
                     self.routing_mode_var.set(str(sc["routing_mode"]))
                 if "target_mic_guid" in sc and sc["target_mic_guid"] and hasattr(self, "target_mic_guid_var"):
                     self.target_mic_guid_var.set(str(sc["target_mic_guid"]))
+                self._on_voice_fx_changed()
             folder = data.get("folder")
             folder_valid = bool(folder and folder != "Папку не вибрано" and Path(folder).is_dir())
             if folder_valid:
@@ -6959,6 +7275,8 @@ class MusicPadApp(tk.Tk):
                 self._save_state()
         except Exception:
             pass
+        finally:
+            self._loading_state = False
 
     def _toggle_theme(self) -> None:
         self.theme = "light" if self.theme == "dark" else "dark"
