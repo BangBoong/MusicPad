@@ -830,6 +830,7 @@ def _prepare_data_dir_and_shm() -> None:
     shm = InjectionShm(MPAD_SHM_DEFAULT_PATH)
     try:
         shm.open(acquire_lease=False)
+        shm.reset_storage()
     finally:
         shm.close()
 
@@ -1025,10 +1026,11 @@ def install_driver(endpoint_guid: Optional[str] = None) -> None:
                 except OSError:
                     pass
 
-        # Write target_endpoint_guid into injection.bin header
+        # Write target_endpoint_guid into injection.bin header and ensure clean state
         shm = InjectionShm(MPAD_SHM_DEFAULT_PATH)
         try:
             if shm.open(acquire_lease=True):
+                shm.reset_storage()
                 shm.set_state(target_endpoint_guid=norm_guid, app_active=False)
         finally:
             shm.close()

@@ -4303,11 +4303,17 @@ class MusicPadApp(tk.Tk):
         )
         if not confirm:
             return
+        if getattr(self, "engine", None) is not None:
+            self.engine.stop()
         ok, msg = self._unpack_uac_result(run_driver_helper_uac("install", target_guid))
+        if getattr(self, "engine", None) is not None:
+            self.engine.reinitialize_audio_subsystem()
         if ok:
             self.routing_mode_var.set(ROUTING_MODE_INJECTION)
             self._on_routing_mode_changed()
-            self.notify_info("Драйвер MusicPad встановлено. Увімкнено режим «Ін'єкція в мікрофон».")
+            self.notify_info(
+                "Драйвер MusicPad встановлено. Якщо у вас запущено Discord чи гру, будь ласка, перепідключіть голосовий канал для застосування оновлення."
+            )
         else:
             self._refresh_driver_status(notify_on_issue=False)
             self.notify_error(f"Встановлення драйвера скасовано або не вдалося: {msg}")
@@ -4317,17 +4323,27 @@ class MusicPadApp(tk.Tk):
         if not target_guid:
             self.notify_error("Спочатку виберіть Цільовий мікрофон у списку.")
             return
+        if getattr(self, "engine", None) is not None:
+            self.engine.stop()
         ok, msg = self._unpack_uac_result(run_driver_helper_uac("repair", target_guid))
+        if getattr(self, "engine", None) is not None:
+            self.engine.reinitialize_audio_subsystem()
         if ok:
             self._refresh_driver_status(notify_on_issue=False)
-            self.notify_info("Драйвер MusicPad успішно відновлено для вибраного мікрофона.")
+            self.notify_info(
+                "Драйвер MusicPad успішно відновлено. Якщо у вас запущено Discord чи гру, будь ласка, перепідключіть голосовий канал для застосування оновлення."
+            )
         else:
             self._refresh_driver_status(notify_on_issue=False)
             self.notify_error(f"Ремонт драйвера скасовано або не вдався: {msg}")
 
     def _uninstall_driver_uac_action(self) -> None:
         target_guid = self._resolve_selected_mic_guid()
+        if getattr(self, "engine", None) is not None:
+            self.engine.stop()
         ok, msg = self._unpack_uac_result(run_driver_helper_uac("uninstall", target_guid))
+        if getattr(self, "engine", None) is not None:
+            self.engine.reinitialize_audio_subsystem()
         if ok:
             self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
             self._on_routing_mode_changed()

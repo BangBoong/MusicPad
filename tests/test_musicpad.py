@@ -184,6 +184,13 @@ class TestDspCoreAndInjectionShm(unittest.TestCase):
                 )
                 self.assertEqual(shm.available_to_read(), 0)
                 self.assertTrue(np.allclose(out_flushed, 0.0, atol=1e-6))
+
+                # Test reset_storage wipes buffer, offsets and stats
+                shm.write_samples(np.ones(64, dtype=np.float32))
+                self.assertGreater(shm.available_to_read(), 0)
+                shm.reset_storage()
+                self.assertEqual(shm.available_to_read(), 0)
+                self.assertEqual(shm.get_apo_status().underrun_count, 0)
             finally:
                 shm_other.close()
                 shm.close()
@@ -245,6 +252,14 @@ class TestDspCoreAndInjectionShm(unittest.TestCase):
 class TestAudioEngineUnit(unittest.TestCase):
     def setUp(self) -> None:
         AudioEngine.clear_cache()
+
+    def test_reinitialize_audio_subsystem(self) -> None:
+        with patch("sounddevice._terminate") as mock_term, patch("sounddevice._initialize") as mock_init:
+            engine = AudioEngine(shm_path=None)
+            engine.reinitialize_audio_subsystem()
+            mock_term.assert_called_once()
+            mock_init.assert_called_once()
+            engine.shutdown()
 
     def test_pcm_helpers_and_edge_cases(self) -> None:
         self.assertEqual(AudioEngine._scale_pcm(b"", 0.5), b"")

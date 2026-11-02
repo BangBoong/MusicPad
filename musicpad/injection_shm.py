@@ -199,6 +199,30 @@ class InjectionShm:
                 struct.pack_into("<I", self._mmap, OFF_WRITER_PID, 0)
         self._owns_lease = False
 
+    def reset_storage(self) -> None:
+        """Completely zero-out all audio samples and reset cursors/stats for clean installation."""
+        if self._mmap is None:
+            return
+        # Zero out the sample ring buffer completely
+        self._mmap[OFF_SAMPLES:] = b"\x00" * (MPAD_RING_CAPACITY_SAMPLES * 4)
+        # Reset header cursors and telemetry
+        struct.pack_into("<I", self._mmap, OFF_MAGIC, MPAD_SHM_MAGIC)
+        struct.pack_into("<I", self._mmap, OFF_PROTOCOL_VERSION, MPAD_SHM_VERSION)
+        struct.pack_into("<I", self._mmap, OFF_APO_BUILD_VERSION, MPAD_APO_BUILD_VERSION)
+        struct.pack_into("<I", self._mmap, OFF_ACTIVE_FLAGS, 0)
+        struct.pack_into("<I", self._mmap, OFF_WRITER_PID, 0)
+        struct.pack_into("<I", self._mmap, OFF_FLUSH_SEQ, 0)
+        struct.pack_into("<q", self._mmap, OFF_APP_HEARTBEAT_NS, 0)
+        struct.pack_into("<f", self._mmap, OFF_MIC_GAIN, 1.0)
+        struct.pack_into("<I", self._mmap, OFF_VOICE_FX_FLAGS, 0)
+        struct.pack_into("<f", self._mmap, OFF_VOICE_FX_PARAM1, 0.0)
+        struct.pack_into("<f", self._mmap, OFF_VOICE_FX_PARAM2, 0.0)
+        struct.pack_into("<Q", self._mmap, OFF_UNDERRUN_COUNT, 0)
+        struct.pack_into("<I", self._mmap, OFF_CAPACITY_SAMPLES, MPAD_RING_CAPACITY_SAMPLES)
+        struct.pack_into("<Q", self._mmap, OFF_WRITE_SAMPLE_IDX, 0)
+        struct.pack_into("<Q", self._mmap, OFF_READ_SAMPLE_IDX, 0)
+        struct.pack_into("<Q", self._mmap, OFF_APO_PROCESSED_BLOCKS, 0)
+
     def close(self) -> None:
         """Release lease and close memory mapping."""
         self.release_writer_lease()

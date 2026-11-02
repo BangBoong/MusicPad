@@ -1578,6 +1578,31 @@ class AudioEngine:
         self._stop_worker()
         self._close_injection_shm()
 
+    def reinitialize_audio_subsystem(self) -> None:
+        """Cleanly re-initialize PortAudio (sounddevice) and SHM after Windows Audiosrv restarts."""
+        self._stop_worker()
+        with self._lock:
+            self._close_injection_shm()
+            self._ring_buffer.reset()
+            self._decoder_finished.clear()
+            self._track_dirty.set()
+
+        if sd is not None:
+            try:
+                if hasattr(sd, "_terminate") and hasattr(sd, "_initialize"):
+                    sd._terminate()
+                    sd._initialize()
+            except Exception:
+                pass
+
+        with self._lock:
+            self._devices_dirty.set()
+
+        if self.routing_mode == ROUTING_MODE_INJECTION:
+            self._ensure_injection_shm()
+
+        self._start_worker()
+
     def _start_worker(self) -> None:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -2042,10 +2067,15 @@ class AudioEngine:
                             target_endpoint_guid=self.target_endpoint_guid,
                         )
                         if track_active_for_apo and apo_status is not None:
+                            in_rate = (
+                                self._device_samplerate(self.input_device)
+                                if self.input_device is not None
+                                else 0
+                            )
                             apo_rate = (
                                 apo_status.sample_rate
                                 if apo_status.sample_rate > 0
-                                else SAMPLE_RATE
+                                else (in_rate if in_rate > 0 else SAMPLE_RATE)
                             )
                             apo_ch = (
                                 apo_status.channels
