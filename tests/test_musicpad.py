@@ -709,6 +709,59 @@ class TestAudioEngineUnit(unittest.TestCase):
             engine.shutdown()
 
 
+    def test_audio_engine_search_youtube_limit_and_metadata(self) -> None:
+        mock_songs = [
+            {
+                "videoId": f"vid_ytm_{i}",
+                "title": f"Song {i}",
+                "artists": [{"name": f"Artist {i}"}],
+                "duration": "3:20",
+                "duration_seconds": 200,
+                "thumbnails": [{"url": f"https://ytm.example.com/thumb_{i}.jpg", "width": 120, "height": 120}],
+            }
+            for i in range(25)
+        ]
+        mock_ytmusic_instance = MagicMock()
+        mock_ytmusic_instance.search.side_effect = lambda query, filter: mock_songs if filter == "songs" else []
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_ytmusic_instance):
+            results = AudioEngine.search_youtube("test query", limit=25)
+            self.assertEqual(len(results), 25)
+            first = results[0]
+            self.assertEqual(first["title"], "Song 0")
+            self.assertEqual(first["artist"], "Artist 0")
+            self.assertEqual(first["full_title"], "Song 0 — Artist 0")
+            self.assertEqual(first["source"], "ytmusic")
+            self.assertEqual(first["thumbnail_url"], "https://ytm.example.com/thumb_0.jpg")
+            self.assertEqual(first["duration"], 200.0)
+
+    def test_audio_engine_fetch_thumbnail_cached_and_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("musicpad.audio_engine.AudioEngine._thumbnail_cache_dir", return_value=Path(tmp_dir)):
+                self.assertIsNone(AudioEngine.fetch_thumbnail(""))
+
+                from PIL import Image
+                import io
+
+                fake_img = Image.new("RGBA", (100, 100), (255, 0, 0, 255))
+                buf = io.BytesIO()
+                fake_img.save(buf, format="PNG")
+                raw_bytes = buf.getvalue()
+
+                mock_resp = MagicMock()
+                mock_resp.read.return_value = raw_bytes
+                mock_resp.__enter__.return_value = mock_resp
+                mock_resp.__exit__.return_value = False
+
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    path = AudioEngine.fetch_thumbnail("https://example.com/img.jpg", "mock_vid_1")
+                    self.assertIsNotNone(path)
+                    self.assertTrue(os.path.isfile(path))
+
+                    with patch("urllib.request.urlopen", side_effect=AssertionError("Should use cache")):
+                        cached_path = AudioEngine.fetch_thumbnail("https://example.com/img.jpg", "mock_vid_1")
+                        self.assertEqual(path, cached_path)
+
+
 class TestMusicPadAppGUI(unittest.TestCase):
     def test_app_startup_controls_and_hotkeys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -859,6 +912,65 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.info_house_lbl.cget("image"), str(app._icons.get("house_lg", "")))
                     self.assertEqual(app.stats_frame.winfo_manager(), "pack")
                     self.assertEqual(app.stats_sounds_lbl.cget("text"), "1")
+                finally:
+                    app._exit()
+
+    def test_youtube_search_results_redesign_and_metadata_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "test_state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    mock_results = [
+                        {
+                            "title": "Starboy",
+                            "artist": "The Weeknd",
+                            "full_title": "Starboy — The Weeknd",
+                            "url": "https://music.youtube.com/watch?v=starboy1",
+                            "duration": 230.0,
+                            "source": "ytmusic",
+                            "thumbnail_url": "https://example.com/starboy.jpg",
+                        },
+                        {
+                            "title": "Believer",
+                            "artist": "Imagine Dragons",
+                            "full_title": "Believer — Imagine Dragons",
+                            "url": "https://www.youtube.com/watch?v=believer2",
+                            "duration": 204.0,
+                            "source": "youtube",
+                            "thumbnail_url": "https://example.com/believer.jpg",
+                        },
+                    ]
+                    app._render_yt_results(mock_results)
+                    self.assertEqual(len(app.yt_tree.get_children()), 2)
+                    self.assertEqual(app.yt_tree.hdr_lbl_title.cget("text"), "Назва")
+                    self.assertEqual(app.yt_tree.hdr_lbl_artist.cget("text"), "Виконавець")
+                    self.assertEqual(app.yt_tree.hdr_lbl_duration.cget("text"), "Тривалість")
+                    self.assertEqual(app.yt_tree.hdr_lbl_source.cget("text"), "Джерело")
+                    self.assertEqual(app.yt_tree.hdr_lbl_cover.cget("text"), "Обкладинка")
+
+                    row0_widgets = app.yt_tree._row_widgets["0"]
+                    self.assertEqual(row0_widgets["title"].cget("text"), "Starboy")
+                    self.assertEqual(row0_widgets["artist"].cget("text"), "The Weeknd")
+                    self.assertEqual(row0_widgets["source"].cget("text"), "YTMusic")
+
+                    row1_widgets = app.yt_tree._row_widgets["1"]
+                    self.assertEqual(row1_widgets["title"].cget("text"), "Believer")
+                    self.assertEqual(row1_widgets["artist"].cget("text"), "Imagine Dragons")
+                    self.assertEqual(row1_widgets["source"].cget("text"), "YT")
+
+                    app.yt_tree._on_arrow_down()
+                    self.assertEqual(app.yt_tree.selection(), ("1",))
+                    app.yt_tree._on_arrow_up()
+                    self.assertEqual(app.yt_tree.selection(), ("0",))
+
+                    app.yt_tree.selection_set("0")
+                    app._yt_play_picked(add_only=True)
+                    self.assertEqual(len(app.local_tracks), 1)
+                    added = app.local_tracks[0]
+                    self.assertEqual(added.title, "Starboy — The Weeknd")
+                    self.assertEqual(added.artist, "The Weeknd")
+                    self.assertEqual(added.source, "ytmusic")
                 finally:
                     app._exit()
 

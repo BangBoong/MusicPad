@@ -10,6 +10,7 @@ import math
 import os
 import queue
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -1359,6 +1360,405 @@ class NotificationManager:
             self._bubble = None
 
 
+class YTSearchResultsList(tk.Frame):
+    """Custom scrollable search results list with right-aligned cover art and separated metadata."""
+
+    def __init__(self, parent: tk.Widget, theme_colors: dict[str, str], default_cover: Optional[Any] = None) -> None:
+        super().__init__(parent, bg=theme_colors.get("divider", "#333333"), bd=0)
+        self.c = theme_colors
+        self.default_cover = default_cover
+        self._items: dict[str, dict[str, Any]] = {}
+        self._item_iids: list[str] = []
+        self._row_frames: dict[str, tk.Frame] = {}
+        self._row_widgets: dict[str, dict[str, tk.Widget]] = {}
+        self._selected_iid: Optional[str] = None
+        self._callbacks: dict[str, list[Callable]] = {}
+
+        # 1. Header Frame
+        hdr_bg = self.c.get("hdr_bg", "#252526")
+        fg = self.c.get("fg", "#ffffff")
+
+        self.hdr = tk.Frame(self, bg=hdr_bg, height=26)
+        self.hdr.pack(fill="x", side="top")
+        self.hdr.pack_propagate(False)
+
+        self.hdr_content = tk.Frame(self.hdr, bg=hdr_bg)
+        self.hdr_content.pack(side="left", fill="both", expand=True)
+
+        self.hdr_content.grid_columnconfigure(0, weight=1)
+        self.hdr_content.grid_columnconfigure(1, weight=0, minsize=160)
+        self.hdr_content.grid_columnconfigure(2, weight=0, minsize=70)
+        self.hdr_content.grid_columnconfigure(3, weight=0, minsize=70)
+        self.hdr_content.grid_columnconfigure(4, weight=0, minsize=52)
+
+        self.hdr_lbl_title = tk.Label(self.hdr_content, text="Назва", bg=hdr_bg, fg=fg, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.hdr_lbl_title.grid(row=0, column=0, sticky="ew", padx=(12, 6), pady=3)
+
+        self.hdr_lbl_artist = tk.Label(self.hdr_content, text="Виконавець", bg=hdr_bg, fg=fg, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.hdr_lbl_artist.grid(row=0, column=1, sticky="ew", padx=6, pady=3)
+
+        self.hdr_lbl_duration = tk.Label(self.hdr_content, text="Тривалість", bg=hdr_bg, fg=fg, font=("Segoe UI", 9, "bold"), anchor="center")
+        self.hdr_lbl_duration.grid(row=0, column=2, sticky="ew", padx=6, pady=3)
+
+        self.hdr_lbl_source = tk.Label(self.hdr_content, text="Джерело", bg=hdr_bg, fg=fg, font=("Segoe UI", 9, "bold"), anchor="center")
+        self.hdr_lbl_source.grid(row=0, column=3, sticky="ew", padx=6, pady=3)
+
+        self.hdr_lbl_cover = tk.Label(self.hdr_content, text="Обкладинка", bg=hdr_bg, fg=fg, font=("Segoe UI", 9, "bold"), anchor="center")
+        self.hdr_lbl_cover.grid(row=0, column=4, sticky="ew", padx=(6, 12), pady=3)
+
+        self.hdr_spacer = tk.Frame(self.hdr, bg=hdr_bg, width=16)
+        self.hdr_spacer.pack(side="right", fill="y")
+
+        # 2. Canvas & Scrollbar
+        self.body_frame = tk.Frame(self, bg=self.c.get("table_bg", "#1e1e1e"), bd=0)
+        self.body_frame.pack(fill="both", expand=True, side="bottom")
+
+        self.canvas = tk.Canvas(
+            self.body_frame,
+            bg=self.c.get("table_bg", "#1e1e1e"),
+            bd=0,
+            highlightthickness=0,
+        )
+        self.scrollbar = ttk.Scrollbar(self.body_frame, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.inner_frame = tk.Frame(self.canvas, bg=self.c.get("table_bg", "#1e1e1e"), bd=0)
+        self._win_id = self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+
+        self.inner_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.inner_frame.bind("<MouseWheel>", self._on_mousewheel)
+
+        self.bind("<Up>", self._on_arrow_up)
+        self.bind("<Down>", self._on_arrow_down)
+        self.bind("<Return>", self._on_return)
+        self.canvas.bind("<Up>", self._on_arrow_up)
+        self.canvas.bind("<Down>", self._on_arrow_down)
+        self.canvas.bind("<Return>", self._on_return)
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self.canvas.itemconfig(self._win_id, width=event.width)
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        delta = event.delta
+        if delta == 0:
+            return
+        scroll_units = int(-1 * (delta / 120))
+        if scroll_units == 0:
+            scroll_units = -1 if delta > 0 else 1
+        self.canvas.yview_scroll(scroll_units, "units")
+
+    def _on_arrow_up(self, event: tk.Event = None) -> None:
+        if not self._item_iids:
+            return
+        if self._selected_iid is None or self._selected_iid not in self._item_iids:
+            self.selection_set(self._item_iids[0])
+            return
+        idx = self._item_iids.index(self._selected_iid)
+        if idx > 0:
+            self.selection_set(self._item_iids[idx - 1])
+            self.see(self._item_iids[idx - 1])
+
+    def _on_arrow_down(self, event: tk.Event = None) -> None:
+        if not self._item_iids:
+            return
+        if self._selected_iid is None or self._selected_iid not in self._item_iids:
+            self.selection_set(self._item_iids[0])
+            return
+        idx = self._item_iids.index(self._selected_iid)
+        if idx < len(self._item_iids) - 1:
+            self.selection_set(self._item_iids[idx + 1])
+            self.see(self._item_iids[idx + 1])
+
+    def _on_return(self, event: tk.Event = None) -> None:
+        for cb in self._callbacks.get("<Return>", []):
+            try:
+                cb(event)
+            except Exception:
+                pass
+        for cb in self._callbacks.get("<Double-1>", []):
+            try:
+                cb(event)
+            except Exception:
+                pass
+
+    def apply_theme(self, theme_colors: dict[str, str]) -> None:
+        self.c = theme_colors
+        hdr_bg = self.c.get("hdr_bg", "#252526")
+        fg = self.c.get("fg", "#ffffff")
+        table_bg = self.c.get("table_bg", "#1e1e1e")
+        divider = self.c.get("divider", "#333333")
+
+        self.configure(bg=divider)
+        self.hdr.configure(bg=hdr_bg)
+        self.hdr_content.configure(bg=hdr_bg)
+        self.hdr_spacer.configure(bg=hdr_bg)
+        self.hdr_lbl_title.configure(bg=hdr_bg, fg=fg)
+        self.hdr_lbl_artist.configure(bg=hdr_bg, fg=fg)
+        self.hdr_lbl_duration.configure(bg=hdr_bg, fg=fg)
+        self.hdr_lbl_source.configure(bg=hdr_bg, fg=fg)
+        self.hdr_lbl_cover.configure(bg=hdr_bg, fg=fg)
+        self.body_frame.configure(bg=table_bg)
+        self.canvas.configure(bg=table_bg)
+        self.inner_frame.configure(bg=table_bg)
+
+        for iid in self._item_iids:
+            self._update_row_appearance(iid)
+
+    def _update_row_appearance(self, iid: str, is_hover: bool = False) -> None:
+        if iid not in self._row_frames:
+            return
+        row_frame = self._row_frames[iid]
+        widgets = self._row_widgets.get(iid, {})
+        is_sel = (self._selected_iid == iid)
+
+        table_bg = self.c.get("table_bg", "#1e1e1e")
+        alt_bg = self.c.get("row_alt", table_bg)
+        hover_bg = self.c.get("active_menu_bg", "#2a2d2e")
+        sel_bg = self.c.get("selection_bg", "#094771")
+        fg = self.c.get("fg", "#ffffff")
+        muted_fg = self.c.get("muted_fg", "#888888")
+
+        idx = self._item_iids.index(iid) if iid in self._item_iids else 0
+        base_bg = alt_bg if idx % 2 == 1 else table_bg
+
+        if is_sel:
+            row_bg = sel_bg
+            title_fg = "#ffffff"
+            artist_fg = "#e0e0e0"
+            duration_fg = "#ffffff"
+        elif is_hover:
+            row_bg = hover_bg
+            title_fg = fg
+            artist_fg = muted_fg
+            duration_fg = fg
+        else:
+            row_bg = base_bg
+            title_fg = fg
+            artist_fg = muted_fg
+            duration_fg = fg
+
+        row_frame.configure(bg=row_bg)
+        if "title" in widgets:
+            widgets["title"].configure(bg=row_bg, fg=title_fg)
+        if "artist" in widgets:
+            widgets["artist"].configure(bg=row_bg, fg=artist_fg)
+        if "duration" in widgets:
+            widgets["duration"].configure(bg=row_bg, fg=duration_fg)
+        if "cover" in widgets:
+            widgets["cover"].configure(bg=row_bg)
+        if "source" in widgets:
+            src = self._items.get(iid, {}).get("source", "youtube")
+            badge_fg = "#ff4455" if src == "ytmusic" else "#ff6666"
+            widgets["source"].configure(bg=row_bg, fg=badge_fg)
+
+    def insert(self, parent: str = "", index: str = "end", iid: Optional[str] = None, values: tuple = (), **kwargs) -> str:
+        if iid is None:
+            iid = str(len(self._item_iids))
+        iid = str(iid)
+
+        title = ""
+        artist = ""
+        duration = ""
+        source = "youtube"
+        thumb_url = ""
+
+        if len(values) >= 5:
+            title = str(values[0])
+            artist = str(values[1])
+            duration = str(values[2])
+            source = str(values[3])
+            thumb_url = str(values[4])
+        elif len(values) >= 2:
+            title = str(values[0])
+            duration = str(values[1])
+            if " — " in title:
+                parts = title.split(" — ", 1)
+                title, artist = parts[0], parts[1]
+            elif " - " in title:
+                parts = title.split(" - ", 1)
+                title, artist = parts[0], parts[1]
+        elif len(values) == 1:
+            title = str(values[0])
+
+        cover_img = kwargs.get("image") or self.default_cover
+        item_data = {
+            "title": title,
+            "artist": artist,
+            "duration": duration,
+            "source": source,
+            "thumb_url": thumb_url,
+            "cover_image": cover_img,
+        }
+        self._items[iid] = item_data
+        if iid not in self._item_iids:
+            self._item_iids.append(iid)
+
+        row_frame = tk.Frame(self.inner_frame, height=48, cursor="hand2")
+        row_frame.pack_propagate(False)
+        row_frame.pack(fill="x", expand=True, pady=1)
+
+        row_frame.grid_columnconfigure(0, weight=1)
+        row_frame.grid_columnconfigure(1, weight=0, minsize=160)
+        row_frame.grid_columnconfigure(2, weight=0, minsize=70)
+        row_frame.grid_columnconfigure(3, weight=0, minsize=70)
+        row_frame.grid_columnconfigure(4, weight=0, minsize=52)
+
+        lbl_title = tk.Label(row_frame, text=title, font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl_title.grid(row=0, column=0, sticky="ew", padx=(12, 6))
+
+        lbl_artist = tk.Label(row_frame, text=artist, font=("Segoe UI", 9), anchor="w")
+        lbl_artist.grid(row=0, column=1, sticky="ew", padx=6)
+
+        lbl_duration = tk.Label(row_frame, text=duration, font=("Segoe UI", 9), anchor="center")
+        lbl_duration.grid(row=0, column=2, sticky="ew", padx=6)
+
+        badge_text = "YTMusic" if source == "ytmusic" else "YT"
+        lbl_source = tk.Label(row_frame, text=badge_text, font=("Segoe UI", 8, "bold"), anchor="center")
+        lbl_source.grid(row=0, column=3, sticky="ew", padx=6)
+
+        lbl_cover = tk.Label(row_frame, image=cover_img, width=40, height=40, anchor="center")
+        lbl_cover.grid(row=0, column=4, sticky="e", padx=(6, 12), pady=4)
+
+        widgets = {
+            "title": lbl_title,
+            "artist": lbl_artist,
+            "duration": lbl_duration,
+            "source": lbl_source,
+            "cover": lbl_cover,
+        }
+        self._row_frames[iid] = row_frame
+        self._row_widgets[iid] = widgets
+
+        def on_enter(e, item_id=iid):
+            if self._selected_iid != item_id:
+                self._update_row_appearance(item_id, is_hover=True)
+
+        def on_leave(e, item_id=iid):
+            if self._selected_iid != item_id:
+                self._update_row_appearance(item_id, is_hover=False)
+
+        def on_click(e, item_id=iid):
+            self.selection_set(item_id)
+            self.focus_set()
+
+        def on_double_click(e, item_id=iid):
+            self.selection_set(item_id)
+            for cb in self._callbacks.get("<Double-1>", []):
+                try:
+                    cb(e)
+                except Exception:
+                    pass
+
+        for w in (row_frame, lbl_title, lbl_artist, lbl_duration, lbl_source, lbl_cover):
+            w.bind("<Enter>", on_enter)
+            w.bind("<Leave>", on_leave)
+            w.bind("<Button-1>", on_click)
+            w.bind("<Double-1>", on_double_click)
+            w.bind("<MouseWheel>", self._on_mousewheel)
+
+        self._update_row_appearance(iid)
+        return iid
+
+    def update_thumbnail(self, iid: str, photo_image: Any) -> None:
+        iid = str(iid)
+        if iid in self._items:
+            self._items[iid]["cover_image"] = photo_image
+        if iid in self._row_widgets and "cover" in self._row_widgets[iid]:
+            try:
+                self._row_widgets[iid]["cover"].configure(image=photo_image)
+            except Exception:
+                pass
+
+    def get_children(self) -> list[str]:
+        return list(self._item_iids)
+
+    def delete(self, *iids: str) -> None:
+        targets = list(iids) if iids else list(self._item_iids)
+        for iid in targets:
+            iid = str(iid)
+            if iid in self._row_frames:
+                try:
+                    self._row_frames[iid].destroy()
+                except Exception:
+                    pass
+                del self._row_frames[iid]
+            if iid in self._row_widgets:
+                del self._row_widgets[iid]
+            if iid in self._items:
+                del self._items[iid]
+            if iid in self._item_iids:
+                self._item_iids.remove(iid)
+        if self._selected_iid not in self._items:
+            self._selected_iid = None
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def selection(self) -> tuple[str, ...]:
+        return (self._selected_iid,) if self._selected_iid is not None else ()
+
+    def selection_set(self, iid: str) -> None:
+        iid = str(iid)
+        if iid not in self._items:
+            return
+        old_sel = self._selected_iid
+        self._selected_iid = iid
+        if old_sel is not None and old_sel != iid:
+            self._update_row_appearance(old_sel, is_hover=False)
+        self._update_row_appearance(iid, is_hover=False)
+
+    def focus(self, iid: str) -> None:
+        self.selection_set(iid)
+        self.see(iid)
+
+    def see(self, iid: str) -> None:
+        iid = str(iid)
+        if iid not in self._row_frames:
+            return
+        row = self._row_frames[iid]
+        row_y = row.winfo_y()
+        row_h = row.winfo_height() or 48
+        canvas_h = self.canvas.winfo_height()
+        sr = self.canvas.bbox("all")
+        if not sr or canvas_h <= 0:
+            return
+        total_h = sr[3] - sr[1]
+        if total_h <= canvas_h:
+            return
+        top_vis = self.canvas.canvasy(0)
+        bot_vis = top_vis + canvas_h
+        if row_y < top_vis:
+            self.canvas.yview_moveto(max(0.0, row_y / float(total_h)))
+        elif row_y + row_h > bot_vis:
+            self.canvas.yview_moveto(min(1.0, (row_y + row_h - canvas_h) / float(total_h)))
+
+    def bind(self, sequence: str, func: Callable, add: Optional[str] = None) -> None:
+        self._callbacks.setdefault(sequence, []).append(func)
+        super().bind(sequence, func, add=add)
+        self.canvas.bind(sequence, func, add=add)
+
+    def heading(self, col: str, text: Optional[str] = None, **kwargs) -> None:
+        if text is None:
+            return
+        if col in ("title", "0"):
+            self.hdr_lbl_title.configure(text=text)
+        elif col in ("artist", "1"):
+            self.hdr_lbl_artist.configure(text=text)
+        elif col in ("duration", "2"):
+            self.hdr_lbl_duration.configure(text=text)
+        elif col in ("source", "3"):
+            self.hdr_lbl_source.configure(text=text)
+        elif col in ("cover", "4"):
+            self.hdr_lbl_cover.configure(text=text)
+
+    def column(self, col: str, **kwargs) -> None:
+        pass
+
+
 class MusicPadApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -1794,6 +2194,8 @@ class MusicPadApp(tk.Tk):
         self._undo_stack: list[list[LocalTrack]] = []
         self._redo_stack: list[list[LocalTrack]] = []
         self._clipboard_tracks: list[LocalTrack] = []
+        self._yt_thumb_cache: dict[str, Any] = {}
+        self._yt_search_generation: int = 0
         self._init_settings_variables()
 
     def _create_icons(self) -> None:
@@ -2017,6 +2419,17 @@ class MusicPadApp(tk.Tk):
             d.ellipse([10, 10, 54, 54], fill=blue)
             d.ellipse([22, 22, 42, 42], fill=(0, 0, 0, 0))
             self._icons["gear_blue"] = ImageTk.PhotoImage(img.resize((16, 16), Image.Resampling.LANCZOS))
+
+            # Thumbnail placeholder (40x40)
+            img_thumb = Image.new("RGBA", (80, 80), (35, 38, 44, 255))
+            d_thumb = ImageDraw.Draw(img_thumb)
+            d_thumb.rounded_rectangle([(0, 0), (79, 79)], radius=8, fill=(35, 38, 44, 255), outline=(60, 65, 75, 255), width=2)
+            d_thumb.ellipse([(24, 46), (38, 60)], fill=blue)
+            d_thumb.ellipse([(42, 40), (56, 54)], fill=blue)
+            d_thumb.rectangle([(36, 24), (39, 52)], fill=blue)
+            d_thumb.rectangle([(54, 18), (57, 46)], fill=blue)
+            d_thumb.line([(37, 24), (56, 18)], fill=blue, width=4)
+            self._icons["thumb_placeholder"] = ImageTk.PhotoImage(img_thumb.resize((40, 40), Image.Resampling.LANCZOS))
 
         except Exception:
             self._icons = {}
@@ -5588,6 +6001,8 @@ class MusicPadApp(tk.Tk):
                 self.yt_status_lbl.configure(bg=c["table_bg"], fg=c["muted_fg"])
             if hasattr(self, "yt_table_box") and self.yt_table_box.winfo_exists():
                 self.yt_table_box.configure(bg=c["divider"])
+            if hasattr(self, "yt_tree") and hasattr(self.yt_tree, "apply_theme") and self.yt_tree.winfo_exists():
+                self.yt_tree.apply_theme(c)
             if hasattr(self, "yt_bottom") and self.yt_bottom.winfo_exists():
                 self.yt_bottom.configure(bg=c["table_bg"])
             for btn_name in ("btn_yt_play", "btn_yt_cache", "btn_yt_close"):
@@ -5988,6 +6403,9 @@ class MusicPadApp(tk.Tk):
         duration: float,
         is_url: bool = True,
         match_query: str = "",
+        artist: str = "",
+        thumbnail_path: str = "",
+        source: str = "",
     ) -> LocalTrack:
         for track in self.local_tracks:
             if track.path == path or (match_query and track.path == match_query) or track.title == title:
@@ -5996,10 +6414,24 @@ class MusicPadApp(tk.Tk):
                 if duration > 0:
                     track.duration = duration
                 track.is_url = is_url
+                if artist:
+                    track.artist = artist
+                if thumbnail_path:
+                    track.thumbnail_path = thumbnail_path
+                if source:
+                    track.source = source
                 self._filter_tracks()
                 self._save_state()
                 return track
-        new_track = LocalTrack(title=title, path=path, duration=duration, is_url=is_url)
+        new_track = LocalTrack(
+            title=title,
+            path=path,
+            duration=duration,
+            is_url=is_url,
+            artist=artist,
+            thumbnail_path=thumbnail_path,
+            source=source,
+        )
         self.local_tracks.append(new_track)
         self._filter_tracks()
         self._save_state()
@@ -6181,6 +6613,8 @@ class MusicPadApp(tk.Tk):
             c = self._get_theme_colors()
             self.btn_yt_close_x.configure(bg=c["hdr_bg"], fg=c["muted_fg"])
 
+
+
     def _build_yt_search_panel(self, parent: tk.Widget) -> None:
         c = self._get_theme_colors()
         self.yt_search_frame = tk.Frame(parent, bg=c["table_bg"], bd=1, relief="solid")
@@ -6282,22 +6716,12 @@ class MusicPadApp(tk.Tk):
         self.yt_table_box = tk.Frame(self.yt_search_frame, bg=c["divider"], bd=1, relief="solid")
         self.yt_table_box.pack(fill="both", expand=True, padx=12, pady=(0, 6))
 
-        self.yt_tree = ttk.Treeview(
+        self.yt_tree = YTSearchResultsList(
             self.yt_table_box,
-            columns=("title", "duration"),
-            show="headings",
-            selectmode="browse",
+            theme_colors=c,
+            default_cover=self._icons.get("thumb_placeholder"),
         )
-        self.yt_tree.heading("title", text="Трек / Відео")
-        self.yt_tree.heading("duration", text="Тривалість")
-        self.yt_tree.column("title", width=480, minwidth=200, stretch=True, anchor="w")
-        self.yt_tree.column("duration", width=90, minwidth=70, stretch=False, anchor="center")
-
-        yt_scroll = ttk.Scrollbar(self.yt_table_box, orient="vertical", command=self.yt_tree.yview)
-        self.yt_tree.configure(yscrollcommand=yt_scroll.set)
-
         self.yt_tree.pack(side="left", fill="both", expand=True)
-        yt_scroll.pack(side="right", fill="y")
 
         self.yt_tree.bind("<Double-1>", lambda _: self._yt_play_picked(add_only=False))
         self.yt_tree.bind("<Return>", lambda _: self._yt_play_picked(add_only=False))
@@ -6373,7 +6797,7 @@ class MusicPadApp(tk.Tk):
 
         def worker() -> None:
             try:
-                items = AudioEngine.search_youtube(q, limit=10)
+                items = AudioEngine.search_youtube(q, limit=25)
                 self._safe_ui_call(self._render_yt_results, items)
             except Exception as exc:
                 self._safe_ui_call(self._render_yt_results, [], str(exc))
@@ -6382,22 +6806,69 @@ class MusicPadApp(tk.Tk):
 
     def _render_yt_results(self, items: list[dict[str, Any]], err: str = "") -> None:
         self.yt_results_data = items
+        self._yt_search_generation += 1
+        gen = self._yt_search_generation
+
         for row in self.yt_tree.get_children():
             self.yt_tree.delete(row)
         if err:
             self.yt_status_lbl.configure(text=f"Помилка пошуку: {err}")
             return
         for idx, item in enumerate(items):
+            title = str(item.get("title", "")).strip()
+            artist = str(item.get("artist", "")).strip()
+            if not artist and (" — " in title or " - " in title or " – " in title):
+                parts = re.split(r"\s+[—\-–]\s+", title, maxsplit=1)
+                if len(parts) == 2:
+                    artist = parts[0].strip()
+                    title = parts[1].strip()
+            duration_val = float(item.get("duration", 0.0))
+            source = str(item.get("source", "youtube"))
+            thumb_url = str(item.get("thumbnail_url", ""))
             self.yt_tree.insert(
                 "",
                 "end",
                 iid=str(idx),
-                values=(item.get("title", ""), format_duration(float(item.get("duration", 0.0)))),
+                values=(title, artist, format_duration(duration_val), source, thumb_url),
             )
         self.yt_status_lbl.configure(text=f"Знайдено результатів: {len(items)}")
         if items:
             self.yt_tree.selection_set("0")
             self.yt_tree.focus("0")
+
+        def fetch_worker() -> None:
+            for idx, item in enumerate(items):
+                if gen != self._yt_search_generation:
+                    break
+                thumb_url = item.get("thumbnail_url", "")
+                vid = item.get("video_id", "") or item.get("url", "")
+                if not thumb_url:
+                    continue
+                try:
+                    cached_path = AudioEngine.fetch_thumbnail(thumb_url, vid)
+                    if cached_path and os.path.isfile(cached_path):
+                        item["thumbnail_path"] = cached_path
+                        if gen != self._yt_search_generation:
+                            break
+                        if Image is not None and ImageTk is not None:
+                            pil_img = Image.open(cached_path)
+                            photo = ImageTk.PhotoImage(pil_img)
+                            self._safe_ui_call(self._update_yt_row_thumbnail, gen, str(idx), photo, cached_path)
+                except Exception:
+                    pass
+
+        threading.Thread(target=fetch_worker, daemon=True).start()
+
+    def _update_yt_row_thumbnail(self, gen: int, iid: str, photo: Any, local_path: str) -> None:
+        if gen != self._yt_search_generation:
+            return
+        if hasattr(self, "_yt_thumb_cache"):
+            self._yt_thumb_cache[iid] = photo
+        if hasattr(self.yt_tree, "update_thumbnail"):
+            self.yt_tree.update_thumbnail(iid, photo)
+        idx = int(iid) if iid.isdigit() else -1
+        if 0 <= idx < len(self.yt_results_data):
+            self.yt_results_data[idx]["thumbnail_path"] = local_path
 
     def _yt_play_picked(self, add_only: bool = False) -> None:
         sel = self.yt_tree.selection()
@@ -6408,18 +6879,32 @@ class MusicPadApp(tk.Tk):
             return
         item = self.yt_results_data[idx]
         title = item.get("title", "")
+        artist = item.get("artist", "")
+        full_title = item.get("full_title", "")
+        if not full_title:
+            full_title = f"{title} — {artist}" if artist and artist not in title else title
         url = item.get("url", "")
         duration = float(item.get("duration", 0.0))
+        thumbnail_path = item.get("thumbnail_path", "")
+        source = item.get("source", "")
 
         self.url_var.set(url)
-        self._upsert_youtube_track(title, url, duration, is_url=True)
+        self._upsert_youtube_track(
+            title=full_title,
+            path=url,
+            duration=duration,
+            is_url=True,
+            artist=artist,
+            thumbnail_path=thumbnail_path,
+            source=source,
+        )
 
         if add_only:
             self._add_url_to_list()
-            self.yt_status_lbl.configure(text=f"Закешування розпочато: {title}...")
+            self.yt_status_lbl.configure(text=f"Закешування розпочато: {full_title}...")
         else:
             self._play_url()
-            self.yt_status_lbl.configure(text=f"Відтворення: {title}")
+            self.yt_status_lbl.configure(text=f"Відтворення: {full_title}")
 
     def _prompt_play_url(self) -> None:
         dlg = tk.Toplevel(self)
@@ -6956,6 +7441,9 @@ class MusicPadApp(tk.Tk):
                         "duration": t.duration,
                         "hotkey": t.hotkey,
                         "is_url": t.is_url,
+                        "artist": getattr(t, "artist", ""),
+                        "thumbnail_path": getattr(t, "thumbnail_path", ""),
+                        "source": getattr(t, "source", ""),
                     }
                     for t in self.local_tracks
                 ],
@@ -7190,6 +7678,9 @@ class MusicPadApp(tk.Tk):
                             duration=float(item.get("duration") or 0.0),
                             hotkey=str(item.get("hotkey") or ""),
                             is_url=is_url,
+                            artist=str(item.get("artist") or ""),
+                            thumbnail_path=str(item.get("thumbnail_path") or ""),
+                            source=str(item.get("source") or ""),
                         )
                     )
                 else:

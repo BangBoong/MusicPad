@@ -2645,8 +2645,47 @@ class AudioEngine:
         except Exception as exc:
             raise AudioEngineError(f"Помилка YouTube Music: {exc}") from exc
 
+    @classmethod
+    def _thumbnail_cache_dir(cls) -> Path:
+        base = _app_root_dir() / ".cache" / "thumbnails"
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return base
+
+    @classmethod
+    def fetch_thumbnail(cls, url: str, video_id: str = "") -> Optional[str]:
+        if not url:
+            return None
+        cache_dir = cls._thumbnail_cache_dir()
+        if not video_id:
+            video_id = hashlib.sha1(url.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        cached_file = cache_dir / f"{video_id}.png"
+        if cached_file.is_file() and cached_file.stat().st_size > 0:
+            return str(cached_file)
+        try:
+            import urllib.request
+            from io import BytesIO
+            from PIL import Image
+
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw_bytes = resp.read()
+            img = Image.open(BytesIO(raw_bytes)).convert("RGBA")
+            w, h = img.size
+            min_dim = min(w, h)
+            left = (w - min_dim) // 2
+            top = (h - min_dim) // 2
+            img_cropped = img.crop((left, top, left + min_dim, top + min_dim))
+            img_resized = img_cropped.resize((40, 40), Image.Resampling.LANCZOS)
+            img_resized.save(cached_file, "PNG")
+            return str(cached_file)
+        except Exception:
+            return None
+
     @staticmethod
-    def search_youtube(query: str, limit: int = 8) -> list[dict[str, Any]]:
+    def search_youtube(query: str, limit: int = 25) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
             return []
@@ -2664,7 +2703,10 @@ class AudioEngine:
                         if len(raw_songs) < limit
                         else []
                     )
-                    for entry in list(raw_songs) + list(raw_videos):
+                    tagged_entries = [(entry, "ytmusic") for entry in raw_songs] + [
+                        (entry, "youtube") for entry in raw_videos
+                    ]
+                    for entry, source in tagged_entries:
                         vid = entry.get("videoId")
                         if not vid or vid in seen_ids:
                             continue
@@ -2674,20 +2716,33 @@ class AudioEngine:
                             for a in entry.get("artists", [])
                             if isinstance(a, dict) and a.get("name")
                         )
-                        title = entry.get("title") or query
-                        if artists:
-                            title = f"{title} — {artists}"
+                        raw_title = str(entry.get("title") or query).strip()
+                        title = raw_title
+                        if not artists and (" - " in title or " — " in title or " – " in title):
+                            parts = re.split(r"\s+[—\-–]\s+", title, maxsplit=1)
+                            if len(parts) == 2:
+                                artists = parts[0].strip()
+                                title = parts[1].strip()
+                        full_title = f"{title} — {artists}" if artists and artists not in title else title
                         dur_seconds = float(entry.get("duration_seconds") or 0.0)
                         if dur_seconds <= 0.0 and entry.get("duration"):
                             parts = [int(p) for p in str(entry["duration"]).split(":") if p.isdigit()]
                             for p in parts:
                                 dur_seconds = dur_seconds * 60 + p
+                        thumb_url = ""
+                        thumbs = entry.get("thumbnails") or []
+                        if isinstance(thumbs, list) and thumbs:
+                            thumb_url = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
                         items.append(
                             {
                                 "title": title,
+                                "artist": artists,
+                                "full_title": full_title,
                                 "video_id": vid,
-                                "url": f"https://music.youtube.com/watch?v={vid}",
+                                "url": f"https://music.youtube.com/watch?v={vid}" if source == "ytmusic" else f"https://www.youtube.com/watch?v={vid}",
                                 "duration": dur_seconds,
+                                "source": source,
+                                "thumbnail_url": thumb_url,
                             }
                         )
                         if len(items) >= limit:
@@ -2696,7 +2751,7 @@ class AudioEngine:
                     if YoutubeDL is None or _is_mocked_youtube():
                         raise
 
-            if not items and YoutubeDL is not None and not _is_mocked_youtube():
+            if len(items) < limit and YoutubeDL is not None and not _is_mocked_youtube():
                 with YoutubeDL(
                     {
                         "quiet": True,
@@ -2705,7 +2760,8 @@ class AudioEngine:
                         "no_warnings": True,
                     }
                 ) as ydl:
-                    info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                    needed = limit - len(items)
+                    info = ydl.extract_info(f"ytsearch{needed + len(seen_ids)}:{query}", download=False)
                     for entry in (info.get("entries") or []) if isinstance(info, dict) else []:
                         if not isinstance(entry, dict):
                             continue
@@ -2713,12 +2769,33 @@ class AudioEngine:
                         if not vid or vid in seen_ids:
                             continue
                         seen_ids.add(vid)
+                        raw_title = str(entry.get("title") or query).strip()
+                        artist = ""
+                        title = raw_title
+                        if " - " in raw_title or " — " in raw_title or " – " in raw_title:
+                            parts = re.split(r"\s+[—\-–]\s+", raw_title, maxsplit=1)
+                            if len(parts) == 2:
+                                artist = parts[0].strip()
+                                title = parts[1].strip()
+                        if not artist:
+                            artist = str(entry.get("uploader") or entry.get("channel") or "").strip()
+                        full_title = f"{title} — {artist}" if artist and artist not in title else title
+                        dur_seconds = float(entry.get("duration") or 0.0)
+                        thumb_url = str(entry.get("thumbnail") or "")
+                        if not thumb_url:
+                            thumbs = entry.get("thumbnails") or []
+                            if isinstance(thumbs, list) and thumbs:
+                                thumb_url = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
                         items.append(
                             {
-                                "title": str(entry.get("title") or query),
+                                "title": title,
+                                "artist": artist,
+                                "full_title": full_title,
                                 "video_id": vid,
                                 "url": f"https://www.youtube.com/watch?v={vid}",
-                                "duration": float(entry.get("duration") or 0.0),
+                                "duration": dur_seconds,
+                                "source": "youtube",
+                                "thumbnail_url": thumb_url,
                             }
                         )
                         if len(items) >= limit:

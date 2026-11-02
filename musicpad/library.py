@@ -9,7 +9,7 @@ import struct
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 try:
     import wave
@@ -32,6 +32,34 @@ class LocalTrack:
     duration: float
     hotkey: str = ""
     is_url: bool = False
+    artist: str = ""
+    thumbnail_path: str = ""
+    source: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "path": self.path,
+            "duration": self.duration,
+            "hotkey": self.hotkey,
+            "is_url": self.is_url,
+            "artist": self.artist,
+            "thumbnail_path": self.thumbnail_path,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LocalTrack:
+        return cls(
+            title=str(data.get("title", "")),
+            path=str(data.get("path", "")),
+            duration=float(data.get("duration", 0.0)),
+            hotkey=str(data.get("hotkey", "")),
+            is_url=bool(data.get("is_url", False)),
+            artist=str(data.get("artist", "")),
+            thumbnail_path=str(data.get("thumbnail_path", "")),
+            source=str(data.get("source", "")),
+        )
 
 
 def format_duration(seconds: float) -> str:
