@@ -337,6 +337,118 @@ class TestAudioEngineUnit(unittest.TestCase):
         rb.reset()
         self.assertEqual(rb.available(), 0)
 
+        # Multi-reader testing (decoupled injection vs monitor)
+        rb.reset()
+        rb.register_reader(1)
+        self.assertEqual(rb.available(0), 0)
+        self.assertEqual(rb.available(1), 0)
+        rb.write(w_data)  # 500 frames
+        self.assertEqual(rb.available(0), 500)
+        self.assertEqual(rb.available(1), 500)
+
+        # Reader 0 reads ahead by 300 frames
+        r0, n0 = rb.read(300, reader_id=0)
+        self.assertEqual(n0, 300)
+        self.assertEqual(rb.available(0), 200)
+        self.assertEqual(rb.available(1), 500)  # Reader 1 still has all 500 frames
+
+        # Reader 1 reads 200 frames from the start
+        r1, n1 = rb.read(200, reader_id=1)
+        self.assertEqual(n1, 200)
+        self.assertEqual(rb.available(1), 300)
+        np.testing.assert_allclose(r1, r0[:200])
+
+        # Write space is governed by master reader
+        self.assertEqual(rb.write_space(), 1024 - 200)  # Reader 0 is default master (read 300)
+        rb.set_master_reader(1)
+        self.assertEqual(rb.write_space(), 1024 - 300)  # Reader 1 is master (read 200)
+        rb.unregister_reader(1)
+
+    def test_audio_normalization_clipping_and_downmix(self) -> None:
+        import numpy as np
+        from musicpad.audio_engine import Float32RingBuffer
+
+        # 1. Float32RingBuffer int16 normalization and clipping
+        rb = Float32RingBuffer(capacity_frames=256, channels=2)
+        int16_data = np.array([[32767, -32768], [16384, -16384]], dtype=np.int16)
+        written = rb.write(int16_data)
+        self.assertEqual(written, 2)
+        read_arr, n_read = rb.read(2)
+        self.assertEqual(n_read, 2)
+        self.assertEqual(read_arr.dtype, np.float32)
+        self.assertAlmostEqual(float(read_arr[0, 0]), 32767 / 32768.0, places=4)
+        self.assertAlmostEqual(float(read_arr[0, 1]), -1.0, places=4)
+        self.assertAlmostEqual(float(read_arr[1, 0]), 0.5, places=4)
+        self.assertAlmostEqual(float(read_arr[1, 1]), -0.5, places=4)
+
+        # 2. Hard clipping on excessive amplitude (> 1.0 or < -1.0)
+        loud_data = np.array([[50.0, -100.0], [0.5, -0.5]], dtype=np.float32)
+        rb.reset()
+        rb.write(loud_data)
+        clipped_read, _ = rb.read(2)
+        self.assertEqual(float(clipped_read[0, 0]), 1.0)
+        self.assertEqual(float(clipped_read[0, 1]), -1.0)
+
+        # 3. Mono-to-stereo expansion in buffer
+        mono_data = np.array([[0.75], [-0.25]], dtype=np.float32)
+        rb.reset()
+        rb.write(mono_data)
+        stereo_read, _ = rb.read(2)
+        self.assertEqual(stereo_read.shape, (2, 2))
+        self.assertEqual(float(stereo_read[0, 0]), 0.75)
+        self.assertEqual(float(stereo_read[0, 1]), 0.75)
+
+        # 4. Stereo-to-mono downmixing in 1-channel buffer
+        mono_rb = Float32RingBuffer(capacity_frames=256, channels=1)
+        stereo_in = np.array([[0.4, 0.8], [-0.6, -0.2]], dtype=np.float32)
+        mono_rb.write(stereo_in)
+        mono_read, _ = mono_rb.read(2)
+        self.assertEqual(mono_read.shape, (2, 1))
+        self.assertAlmostEqual(float(mono_read[0, 0]), 0.6, places=5)
+        self.assertAlmostEqual(float(mono_read[1, 0]), -0.4, places=5)
+
+        # 5. resample_float32_channels normalization, downmixing & clipping
+        resampled_mono = AudioEngine.resample_float32_channels(
+            stereo_in,
+            source_rate=48000,
+            target_rate=48000,
+            target_channels=1,
+        )
+        self.assertEqual(resampled_mono.shape, (2, 1))
+        self.assertAlmostEqual(float(resampled_mono[0, 0]), 0.6, places=5)
+
+        # int16 input to resample_float32_channels
+        int16_resampled = AudioEngine.resample_float32_channels(
+            int16_data,
+            source_rate=44100,
+            target_rate=48000,
+            target_channels=1,
+        )
+        self.assertEqual(int16_resampled.dtype, np.float32)
+        self.assertTrue(np.all(int16_resampled >= -1.0))
+        self.assertTrue(np.all(int16_resampled <= 1.0))
+
+        # 6. InjectionShm.write_samples with int16 and unclipped float
+        with tempfile.TemporaryDirectory() as tmp:
+            test_shm_path = Path(tmp) / "test_norm_shm.bin"
+            test_shm = InjectionShm(path=test_shm_path, pid=9999)
+            self.assertTrue(test_shm.open(acquire_lease=True))
+            # Writing int16 directly
+            w_int = test_shm.write_samples(int16_data)
+            self.assertEqual(w_int, 4)
+            # Writing excessive float (> 1.0)
+            w_loud = test_shm.write_samples(np.array([10.0, -20.0], dtype=np.float32))
+            self.assertEqual(w_loud, 2)
+            test_shm.close()
+
+        # 7. AudioEngine._raw_to_float32 clipping
+        raw_pcm = array("h", [32767, -32768, 0, 16384]).tobytes()
+        conv_float = AudioEngine._raw_to_float32(raw_pcm, channels=2)
+        self.assertEqual(conv_float.shape, (2, 2))
+        self.assertEqual(conv_float.dtype, np.float32)
+        self.assertTrue(np.all(conv_float >= -1.0))
+        self.assertTrue(np.all(conv_float <= 1.0))
+
     def test_blocksize_range_configuration(self) -> None:
         engine = AudioEngine()
         self.assertEqual(engine.blocksize, 384)

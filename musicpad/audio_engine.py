@@ -60,9 +60,12 @@ SOFT_KNEE_THRESHOLD = 0.8912509  # -1 dBFS threshold for transparent soft knee
 ROUTING_MODE_VIRTUAL_CABLE = "virtual_cable"
 ROUTING_MODE_INJECTION = "injection"
 
+READER_INJECTION = 0
+READER_MONITOR = 1
+
 
 class Float32RingBuffer:
-    """High-performance, lock-free/low-contention circular buffer for float32 stereo audio frames."""
+    """High-performance, multi-reader circular buffer for float32 stereo audio frames."""
 
     def __init__(self, capacity_frames: int = 65536, channels: int = CHANNELS) -> None:
         self.capacity = max(1024, int(capacity_frames))
@@ -71,65 +74,135 @@ class Float32RingBuffer:
             self._buffer = np.zeros((self.capacity, self.channels), dtype=np.float32)
         else:
             self._buffer = None  # type: ignore[assignment]
-        self._write_pos = 0
-        self._read_pos = 0
-        self._available_frames = 0
+        self._write_count = 0
+        self._read_counts = {0: 0}
+        self._master_reader_id = 0
         self._lock = threading.Lock()
+
+    def set_master_reader(self, reader_id: int) -> None:
+        """Designate which reader dictates buffer write space and decoder pacing."""
+        with self._lock:
+            self._master_reader_id = reader_id
+
+    def register_reader(self, reader_id: int) -> None:
+        with self._lock:
+            if reader_id not in self._read_counts:
+                min_read = min(self._read_counts.values()) if self._read_counts else self._write_count
+                self._read_counts[reader_id] = min_read
+
+    def unregister_reader(self, reader_id: int) -> None:
+        with self._lock:
+            self._read_counts.pop(reader_id, None)
+            if not self._read_counts:
+                self._read_counts[0] = self._write_count
+            if self._master_reader_id == reader_id:
+                self._master_reader_id = next(iter(self._read_counts.keys()), 0)
 
     def reset(self) -> None:
         """Atomically clears the buffer and resets read/write pointers."""
         with self._lock:
-            self._write_pos = 0
-            self._read_pos = 0
-            self._available_frames = 0
+            self._write_count = 0
+            for rid in self._read_counts:
+                self._read_counts[rid] = 0
             if self._buffer is not None:
                 self._buffer.fill(0.0)
 
-    def available(self) -> int:
+    def available(self, reader_id: int = 0) -> int:
         with self._lock:
-            return self._available_frames
+            r_count = self._read_counts.get(reader_id, 0)
+            min_allowed = self._write_count - self.capacity
+            if r_count < min_allowed:
+                r_count = min_allowed
+            return max(0, self._write_count - r_count)
 
     def write_space(self) -> int:
         with self._lock:
-            return self.capacity - self._available_frames
+            master_read = self._read_counts.get(self._master_reader_id, self._write_count)
+            used = self._write_count - master_read
+            return max(0, self.capacity - used)
 
     def write(self, data: np.ndarray) -> int:
         """Writes audio frames into the ring buffer. Thread-safe and non-blocking."""
-        if data is None or data.size == 0 or self._buffer is None:
+        if data is None or self._buffer is None:
             return 0
+        if not isinstance(data, np.ndarray):
+            data = np.asarray(data)
+        if data.size == 0:
+            return 0
+
+        # Normalization to float32 in [-1.0, 1.0]
+        if data.dtype == np.int16:
+            data = data.astype(np.float32) / 32768.0
+        elif data.dtype == np.int32:
+            data = data.astype(np.float32) / 2147483648.0
+        elif data.dtype != np.float32:
+            data = data.astype(np.float32)
+        data = np.clip(data, -1.0, 1.0)
+
+        # Shape & channel alignment
         if data.ndim == 1:
-            data = data.reshape(-1, self.channels)
+            if self.channels == 1:
+                data = data.reshape(-1, 1)
+            else:
+                data = data.reshape(-1, self.channels if data.size % self.channels == 0 else 1)
+
+        if data.shape[1] != self.channels:
+            if self.channels == 1:
+                data = np.mean(data, axis=1, keepdims=True).astype(np.float32)
+            elif data.shape[1] == 1:
+                data = np.repeat(data, self.channels, axis=1).astype(np.float32)
+            elif data.shape[1] > self.channels:
+                data = data[:, :self.channels].astype(np.float32)
+            else:
+                pad = np.repeat(data[:, :1], self.channels - data.shape[1], axis=1)
+                data = np.concatenate([data, pad], axis=1).astype(np.float32)
+
         n = data.shape[0]
         with self._lock:
-            space = self.capacity - self._available_frames
+            master_read = self._read_counts.get(self._master_reader_id, self._write_count)
+            used = self._write_count - master_read
+            space = self.capacity - used
             to_write = min(n, space)
             if to_write <= 0:
                 return 0
-            part1 = min(to_write, self.capacity - self._write_pos)
-            self._buffer[self._write_pos : self._write_pos + part1] = data[:part1]
+            write_pos = self._write_count % self.capacity
+            part1 = min(to_write, self.capacity - write_pos)
+            self._buffer[write_pos : write_pos + part1] = data[:part1]
             part2 = to_write - part1
             if part2 > 0:
                 self._buffer[:part2] = data[part1:to_write]
-            self._write_pos = (self._write_pos + to_write) % self.capacity
-            self._available_frames += to_write
+            self._write_count += to_write
+
+            # If any secondary reader falls behind by more than capacity, fast-forward it
+            min_allowed = self._write_count - self.capacity
+            for rid in self._read_counts:
+                if rid != self._master_reader_id:
+                    if self._read_counts[rid] < min_allowed:
+                        self._read_counts[rid] = min_allowed
             return to_write
 
-    def read(self, frames: int) -> tuple[np.ndarray, int]:
+    def read(self, frames: int, reader_id: int = 0) -> tuple[np.ndarray, int]:
         """Reads requested frames from ring buffer into float32 array. Zero-pads on underrun."""
         if self._buffer is None or np is None:
             return np.zeros((frames, self.channels), dtype=np.float32), 0
         out = np.zeros((frames, self.channels), dtype=np.float32)
         with self._lock:
-            to_read = min(frames, self._available_frames)
+            r_count = self._read_counts.get(reader_id, 0)
+            min_allowed = self._write_count - self.capacity
+            if r_count < min_allowed:
+                r_count = min_allowed
+                self._read_counts[reader_id] = r_count
+            avail = self._write_count - r_count
+            to_read = min(frames, avail)
             if to_read <= 0:
                 return out, 0
-            part1 = min(to_read, self.capacity - self._read_pos)
-            out[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
+            read_pos = r_count % self.capacity
+            part1 = min(to_read, self.capacity - read_pos)
+            out[:part1] = self._buffer[read_pos : read_pos + part1]
             part2 = to_read - part1
             if part2 > 0:
                 out[part1:to_read] = self._buffer[:part2]
-            self._read_pos = (self._read_pos + to_read) % self.capacity
-            self._available_frames -= to_read
+            self._read_counts[reader_id] = r_count + to_read
             return out, to_read
 
 
@@ -830,12 +903,18 @@ class AudioEngine:
         if data.size == 0 or target_rate <= 0 or np is None:
             return np.zeros((0, CHANNELS), dtype=np.float32)
 
+        if not isinstance(data, np.ndarray):
+            data = np.asarray(data)
+
         if data.dtype == np.int16:
             float_data = data.astype(np.float32) / 32768.0
         elif data.dtype == np.int32:
             float_data = data.astype(np.float32) / 2147483648.0
+        elif data.dtype != np.float32:
+            float_data = data.astype(np.float32)
         else:
             float_data = data.astype(np.float32, copy=False)
+        float_data = np.clip(float_data, -1.0, 1.0)
 
         if float_data.ndim == 1:
             float_data = float_data.reshape(-1, max(1, source_channels))
@@ -849,11 +928,11 @@ class AudioEngine:
             stereo = float_data
 
         if source_rate <= 0 or source_rate == target_rate:
-            return stereo
+            return np.clip(stereo, -1.0, 1.0).astype(np.float32)
 
         source_frames = stereo.shape[0]
         if source_frames < 2:
-            return stereo
+            return np.clip(stereo, -1.0, 1.0).astype(np.float32)
 
         target_frames = max(1, round(source_frames * target_rate / source_rate))
         x_old = np.linspace(0.0, source_frames - 1, num=source_frames, dtype=np.float32)
@@ -862,7 +941,7 @@ class AudioEngine:
         out = np.empty((target_frames, CHANNELS), dtype=np.float32)
         for c in range(CHANNELS):
             out[:, c] = np.interp(x_new, x_old, stereo[:, c])
-        return out
+        return np.clip(out, -1.0, 1.0).astype(np.float32)
 
     @staticmethod
     def resample_float32_channels(
@@ -878,7 +957,18 @@ class AudioEngine:
         t_ch = max(1, int(target_channels))
         if data is None or data.size == 0 or np is None:
             return np.zeros((0, t_ch), dtype=np.float32)
-        arr = np.asarray(data, dtype=np.float32)
+        if not isinstance(data, np.ndarray):
+            data = np.asarray(data)
+        if data.dtype == np.int16:
+            arr = data.astype(np.float32) / 32768.0
+        elif data.dtype == np.int32:
+            arr = data.astype(np.float32) / 2147483648.0
+        elif data.dtype != np.float32:
+            arr = data.astype(np.float32)
+        else:
+            arr = data.astype(np.float32, copy=False)
+        arr = np.clip(arr, -1.0, 1.0)
+
         if arr.ndim == 1:
             arr = arr.reshape(-1, CHANNELS if arr.size % CHANNELS == 0 else 1)
 
@@ -894,16 +984,16 @@ class AudioEngine:
 
         curr_ch = arr.shape[1]
         if curr_ch == t_ch:
-            return arr
+            return np.clip(arr, -1.0, 1.0).astype(np.float32)
         if t_ch == 1:
-            return np.mean(arr, axis=1, keepdims=True).astype(np.float32)
+            return np.clip(np.mean(arr, axis=1, keepdims=True), -1.0, 1.0).astype(np.float32)
         if curr_ch == 1:
-            return np.repeat(arr, t_ch, axis=1).astype(np.float32)
+            return np.clip(np.repeat(arr, t_ch, axis=1), -1.0, 1.0).astype(np.float32)
         if curr_ch > t_ch:
-            return arr[:, :t_ch].astype(np.float32)
+            return np.clip(arr[:, :t_ch], -1.0, 1.0).astype(np.float32)
         # Pad remaining channels by repeating first channel
         pad_ch = np.repeat(arr[:, :1], t_ch - curr_ch, axis=1)
-        return np.concatenate([arr, pad_ch], axis=1).astype(np.float32)
+        return np.clip(np.concatenate([arr, pad_ch], axis=1), -1.0, 1.0).astype(np.float32)
 
     @staticmethod
     def mix_float32(
@@ -1348,7 +1438,7 @@ class AudioEngine:
         if usable <= 0:
             return np.zeros((0, CHANNELS), dtype=np.float32)
         arr = arr[:usable].reshape(-1, ch)
-        return arr.astype(np.float32) / 32768.0
+        return np.clip(arr.astype(np.float32) / 32768.0, -1.0, 1.0)
 
     def play(
         self,
@@ -1601,17 +1691,19 @@ class AudioEngine:
             if mode == ROUTING_MODE_INJECTION:
                 self._ensure_injection_shm()
                 # Decision 5: In injection mode, APO handles mic mixing/mute/gain.
-                # App captures microphone ONLY if local headphone mic monitoring is enabled.
-                if in_dev is not None and mon_mic and mon_dev is not None:
+                # App captures microphone ONLY if local headphone mic monitoring is enabled,
+                # but records mic_channels to align channels if APO status is uninitialized.
+                if in_dev is not None:
                     mic_channels = self._input_channels(in_dev)
-                    mic_stream = sd.RawInputStream(
-                        samplerate=SAMPLE_RATE,
-                        channels=mic_channels,
-                        dtype="int16",
-                        device=in_dev,
-                        blocksize=bs,
-                    )
-                    mic_stream.start()
+                    if mon_mic and mon_dev is not None:
+                        mic_stream = sd.RawInputStream(
+                            samplerate=SAMPLE_RATE,
+                            channels=mic_channels,
+                            dtype="int16",
+                            device=in_dev,
+                            blocksize=bs,
+                        )
+                        mic_stream.start()
                 self._stream = None
                 if mon_dev is not None:
                     monitor_rate = self._device_samplerate(mon_dev)
@@ -1844,12 +1936,17 @@ class AudioEngine:
                 continue
 
             # Convert decoded S16LE PCM chunks to float32 stereo [-1.0, 1.0] at 48kHz
-            if len(raw) % 2 != 0:
-                raw = raw[:-1]
-            if len(raw) >= 4:
-                arr = np.frombuffer(raw, dtype=np.int16).reshape(-1, CHANNELS)
-                float_arr = arr.astype(np.float32) / 32768.0
-                self._ring_buffer.write(float_arr)
+            frame_bytes = CHANNELS * 2
+            remainder = len(raw) % frame_bytes
+            if remainder != 0:
+                raw = raw[:-remainder]
+            if len(raw) >= frame_bytes:
+                try:
+                    arr = np.frombuffer(raw, dtype=np.int16).reshape(-1, CHANNELS)
+                    float_arr = np.clip(arr.astype(np.float32) / 32768.0, -1.0, 1.0)
+                    self._ring_buffer.write(float_arr)
+                except Exception:
+                    pass
 
     def _run(self) -> None:
         stream: Optional[Any] = None
@@ -1871,6 +1968,11 @@ class AudioEngine:
             )
             self._decode_thread.start()
 
+            self._ring_buffer.register_reader(READER_MONITOR)
+            self._ring_buffer.set_master_reader(
+                READER_MONITOR if monitor_stream is not None else READER_INJECTION
+            )
+
             while not self._stop_event.is_set():
                 if self._devices_dirty.is_set():
                     self._devices_dirty.clear()
@@ -1879,6 +1981,9 @@ class AudioEngine:
                     self._close_stream_safe(mic_stream)
                     stream, monitor_stream, monitor_rate, mic_stream, mic_channels = (
                         self._open_audio_streams()
+                    )
+                    self._ring_buffer.set_master_reader(
+                        READER_MONITOR if monitor_stream is not None else READER_INJECTION
                     )
 
                 frames = self.blocksize
@@ -1911,46 +2016,132 @@ class AudioEngine:
                         time.sleep(frames / SAMPLE_RATE)
 
                 # 2. Non-blocking read from lock-free Float32RingBuffer
+                with self._lock:
+                    cur_mode = self.routing_mode
+
                 if self._pause_event.is_set():
                     track_float = np.zeros((frames, CHANNELS), dtype=np.float32)
+                    read_frames = 0
                     has_music = self._active_track is not None
-                else:
-                    track_float, read_frames = self._ring_buffer.read(frames)
+                elif cur_mode == ROUTING_MODE_INJECTION:
+                    # In injection mode: Injection reader maintains a 100-120ms lead buffer in SHM.
+                    # Monitor reader feeds the local headphones at monitor pace.
+                    shm = self._ensure_injection_shm()
+                    apo_status = shm.get_apo_status() if (shm is not None and shm.has_lease) else None
+                    track_active_for_apo = bool(
+                        self._active_track is not None
+                        and self._route_mic
+                        and not self._pause_event.is_set()
+                    )
+                    if shm is not None and shm.has_lease:
+                        shm.update_control(
+                            mic_gain=self._mic_volume,
+                            mic_mute=self._mic_muted,
+                            track_playing=track_active_for_apo,
+                            passthrough=False,
+                            target_endpoint_guid=self.target_endpoint_guid,
+                        )
+                        if track_active_for_apo and apo_status is not None:
+                            apo_rate = (
+                                apo_status.sample_rate
+                                if apo_status.sample_rate > 0
+                                else SAMPLE_RATE
+                            )
+                            apo_ch = (
+                                apo_status.channels
+                                if apo_status.channels > 0
+                                else (mic_channels if mic_channels > 0 else CHANNELS)
+                            )
+                            # Maintain 120 ms lead buffer cushion in SHM
+                            target_lead_samples = int(0.120 * apo_rate * apo_ch)
+                            avail_shm = shm.available_to_read()
+                            free_shm = shm.available_to_write()
+                            if avail_shm < target_lead_samples and free_shm > 0:
+                                deficit_samples = target_lead_samples - avail_shm
+                                deficit_frames = max(frames, deficit_samples // apo_ch)
+                                inj_track_raw, inj_read = self._ring_buffer.read(
+                                    deficit_frames, reader_id=READER_INJECTION
+                                )
+                                if inj_read > 0:
+                                    inj_track = inj_track_raw[:inj_read]
+                                    if self._volume != 1.0:
+                                        inj_track = inj_track * self._volume
+                                    inj_track = np.clip(inj_track, -1.0, 1.0)
+                                    inj_samples = self.resample_float32_channels(
+                                        inj_track,
+                                        SAMPLE_RATE,
+                                        apo_rate,
+                                        apo_ch,
+                                    )
+                                    shm.write_samples(inj_samples)
+
+                    # Monitor reader
+                    if monitor_stream is not None:
+                        track_float, read_frames = self._ring_buffer.read(
+                            frames, reader_id=READER_MONITOR
+                        )
+                    else:
+                        track_float = np.zeros((frames, CHANNELS), dtype=np.float32)
+                        avail_shm_now = shm.available_to_read() if shm is not None else 0
+                        read_frames = frames if (track_active_for_apo and avail_shm_now > 0) else 0
+
+                    avail_inj = self._ring_buffer.available(READER_INJECTION)
+                    avail_mon = (
+                        self._ring_buffer.available(READER_MONITOR)
+                        if monitor_stream is not None
+                        else 0
+                    )
+                    avail_shm = shm.available_to_read() if shm is not None else 0
                     has_music = (
                         read_frames > 0
                         or self._process is not None
                         or self._pending_track is not None
-                        or self._ring_buffer.available() > 0
+                        or avail_inj > 0
+                        or avail_mon > 0
+                        or avail_shm > 0
                     )
-                    if read_frames > 0 and self._active_track is not None:
-                        self._position_seconds += read_frames / SAMPLE_RATE
-                        if self._volume != 1.0:
-                            track_float = track_float * self._volume
-                        now = time.monotonic()
-                        if self.on_position and (now - last_pos_notify) >= 0.15:
-                            last_pos_notify = now
-                            self.on_position(self._position_seconds)
-                        notified_finished = False
-                    elif (
-                        self._decoder_finished.is_set()
-                        and self._ring_buffer.available() == 0
-                        and self._active_track is not None
-                    ):
-                        with self._lock:
-                            has_pending = self._pending_track is not None
-                            keep_mic = self._keep_mic_alive
-                            was_stopped = self._stop_event.is_set()
-                            if not has_pending:
-                                self._active_track = None
-                        if not has_pending and not was_stopped:
-                            if not keep_mic:
-                                self._drain_stream_safe(stream)
-                                self._drain_stream_safe(monitor_stream)
-                            notified_finished = True
-                            if self.on_finished:
-                                self.on_finished()
-                        self._decoder_finished.clear()
-                        has_music = has_pending
+                else:
+                    # Virtual Cable mode: Single stream reads frames and mixes to stream and monitor
+                    track_float, read_frames = self._ring_buffer.read(
+                        frames, reader_id=READER_INJECTION
+                    )
+                    has_music = (
+                        read_frames > 0
+                        or self._process is not None
+                        or self._pending_track is not None
+                        or self._ring_buffer.available(READER_INJECTION) > 0
+                    )
+
+                if read_frames > 0 and self._active_track is not None:
+                    self._position_seconds += read_frames / SAMPLE_RATE
+                    if cur_mode != ROUTING_MODE_INJECTION and self._volume != 1.0:
+                        track_float = track_float * self._volume
+                    track_float = np.clip(track_float, -1.0, 1.0)
+                    now = time.monotonic()
+                    if self.on_position and (now - last_pos_notify) >= 0.15:
+                        last_pos_notify = now
+                        self.on_position(self._position_seconds)
+                    notified_finished = False
+                elif (
+                    self._decoder_finished.is_set()
+                    and not has_music
+                    and self._active_track is not None
+                ):
+                    with self._lock:
+                        has_pending = self._pending_track is not None
+                        keep_mic = self._keep_mic_alive
+                        was_stopped = self._stop_event.is_set()
+                        if not has_pending:
+                            self._active_track = None
+                    if not has_pending and not was_stopped:
+                        if not keep_mic:
+                            self._drain_stream_safe(stream)
+                            self._drain_stream_safe(monitor_stream)
+                        notified_finished = True
+                        if self.on_finished:
+                            self.on_finished()
+                    self._decoder_finished.clear()
+                    has_music = has_pending
 
                 # Determine if engine should stop
                 with self._lock:
@@ -1960,43 +2151,8 @@ class AudioEngine:
                 if not keep_mic and not has_music and not has_pending:
                     break
 
-                # 3 & 4. Routing output: Injection SHM vs Virtual Cable
-                if cur_mode == ROUTING_MODE_INJECTION:
-                    shm = self._ensure_injection_shm()
-                    if shm is not None and shm.has_lease:
-                        apo_status = shm.get_apo_status()
-                        track_active_for_apo = bool(
-                            has_music
-                            and self._active_track is not None
-                            and self._route_mic
-                            and not self._pause_event.is_set()
-                        )
-                        shm.update_control(
-                            mic_gain=self._mic_volume,
-                            mic_mute=self._mic_muted,
-                            track_playing=track_active_for_apo,
-                            passthrough=False,
-                            target_endpoint_guid=self.target_endpoint_guid,
-                        )
-                        if track_active_for_apo and read_frames > 0:
-                            apo_rate = (
-                                apo_status.sample_rate
-                                if apo_status.sample_rate > 0
-                                else SAMPLE_RATE
-                            )
-                            apo_ch = (
-                                apo_status.channels
-                                if apo_status.channels > 0
-                                else CHANNELS
-                            )
-                            inj_samples = self.resample_float32_channels(
-                                track_float[:read_frames],
-                                SAMPLE_RATE,
-                                apo_rate,
-                                apo_ch,
-                            )
-                            shm.write_samples(inj_samples)
-                elif stream is not None:
+                # 3 & 4. Routing output: Virtual Cable branch
+                if cur_mode != ROUTING_MODE_INJECTION and stream is not None:
                     track_for_cable = track_float if self._route_mic else np.zeros_like(track_float)
                     mixed_cable = mic_float + track_for_cable
                     limited_cable = self.apply_soft_knee_limiter(mixed_cable)
@@ -2009,6 +2165,10 @@ class AudioEngine:
 
                 # 5. Output write to monitor headphones/speakers
                 if monitor_stream is not None:
+                    if cur_mode == ROUTING_MODE_INJECTION:
+                        if self._volume != 1.0:
+                            track_float = track_float * self._volume
+                        track_float = np.clip(track_float, -1.0, 1.0)
                     track_for_monitor = track_float if self._route_speakers else np.zeros_like(track_float)
                     if self._monitor_mic:
                         mon_mixed = mic_float + track_for_monitor
@@ -2029,6 +2189,8 @@ class AudioEngine:
             if not self._stop_event.is_set() and self.on_error:
                 self.on_error(str(exc))
         finally:
+            self._ring_buffer.set_master_reader(READER_INJECTION)
+            self._ring_buffer.unregister_reader(READER_MONITOR)
             self._close_stream_safe(monitor_stream)
             self._close_stream_safe(stream)
             self._close_stream_safe(mic_stream)

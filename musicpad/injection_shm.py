@@ -327,6 +327,14 @@ class InjectionShm:
         if self._mmap is None or not self._owns_lease:
             return 0
 
+        if not isinstance(samples, np.ndarray):
+            samples = np.asarray(samples)
+        if samples.dtype == np.int16:
+            samples = samples.astype(np.float32) / 32768.0
+        elif samples.dtype != np.float32:
+            samples = samples.astype(np.float32)
+        samples = np.clip(samples, -1.0, 1.0)
+
         flat = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
         count = int(flat.size)
         if count == 0:

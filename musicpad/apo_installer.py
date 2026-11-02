@@ -504,6 +504,15 @@ def _ensure_win32_prototypes() -> None:
     ]
     advapi32.RegCreateKeyExW.restype = wintypes.LONG
 
+    advapi32.RegOpenKeyExW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.RegOpenKeyExW.restype = wintypes.LONG
+
     advapi32.RegDeleteTreeW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR]
     advapi32.RegDeleteTreeW.restype = wintypes.LONG
 
@@ -548,10 +557,23 @@ def _open_hklm_key_backup_restore(subkey: str) -> int:
 
     HKEY_LOCAL_MACHINE_VAL = winreg.HKEY_LOCAL_MACHINE
     REG_OPTION_BACKUP_RESTORE = 0x00000004
+    KEY_WOW64_64KEY = 0x0100
     KEY_ALL_ACCESS = 0x000F003F
+    KEY_WRITE_BACKUP = winreg.KEY_READ | winreg.KEY_WRITE | KEY_WOW64_64KEY
+
+    # Attempt 0: RegOpenKeyExW with REG_OPTION_BACKUP_RESTORE (fastest if key exists)
+    hk_result = wintypes.HANDLE()
+    rc0 = ctypes.windll.advapi32.RegOpenKeyExW(
+        ctypes.c_void_p(HKEY_LOCAL_MACHINE_VAL),
+        subkey,
+        REG_OPTION_BACKUP_RESTORE,
+        KEY_WRITE_BACKUP,
+        ctypes.byref(hk_result),
+    )
+    if rc0 == 0 and hk_result.value:
+        return int(hk_result.value)
 
     # Attempt 1: RegCreateKeyExW with REG_OPTION_BACKUP_RESTORE (bypasses ACL if privilege granted)
-    hk_result = wintypes.HANDLE()
     disposition = wintypes.DWORD()
     rc1 = ctypes.windll.advapi32.RegCreateKeyExW(
         ctypes.c_void_p(HKEY_LOCAL_MACHINE_VAL),
@@ -559,7 +581,7 @@ def _open_hklm_key_backup_restore(subkey: str) -> int:
         0,
         None,
         REG_OPTION_BACKUP_RESTORE,
-        KEY_ALL_ACCESS,
+        KEY_WRITE_BACKUP,
         None,
         ctypes.byref(hk_result),
         ctypes.byref(disposition),
@@ -569,14 +591,13 @@ def _open_hklm_key_backup_restore(subkey: str) -> int:
 
     # Attempt 2: RegCreateKeyExW with standard options (relies on Administrator DACL)
     hk_result = wintypes.HANDLE()
-    disposition = wintypes.DWORD()
     rc2 = ctypes.windll.advapi32.RegCreateKeyExW(
         ctypes.c_void_p(HKEY_LOCAL_MACHINE_VAL),
         subkey,
         0,
         None,
         0,
-        KEY_ALL_ACCESS,
+        KEY_ALL_ACCESS | KEY_WOW64_64KEY,
         None,
         ctypes.byref(hk_result),
         ctypes.byref(disposition),
@@ -584,15 +605,42 @@ def _open_hklm_key_backup_restore(subkey: str) -> int:
     if rc2 == 0 and hk_result.value:
         return int(hk_result.value)
 
-    # Attempt 3: winreg.CreateKeyEx fallback
+    # Attempt 3: winreg.CreateKeyEx / OpenKey fallback
     try:
-        h_winreg = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, subkey, 0, KEY_ALL_ACCESS)
+        h_winreg = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, subkey, 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY)
         return int(h_winreg.Detach())
-    except OSError as e:
-        raise OSError(
-            rc1 or rc2 or e.winerror or 5,
-            f"RegCreateKeyExW failed for {subkey}: attempt1_err={rc1}, attempt2_err={rc2}, winreg_err={e}",
-        ) from e
+    except OSError:
+        pass
+
+    try:
+        h_winreg = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_ALL_ACCESS | KEY_WOW64_64KEY)
+        return int(h_winreg.Detach())
+    except OSError:
+        pass
+
+    # Attempt 4: If access denied and admin, grant BUILTIN\Administrators FullControl via PowerShell and retry
+    if is_admin():
+        try:
+            ps_cmd = (
+                f"$acl = Get-Acl 'HKLM:\\{subkey}'; "
+                f"$rule = New-Object System.Security.AccessControl.RegistryAccessRule("
+                f"'BUILTIN\\Administrators','FullControl','ContainerInherit,ObjectInherit','None','Allow'); "
+                f"$acl.SetAccessRule($rule); Set-Acl 'HKLM:\\{subkey}' $acl"
+            )
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True,
+                check=False,
+            )
+            h_winreg = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_ALL_ACCESS | KEY_WOW64_64KEY)
+            return int(h_winreg.Detach())
+        except Exception:
+            pass
+
+    raise OSError(
+        rc1 or rc2 or 5,
+        f"RegCreateKeyExW failed for {subkey}: attempt0_err={rc0}, attempt1_err={rc1}, attempt2_err={rc2}",
+    )
 
 
 def _delete_hklm_subkey_tree(subkey: str) -> None:

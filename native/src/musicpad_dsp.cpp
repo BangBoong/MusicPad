@@ -124,7 +124,12 @@ MPAD_DSP_API uint32_t mpad_shm_write_samples(
 
     const uint32_t used = (uint32_t)(w - r);
     const uint32_t free_slots = (used >= cap) ? 0 : (cap - used);
-    const uint32_t to_write = (sample_count <= free_slots) ? sample_count : free_slots;
+    uint32_t to_write = (sample_count <= free_slots) ? sample_count : free_slots;
+
+    const uint32_t ch = (shm->header.apo_channels > 0) ? shm->header.apo_channels : 2;
+    if (ch > 1) {
+        to_write = (to_write / ch) * ch;
+    }
     if (to_write == 0) {
         return 0;
     }
@@ -246,11 +251,33 @@ MPAD_DSP_API int mpad_dsp_process_shm_block(
         const uint32_t first_chunk = (read_pos + to_mix <= cap) ? to_mix : (cap - read_pos);
         const uint32_t second_chunk = to_mix - first_chunk;
 
+        const bool need_fade = (to_mix < total_samples);
+        const uint32_t total_frames = (channels > 0) ? (to_mix / channels) : 0;
+        const uint32_t fade_frames = (need_fade && total_frames > 16) ? 16 : 0;
+        const uint32_t fade_start_sample = (fade_frames > 0) ? (to_mix - fade_frames * channels) : to_mix;
+
         for (uint32_t i = 0; i < first_chunk; ++i) {
-            mic_out[i] = ClampSample(mic_out[i] + shm->samples[read_pos + i]);
+            float track_s = shm->samples[read_pos + i];
+            if (i >= fade_start_sample && fade_frames > 0) {
+                const uint32_t sample_in_fade = i - fade_start_sample;
+                const uint32_t frame_in_fade = sample_in_fade / channels;
+                float fade = 1.0f - ((float)(frame_in_fade + 1) / (float)fade_frames);
+                if (fade < 0.0f) fade = 0.0f;
+                track_s *= fade;
+            }
+            mic_out[i] = ClampSample(mic_out[i] + track_s);
         }
         for (uint32_t i = 0; i < second_chunk; ++i) {
-            mic_out[first_chunk + i] = ClampSample(mic_out[first_chunk + i] + shm->samples[i]);
+            const uint32_t global_i = first_chunk + i;
+            float track_s = shm->samples[i];
+            if (global_i >= fade_start_sample && fade_frames > 0) {
+                const uint32_t sample_in_fade = global_i - fade_start_sample;
+                const uint32_t frame_in_fade = sample_in_fade / channels;
+                float fade = 1.0f - ((float)(frame_in_fade + 1) / (float)fade_frames);
+                if (fade < 0.0f) fade = 0.0f;
+                track_s *= fade;
+            }
+            mic_out[global_i] = ClampSample(mic_out[global_i] + track_s);
         }
 
         std::atomic_thread_fence(std::memory_order_release);
