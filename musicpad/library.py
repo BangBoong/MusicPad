@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -187,11 +188,68 @@ def _probe_ffprobe_metadata(path: Path) -> tuple[Optional[str], float]:
     return None, 0.0
 
 
+def extract_embedded_cover(file_path: str | Path, cache_dir: str = ".cache/thumbnails") -> Optional[str]:
+    p = Path(file_path)
+    if not p.is_file():
+        return None
+    stem_hash = hashlib.md5(f"{p.resolve()}_{p.stat().st_mtime}".encode("utf-8")).hexdigest()
+    out_dir = Path(cache_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"local_{stem_hash}.jpg"
+    if out_path.is_file() and out_path.stat().st_size > 0:
+        return str(out_path)
+
+    if MutagenFile is None:
+        return None
+
+    try:
+        data = None
+        f = MutagenFile(p)
+        if f is None:
+            return None
+        # ID3 (MP3, etc.)
+        if hasattr(f, "tags") and f.tags:
+            for tag in f.tags.values():
+                if tag.__class__.__name__ == "APIC" or getattr(tag, "mime", "").startswith("image/"):
+                    data = getattr(tag, "data", None)
+                    if data:
+                        break
+        # FLAC
+        if not data and hasattr(f, "pictures") and f.pictures:
+            data = f.pictures[0].data
+        # MP4 / M4A
+        if not data and hasattr(f, "get"):
+            covr = f.get("covr")
+            if covr and len(covr) > 0:
+                data = bytes(covr[0])
+
+        if data:
+            try:
+                from PIL import Image
+                import io
+                img = Image.open(io.BytesIO(data)).convert("RGB")
+                w, h = img.size
+                if w != h:
+                    min_dim = min(w, h)
+                    left = (w - min_dim) // 2
+                    top = (h - min_dim) // 2
+                    img = img.crop((left, top, left + min_dim, top + min_dim))
+                img = img.resize((40, 40), Image.Resampling.LANCZOS)
+                img.save(str(out_path), "JPEG", quality=90)
+                return str(out_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
 def scan_file(file_path: str | Path) -> Optional[LocalTrack]:
     path = Path(file_path)
     if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         return None
     title = path.stem
+    artist = ""
     duration = 0.0
     if MutagenFile is not None:
         try:
@@ -201,6 +259,11 @@ def scan_file(file_path: str | Path) -> Optional[LocalTrack]:
                 raw_title = metadata.get("title") if hasattr(metadata, "get") else None
                 if raw_title:
                     title = str(raw_title[0] if isinstance(raw_title, list) else raw_title)
+                raw_artist = metadata.get("artist") if hasattr(metadata, "get") else None
+                if not raw_artist and hasattr(metadata, "get"):
+                    raw_artist = metadata.get("ARTIST")
+                if raw_artist:
+                    artist = str(raw_artist[0] if isinstance(raw_artist, list) else raw_artist)
         except (OSError, TypeError, ValueError):
             pass
     if duration <= 0.0 and path.suffix.lower() == ".wav":
@@ -211,7 +274,16 @@ def scan_file(file_path: str | Path) -> Optional[LocalTrack]:
             title = probed_title
         if probed_duration > 0.0:
             duration = probed_duration
-    return LocalTrack(title=title, path=str(path), duration=duration)
+    if not artist:
+        if " — " in title:
+            parts = title.split(" — ", 1)
+            artist = parts[0].strip()
+            title = parts[1].strip()
+        elif " - " in title:
+            parts = title.split(" - ", 1)
+            artist = parts[0].strip()
+            title = parts[1].strip()
+    return LocalTrack(title=title, path=str(path), duration=duration, artist=artist, source="file")
 
 
 def scan_folder(folder: str) -> list[LocalTrack]:

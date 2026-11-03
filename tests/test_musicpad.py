@@ -971,6 +971,88 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(added.title, "Starboy — The Weeknd")
                     self.assertEqual(added.artist, "The Weeknd")
                     self.assertEqual(added.source, "ytmusic")
+
+                    # Verify column fixed widths for alignment
+                    self.assertEqual(app.yt_tree.h_c1.cget("width"), 180)
+                    self.assertEqual(app.yt_tree.h_c2.cget("width"), 80)
+                    self.assertEqual(app.yt_tree.h_c3.cget("width"), 80)
+                    self.assertEqual(app.yt_tree.h_c4.cget("width"), 100)
+                    self.assertEqual(row0_widgets["cell_frames"][1].cget("width"), 180)
+                    self.assertEqual(row0_widgets["cell_frames"][2].cget("width"), 80)
+                    self.assertEqual(row0_widgets["cell_frames"][3].cget("width"), 80)
+                    self.assertEqual(row0_widgets["cell_frames"][4].cget("width"), 100)
+
+                    # Verify category sidebar has no '#' header and no count labels
+                    self.assertIsNone(app.cat_hdr_lbl2)
+                    self.assertIsNone(app.category_count_lbl)
+                    self.assertIsNone(app.cat_yt_count_lbl)
+
+                    # Verify YouTube panel placement covers table header (y=0)
+                    app._show_yt_search_panel()
+                    place_info = app.yt_search_frame.place_info()
+                    self.assertEqual(int(place_info.get("y", -1)), 0)
+                finally:
+                    app._exit()
+
+    def test_unified_my_sounds_track_list_and_56px_row_height(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Verify track_list is TrackListView instance
+                    self.assertIsInstance(app.track_list, main.TrackListView)
+
+                    # 2. Add local tracks with artist and hotkey
+                    t1 = main.LocalTrack(
+                        title="Never Too Late",
+                        path="C:/fake/never.mp3",
+                        duration=209.0,
+                        artist="Three Days Grace",
+                        hotkey="Alt+6",
+                        source="file",
+                    )
+                    t2 = main.LocalTrack(
+                        title="Animal I Have Become",
+                        path="https://music.youtube.com/watch?v=123",
+                        duration=231.0,
+                        is_url=True,
+                        artist="Three Days Grace",
+                        source="ytmusic",
+                    )
+                    app._set_tracks([t1, t2])
+                    app.update()
+
+                    # 3. Verify columns and row count
+                    self.assertEqual(len(app.track_list.get_children()), 2)
+                    self.assertEqual(app.track_list.hdr_lbl_title.cget("text"), "Назва")
+                    self.assertEqual(app.track_list.hdr_lbl_artist.cget("text"), "Виконавець")
+                    self.assertEqual(app.track_list.hdr_lbl_duration.cget("text"), "Тривалість")
+                    self.assertEqual(app.track_list.hdr_lbl_source.cget("text"), "Джерело")
+                    self.assertEqual(app.track_list.hdr_lbl_cover.cget("text"), "Обкладинка")
+
+                    # 4. Verify 56px row height
+                    row0 = app.track_list._row_frames["0"]
+                    self.assertEqual(row0.cget("height"), 56)
+
+                    # 5. Verify row content and hotkey display
+                    w0 = app.track_list._row_widgets["0"]
+                    self.assertIn("Never Too Late", w0["title"].cget("text"))
+                    self.assertIn("[Alt+6]", w0["title"].cget("text"))
+                    self.assertEqual(w0["artist"].cget("text"), "Three Days Grace")
+                    self.assertEqual(w0["duration"].cget("text"), "3:29")
+                    self.assertEqual(w0["source"].cget("text"), "Файл")
+
+                    # 6. Verify row 1 (ytmusic)
+                    w1 = app.track_list._row_widgets["1"]
+                    self.assertIn("Animal I Have Become", w1["title"].cget("text"))
+                    self.assertEqual(w1["source"].cget("text"), "YTMusic")
+
+                    # 7. Verify local cover extraction helper
+                    from musicpad.library import extract_embedded_cover
+                    dummy_wav = Path(tmp) / "empty.wav"
+                    dummy_wav.write_bytes(bytes([82, 73, 70, 70]) + bytes(40))
+                    self.assertIsNone(extract_embedded_cover(dummy_wav, cache_dir=tmp))
                 finally:
                     app._exit()
 
@@ -2482,7 +2564,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_file = Path(tmp) / "state_tb.json"
             dummy_wav = Path(tmp) / "test_track.wav"
-            dummy_wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00D\xac\x00\x00\x88X\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00")
+            dummy_wav.write_bytes(bytes([82, 73, 70, 70]) + bytes(40))
 
             with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
                 with patch.object(main.MusicPadApp, "_is_mocked_env", return_value=False):
