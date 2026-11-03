@@ -2557,6 +2557,7 @@ class MusicPadApp(tk.Tk):
         self._clipboard_tracks: list[LocalTrack] = []
         self._yt_thumb_cache: dict[str, Any] = {}
         self._yt_search_generation: int = 0
+        self.yt_filter_var = tk.StringVar(value="all")
         self._init_settings_variables()
 
     def _create_icons(self) -> None:
@@ -4248,7 +4249,25 @@ class MusicPadApp(tk.Tk):
             fg=c["accent"],
             command=self._open_settings,
         )
-        self.btn_wrench.pack(side="right", padx=16, pady=10)
+        self.btn_wrench.pack(side="right", padx=(0, 16), pady=10)
+
+        # Clear Cache button (visible only in "Moї звуки" category)
+        self.btn_clear_cache = tk.Button(
+            self.info_panel,
+            text="🗑 Очистити кеш",
+            bg=c["top_bg"],
+            fg=c["fg"],
+            activebackground=c["active_menu_bg"],
+            activeforeground=c["active_menu_fg"],
+            bd=1,
+            relief="solid",
+            cursor="hand2",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=3,
+            command=self._on_clear_cache_clicked,
+        )
+        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10)
 
     def _build_bottom_toolbar(self) -> None:
         c = self._get_theme_colors()
@@ -6273,6 +6292,13 @@ class MusicPadApp(tk.Tk):
             self.stats_plays_lbl.configure(bg=c["info_bg"], fg=c["fg"])
         if hasattr(self, "stats_selected_lbl") and hasattr(self.stats_selected_lbl, "configure"):
             self.stats_selected_lbl.configure(bg=c["info_bg"], fg=c["fg"])
+        if hasattr(self, "btn_clear_cache") and hasattr(self.btn_clear_cache, "configure"):
+            self.btn_clear_cache.configure(
+                bg=c["top_bg"],
+                fg=c["fg"],
+                activebackground=c["active_menu_bg"],
+                activeforeground=c["active_menu_fg"],
+            )
         if hasattr(self, "btn_wrench") and hasattr(self.btn_wrench, "configure"):
             self.btn_wrench.configure(
                 bg=c["info_bg"],
@@ -6329,6 +6355,22 @@ class MusicPadApp(tk.Tk):
                 )
             if hasattr(self, "yt_status_lbl") and self.yt_status_lbl.winfo_exists():
                 self.yt_status_lbl.configure(bg=c["table_bg"], fg=c["muted_fg"])
+            if hasattr(self, "yt_status_bar") and self.yt_status_bar.winfo_exists():
+                self.yt_status_bar.configure(bg=c["table_bg"])
+            if hasattr(self, "btn_yt_filter") and self.btn_yt_filter.winfo_exists():
+                self.btn_yt_filter.configure(
+                    bg=c["top_bg"],
+                    fg=c["fg"],
+                    activebackground=c["active_menu_bg"],
+                    activeforeground=c["active_menu_fg"],
+                )
+            if hasattr(self, "menu_yt_filter") and self.menu_yt_filter.winfo_exists():
+                self.menu_yt_filter.configure(
+                    bg=c["top_bg"],
+                    fg=c["fg"],
+                    activebackground=c["accent"],
+                    activeforeground="#ffffff",
+                )
             if hasattr(self, "yt_album_nav_bar") and self.yt_album_nav_bar.winfo_exists():
                 self.yt_album_nav_bar.configure(bg=c["table_bg"])
             if hasattr(self, "btn_back_to_results") and self.btn_back_to_results.winfo_exists():
@@ -6929,6 +6971,9 @@ class MusicPadApp(tk.Tk):
             if hasattr(self, "stats_frame") and hasattr(self.stats_frame, "pack_forget"):
                 if self.stats_frame.winfo_manager() == "pack":
                     self.stats_frame.pack_forget()
+            if hasattr(self, "btn_clear_cache") and hasattr(self.btn_clear_cache, "pack_forget"):
+                if self.btn_clear_cache.winfo_manager() == "pack":
+                    self.btn_clear_cache.pack_forget()
         else:
             if hasattr(self, "info_house_lbl") and hasattr(self.info_house_lbl, "configure"):
                 house_img = self._icons.get("house_lg")
@@ -6944,6 +6989,12 @@ class MusicPadApp(tk.Tk):
                     bg=c["info_bg"],
                     fg=c["fg"],
                 )
+            if hasattr(self, "btn_clear_cache") and self.btn_clear_cache.winfo_exists():
+                if self.btn_clear_cache.winfo_manager() != "pack":
+                    if hasattr(self, "btn_wrench") and self.btn_wrench.winfo_exists():
+                        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10, before=self.btn_wrench)
+                    else:
+                        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10)
             if hasattr(self, "stats_frame"):
                 if hasattr(self.stats_frame, "configure"):
                     self.stats_frame.configure(bg=c["info_bg"])
@@ -7138,16 +7189,47 @@ class MusicPadApp(tk.Tk):
         self.btn_yt_search.pack(side="right")
         self.btn_search = self.btn_yt_search
 
-        # 3. Status label
+        # 3. Status and Filter bar
+        self.yt_status_bar = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
+        self.yt_status_bar.pack(fill="x", padx=12, pady=(2, 4))
+
         self.yt_status_lbl = tk.Label(
-            self.yt_search_frame,
+            self.yt_status_bar,
             text="Введіть запит і натисніть Знайти",
             bg=c["table_bg"],
             fg=c["muted_fg"],
             font=("Segoe UI", 9),
             anchor="w",
         )
-        self.yt_status_lbl.pack(fill="x", padx=12, pady=(2, 4))
+        self.yt_status_lbl.pack(side="left", fill="x", expand=True)
+
+        self.btn_yt_filter = tk.Menubutton(
+            self.yt_status_bar,
+            text="Фільтр: Всі результати ▾",
+            bg=c["top_bg"],
+            fg=c["fg"],
+            activebackground=c["active_menu_bg"],
+            activeforeground=c["active_menu_fg"],
+            bd=1,
+            relief="solid",
+            cursor="hand2",
+            font=("Segoe UI", 9),
+            padx=8,
+            pady=2,
+        )
+        self.menu_yt_filter = tk.Menu(
+            self.btn_yt_filter,
+            tearoff=0,
+            bg=c["top_bg"],
+            fg=c["fg"],
+            activebackground=c["accent"],
+            activeforeground="#ffffff",
+        )
+        self.menu_yt_filter.add_command(label="Всі результати", command=lambda: self._set_yt_filter("all"))
+        self.menu_yt_filter.add_command(label="Без альбомів", command=lambda: self._set_yt_filter("no_albums"))
+        self.menu_yt_filter.add_command(label="Тільки альбоми", command=lambda: self._set_yt_filter("albums_only"))
+        self.btn_yt_filter.configure(menu=self.menu_yt_filter)
+        self.btn_yt_filter.pack(side="right")
 
         # 3b. Album Navigation Bar (shown when viewing an album)
         self.yt_album_nav_bar = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
@@ -7247,6 +7329,38 @@ class MusicPadApp(tk.Tk):
         )
         self.btn_yt_close.pack(side="right")
 
+    def _on_clear_cache_clicked(self) -> None:
+        try:
+            bytes_sz = AudioEngine.get_cache_size_bytes()
+            mb_sz = bytes_sz / (1024 * 1024)
+            msg = f"Очистити кеш завантажених аудіофайлів та обкладинок (зайнято {mb_sz:.1f} МБ)?"
+            if not messagebox.askyesno("Очищення кешу", msg):
+                return
+            del_count, freed_bytes = AudioEngine.purge_cache()
+            if hasattr(self, "_yt_thumb_cache"):
+                self._yt_thumb_cache.clear()
+            freed_mb = freed_bytes / (1024 * 1024)
+            self.status_var.set(f"Кеш успішно очищено (видалено {del_count} файлів, звільнено {freed_mb:.1f} МБ).")
+        except Exception as exc:
+            self.notify_error(f"Помилка очищення кешу: {exc}")
+
+    def _set_yt_filter(self, mode: str) -> None:
+        if mode not in ("all", "no_albums", "albums_only"):
+            mode = "all"
+        self.yt_filter_var.set(mode)
+        labels = {
+            "all": "Всі результати",
+            "no_albums": "Без альбомів",
+            "albums_only": "Тільки альбоми",
+        }
+        lbl = labels.get(mode, "Всі результати")
+        if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
+            self.btn_yt_filter.configure(text=f"Фільтр: {lbl} ▾")
+        if not getattr(self, "_loading_state", False):
+            self._save_state()
+            if hasattr(self, "yt_query_var") and self.yt_query_var.get().strip():
+                self._perform_yt_search()
+
     def _open_yt_search(self) -> None:
         query = self.url_var.get().strip()
         if query:
@@ -7259,11 +7373,17 @@ class MusicPadApp(tk.Tk):
         q = self.yt_query_var.get().strip()
         if not q:
             return
-        self.yt_status_lbl.configure(text=f"Пошук на YouTube: {q}...")
+        f_mode = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+        filter_hint = ""
+        if f_mode == "no_albums":
+            filter_hint = " (без альбомів)"
+        elif f_mode == "albums_only":
+            filter_hint = " (тільки альбоми)"
+        self.yt_status_lbl.configure(text=f"Пошук на YouTube{filter_hint}: {q}...")
 
         def worker() -> None:
             try:
-                items = AudioEngine.search_youtube(q, limit=25)
+                items = AudioEngine.search_youtube(q, limit=35, filter_mode=f_mode)
                 self._safe_ui_call(self._render_yt_results, items)
             except Exception as exc:
                 self._safe_ui_call(self._render_yt_results, [], str(exc))
@@ -7488,12 +7608,13 @@ class MusicPadApp(tk.Tk):
             self.yt_top.pack_forget()
         if hasattr(self, "yt_album_nav_bar"):
             self.yt_album_nav_bar.pack(before=self.yt_table_box, fill="x", padx=12, pady=(10, 4))
-        if hasattr(self, "yt_status_lbl"):
+        status_widget = getattr(self, "yt_status_bar", None) or getattr(self, "yt_status_lbl", None)
+        if status_widget is not None:
             if not tracks:
                 self.yt_status_lbl.configure(text="Треки альбому не знайдено або сталася помилка завантаження.")
-                self.yt_status_lbl.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
+                status_widget.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
             else:
-                self.yt_status_lbl.pack_forget()
+                status_widget.pack_forget()
 
         for row in self.yt_tree.get_children():
             self.yt_tree.delete(row)
@@ -7548,8 +7669,9 @@ class MusicPadApp(tk.Tk):
             self.yt_top.pack(before=self.yt_table_box, fill="x", padx=12, pady=(10, 4))
         if hasattr(self, "_cached_search_results"):
             self._render_yt_results(self._cached_search_results)
-        if hasattr(self, "yt_status_lbl"):
-            self.yt_status_lbl.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
+        status_widget = getattr(self, "yt_status_bar", None) or getattr(self, "yt_status_lbl", None)
+        if status_widget is not None:
+            status_widget.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
             if hasattr(self, "_cached_yt_status") and self._cached_yt_status:
                 self.yt_status_lbl.configure(text=self._cached_yt_status)
 
@@ -8152,6 +8274,7 @@ class MusicPadApp(tk.Tk):
                 "monitor": self.monitor_var.get(),
                 "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                 "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
+                "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
                 "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
                 "volume": self.volume_var.get(),
                 "mic_volume": self.mic_volume_var.get(),
@@ -8272,6 +8395,7 @@ class MusicPadApp(tk.Tk):
                     "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
                     "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                     "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
+                    "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
                 }
             if hasattr(self, "_current_window_geom") and self._current_window_geom:
                 data["window_geometry"] = dict(self._current_window_geom)
@@ -8304,6 +8428,11 @@ class MusicPadApp(tk.Tk):
             data = json.loads(cfg_file.read_text(encoding="utf-8"))
             if "window_geometry" in data:
                 self._restore_window_geometry(data["window_geometry"])
+            saved_filter = data.get("yt_search_filter")
+            if not saved_filter and isinstance(data.get("settings_custom"), dict):
+                saved_filter = data["settings_custom"].get("yt_search_filter")
+            if saved_filter:
+                self._set_yt_filter(str(saved_filter))
             if data.get("output") in self.output_map:
                 self.output_var.set(data["output"])
             saved_mic = data.get("mix_mic", "")

@@ -2547,6 +2547,46 @@ class AudioEngine:
     def clear_cache(cls) -> None:
         with _YT_CACHE_LOCK:
             _YT_STREAM_CACHE.clear()
+            _ALBUM_CACHE.clear()
+
+    @classmethod
+    def get_cache_size_bytes(cls) -> int:
+        total = 0
+        for sub in ("youtube", "thumbnails"):
+            d = _app_root_dir() / ".cache" / sub
+            if d.is_dir():
+                for f in d.rglob("*"):
+                    if f.is_file():
+                        try:
+                            total += f.stat().st_size
+                        except Exception:
+                            pass
+        return total
+
+    @classmethod
+    def purge_cache(cls) -> tuple[int, int]:
+        """Purge cached media files in .cache/youtube and .cache/thumbnails.
+        Returns (deleted_count, freed_bytes).
+        """
+        deleted_count = 0
+        freed_bytes = 0
+        with _YT_CACHE_LOCK:
+            _YT_STREAM_CACHE.clear()
+            _ALBUM_CACHE.clear()
+
+        for sub in ("youtube", "thumbnails"):
+            d = _app_root_dir() / ".cache" / sub
+            if d.is_dir():
+                for f in list(d.rglob("*")):
+                    if f.is_file():
+                        try:
+                            sz = f.stat().st_size
+                            f.unlink()
+                            freed_bytes += sz
+                            deleted_count += 1
+                        except Exception:
+                            pass
+        return deleted_count, freed_bytes
 
     @staticmethod
     def _resolve_source(track: StreamTrack) -> tuple[str, str]:
@@ -2813,7 +2853,7 @@ class AudioEngine:
         return result
 
     @staticmethod
-    def search_youtube(query: str, limit: int = 25) -> list[dict[str, Any]]:
+    def search_youtube(query: str, limit: int = 25, filter_mode: str = "all") -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
             return []
@@ -2830,43 +2870,58 @@ class AudioEngine:
                     raw_albums: list[dict[str, Any]] = []
                     raw_videos: list[dict[str, Any]] = []
 
-                    try:
-                        raw_songs = ytmusic.search(query, filter="songs") or []
-                    except Exception:
-                        pass
+                    allow_albums = filter_mode in ("all", "albums_only")
+                    allow_songs = filter_mode in ("all", "no_albums")
 
-                    try:
-                        raw_albums = ytmusic.search(query, filter="albums") or []
-                    except Exception:
-                        pass
+                    if allow_songs:
+                        try:
+                            raw_songs = ytmusic.search(query, filter="songs") or []
+                        except Exception:
+                            pass
 
-                    try:
-                        if len(raw_songs) < limit:
-                            raw_videos = ytmusic.search(query, filter="videos") or []
-                    except Exception:
-                        pass
+                    if allow_albums:
+                        try:
+                            raw_albums = ytmusic.search(query, filter="albums") or []
+                        except Exception:
+                            pass
+
+                    if allow_songs:
+                        try:
+                            if len(raw_songs) < limit:
+                                raw_videos = ytmusic.search(query, filter="videos") or []
+                        except Exception:
+                            pass
 
                     try:
                         raw_general = ytmusic.search(query, filter=None) or []
                         for entry in raw_general:
                             if isinstance(entry, dict):
                                 rtype = str(entry.get("resultType") or "").lower()
-                                if rtype == "album":
+                                if rtype == "album" and allow_albums:
                                     raw_albums.append(entry)
-                                elif rtype == "song" and len(raw_songs) < limit:
+                                elif rtype == "song" and allow_songs and len(raw_songs) < limit:
                                     raw_songs.append(entry)
-                                elif rtype == "video" and len(raw_videos) < limit:
+                                elif rtype == "video" and allow_songs and len(raw_videos) < limit:
                                     raw_videos.append(entry)
                     except Exception:
                         pass
 
-                    # Select quotas: if albums exist, allocate up to 5 albums, rest songs & videos
-                    album_quota = min(len(raw_albums), 5)
-                    song_quota = max(0, limit - album_quota) if album_quota > 0 else limit
-                    selected_songs = raw_songs[:song_quota]
-                    selected_albums = raw_albums[:album_quota]
-                    remaining_slots = limit - len(selected_songs) - len(selected_albums)
-                    selected_videos = raw_videos[:remaining_slots] if remaining_slots > 0 else []
+                    if filter_mode == "albums_only":
+                        selected_albums = raw_albums[:limit]
+                        selected_songs = []
+                        selected_videos = []
+                    elif filter_mode == "no_albums":
+                        selected_albums = []
+                        selected_songs = raw_songs[:limit]
+                        remaining_slots = limit - len(selected_songs)
+                        selected_videos = raw_videos[:remaining_slots] if remaining_slots > 0 else []
+                    else:
+                        album_quota = min(len(raw_albums), 5)
+                        song_quota = max(0, limit - album_quota) if album_quota > 0 else limit
+                        selected_songs = raw_songs[:song_quota]
+                        selected_albums = raw_albums[:album_quota]
+                        remaining_slots = limit - len(selected_songs) - len(selected_albums)
+                        selected_videos = raw_videos[:remaining_slots] if remaining_slots > 0 else []
 
                     # Tagged entries: albums first so album searches are immediately visible!
                     tagged_entries: list[tuple[dict[str, Any], str]] = [
@@ -2992,7 +3047,7 @@ class AudioEngine:
                     if YoutubeDL is None or _is_mocked_youtube():
                         raise
 
-            if len(items) < limit and YoutubeDL is not None and not _is_mocked_youtube():
+            if filter_mode != "albums_only" and len(items) < limit and YoutubeDL is not None and not _is_mocked_youtube():
                 with YoutubeDL(
                     {
                         "quiet": True,

@@ -3650,6 +3650,136 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
             self.assertEqual(alb["title"], "Text TrackCount Album")
             self.assertEqual(len(alb["tracks"]), 1)
 
+    def test_audio_engine_cache_size_and_purge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            yt_cache = tmp_root / ".cache" / "youtube"
+            thumb_cache = tmp_root / ".cache" / "thumbnails"
+            yt_cache.mkdir(parents=True, exist_ok=True)
+            thumb_cache.mkdir(parents=True, exist_ok=True)
+
+            f1 = yt_cache / "audio1.webm"
+            f1.write_bytes(b"x" * 1024)
+            f2 = thumb_cache / "thumb1.png"
+            f2.write_bytes(b"y" * 2048)
+
+            with patch("musicpad.audio_engine._app_root_dir", return_value=tmp_root):
+                size = AudioEngine.get_cache_size_bytes()
+                self.assertEqual(size, 3072)
+
+                ae_mod._YT_STREAM_CACHE["test"] = ("url", 1234567890.0)
+                ae_mod._ALBUM_CACHE["test_alb"] = {"title": "Alb"}
+
+                count, freed = AudioEngine.purge_cache()
+                self.assertEqual(count, 2)
+                self.assertEqual(freed, 3072)
+                self.assertEqual(AudioEngine.get_cache_size_bytes(), 0)
+                self.assertEqual(len(ae_mod._YT_STREAM_CACHE), 0)
+                self.assertEqual(len(ae_mod._ALBUM_CACHE), 0)
+                self.assertFalse(f1.exists())
+                self.assertFalse(f2.exists())
+
+    def test_audio_engine_search_filter_modes(self) -> None:
+        mock_yt = MagicMock()
+        mock_yt.search.side_effect = lambda q, filter=None, limit=25: [
+            {"videoId": "s1", "title": "Song 1", "artists": [{"name": "Art"}], "duration_seconds": 180, "thumbnails": []}
+        ] if filter == "songs" else [
+            {"browseId": "b1", "title": "Album 1", "artists": [{"name": "Art"}], "thumbnails": []}
+        ] if filter == "albums" else []
+
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_yt), \
+             patch("musicpad.audio_engine.YoutubeDL", None):
+            # 1. filter_mode = "no_albums" -> only songs, no albums
+            res_no_albums = AudioEngine.search_youtube("test query", limit=20, filter_mode="no_albums")
+            self.assertTrue(len(res_no_albums) > 0)
+            self.assertTrue(all(item.get("item_type") != "Альбом" for item in res_no_albums))
+
+            # 2. filter_mode = "albums_only" -> only albums
+            res_albums_only = AudioEngine.search_youtube("test query", limit=20, filter_mode="albums_only")
+            self.assertTrue(len(res_albums_only) > 0)
+            self.assertTrue(all(item.get("item_type") == "Альбом" for item in res_albums_only))
+
+            # 3. filter_mode = "all" -> contains both songs and albums
+            res_all = AudioEngine.search_youtube("test query", limit=20, filter_mode="all")
+            has_album = any(item.get("item_type") == "Альбом" for item in res_all)
+            has_song = any(item.get("item_type") != "Альбом" for item in res_all)
+            self.assertTrue(has_album and has_song)
+
+    def test_clear_cache_ui_visibility_and_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_cache_test.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Clear cache button exists and text is correct
+                    self.assertTrue(hasattr(app, "btn_clear_cache"))
+                    self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Очистити кеш")
+
+                    # In "my_sounds" category, it is packed
+                    self.assertEqual(app.current_category, "my_sounds")
+                    self.assertEqual(app.btn_clear_cache.winfo_manager(), "pack")
+
+                    # Switch to "youtube" category -> button hidden
+                    app._select_category("youtube")
+                    self.assertEqual(app.btn_clear_cache.winfo_manager(), "")
+
+                    # Switch back to "my_sounds" -> button re-packed
+                    app._select_category("my_sounds")
+                    self.assertEqual(app.btn_clear_cache.winfo_manager(), "pack")
+
+                    # 2. Test click with askyesno=False
+                    with patch("main.messagebox.askyesno", return_value=False), \
+                         patch("musicpad.audio_engine.AudioEngine.purge_cache") as mock_purge:
+                        app._on_clear_cache_clicked()
+                        mock_purge.assert_not_called()
+
+                    # 3. Test click with askyesno=True
+                    with patch("main.messagebox.askyesno", return_value=True), \
+                         patch("musicpad.audio_engine.AudioEngine.get_cache_size_bytes", return_value=10485760), \
+                         patch("musicpad.audio_engine.AudioEngine.purge_cache", return_value=(5, 10485760)):
+                        app._yt_thumb_cache["cached_img"] = "dummy"
+                        app._on_clear_cache_clicked()
+                        self.assertEqual(len(app._yt_thumb_cache), 0)
+                        self.assertIn("10.0 МБ", app.status_var.get())
+                finally:
+                    app._exit()
+
+    def test_search_filter_ui_and_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_filter_test.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Check filter widgets
+                    self.assertTrue(hasattr(app, "btn_yt_filter"))
+                    self.assertTrue(hasattr(app, "yt_filter_var"))
+                    self.assertEqual(app.yt_filter_var.get(), "all")
+                    self.assertIn("Всі результати", app.btn_yt_filter.cget("text"))
+
+                    # Set filter to no_albums
+                    app._set_yt_filter("no_albums")
+                    self.assertEqual(app.yt_filter_var.get(), "no_albums")
+                    self.assertIn("Без альбомів", app.btn_yt_filter.cget("text"))
+
+                    # Verify saved state has yt_search_filter
+                    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertEqual(data.get("yt_search_filter"), "no_albums")
+
+                    # Set filter to albums_only
+                    app._set_yt_filter("albums_only")
+                    self.assertEqual(app.yt_filter_var.get(), "albums_only")
+                    self.assertIn("Тільки альбоми", app.btn_yt_filter.cget("text"))
+                finally:
+                    app._exit()
+
+                # Reopen app with that config file and verify filter restored
+                app2 = main.MusicPadApp()
+                try:
+                    self.assertEqual(app2.yt_filter_var.get(), "albums_only")
+                    self.assertIn("Тільки альбоми", app2.btn_yt_filter.cget("text"))
+                finally:
+                    app2._exit()
+
 
 if __name__ == "__main__":
     unittest.main()
