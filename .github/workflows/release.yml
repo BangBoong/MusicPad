@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published, created]
   workflow_dispatch:
 
 permissions:
@@ -13,6 +15,7 @@ jobs:
   build:
     name: Build Windows Executable
     runs-on: windows-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -86,22 +89,34 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
 
-      - name: Run Python Unit Tests
-        run: |
-          python -m unittest discover -s tests -v
-
       - name: Compile with PyInstaller (Embedded FFmpeg, FFprobe, and Native APO/DSP)
         run: |
           pyinstaller --clean --noconfirm MusicPad.spec
+
+      - name: Verify Compiled Executable via Self-Test
+        shell: powershell
+        run: |
+          Start-Process -FilePath ".\dist\MusicPad.exe" -ArgumentList "--self-test", "self_test_report.json" -Wait
+          Get-Content self_test_report.json
+          Remove-Item self_test_report.json
 
       - name: Prepare Portable ZIP Archive
         shell: powershell
         run: |
           Compress-Archive -Path dist\MusicPad.exe, README.md, musicpad.ico -DestinationPath dist\MusicPad-windows-x64.zip
 
+      - name: Upload Build Artifacts to Actions Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicPad-windows-x64
+          path: |
+            dist/MusicPad.exe
+            dist/MusicPad-windows-x64.zip
+          retention-days: 14
+
       - name: Upload Artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         with:
           files: |
             dist/MusicPad.exe

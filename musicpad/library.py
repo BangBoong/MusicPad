@@ -68,6 +68,59 @@ def format_duration(seconds: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+def format_album_duration(
+    track_count: Optional[int],
+    duration_sec: Optional[float] = None,
+    duration_str: str = "",
+) -> str:
+    parts: list[str] = []
+    if track_count is not None:
+        try:
+            tc_int = int(track_count)
+            if tc_int > 0:
+                parts.append(f"{tc_int} тр.")
+        except (ValueError, TypeError):
+            pass
+
+    dur_text = ""
+    if duration_sec is not None and float(duration_sec or 0.0) > 0:
+        sec = int(duration_sec)
+        hours = sec // 3600
+        mins = (sec % 3600) // 60
+        if hours > 0:
+            dur_text = f"{hours} год {mins} хв" if mins > 0 else f"{hours} год"
+        else:
+            dur_text = f"{max(1, mins)} хв"
+    elif duration_str:
+        ds = str(duration_str).lower().strip()
+        h_m = re.search(r"(\d+)\s*(?:hour|hr|h|год)", ds)
+        m_m = re.search(r"(\d+)\s*(?:minute|min|m|хв)", ds)
+        if h_m or m_m:
+            h = int(h_m.group(1)) if h_m else 0
+            m = int(m_m.group(1)) if m_m else 0
+            if h > 0:
+                dur_text = f"{h} год {m} хв" if m > 0 else f"{h} год"
+            elif m > 0:
+                dur_text = f"{m} хв"
+        elif ":" in ds:
+            col_parts = [int(p) for p in ds.split(":") if p.isdigit()]
+            if len(col_parts) == 3:
+                h, m = col_parts[0], col_parts[1]
+                dur_text = f"{h} год {m} хв" if m > 0 else f"{h} год"
+            elif len(col_parts) == 2:
+                m = col_parts[0]
+                dur_text = f"{max(1, m)} хв"
+            else:
+                dur_text = duration_str
+        else:
+            dur_text = duration_str
+
+    if dur_text:
+        parts.append(dur_text)
+
+    return " • ".join(parts) if parts else ""
+
+
 def _probe_wav_duration(path: Path) -> float:
     if wave is not None:
         try:

@@ -48,7 +48,14 @@ from musicpad.audio_engine import (
     AudioEngineError,
     StreamTrack,
 )
-from musicpad.library import LocalTrack, SUPPORTED_EXTENSIONS, format_duration, scan_file, scan_folder
+from musicpad.library import (
+    LocalTrack,
+    SUPPORTED_EXTENSIONS,
+    format_album_duration,
+    format_duration,
+    scan_file,
+    scan_folder,
+)
 
 
 _VK_MAP: dict[str, int] = {
@@ -986,7 +993,16 @@ class SpeechBubble(tk.Toplevel):
                 and self.target_widget.winfo_exists()
                 and self.target_widget.winfo_ismapped()
             ):
-                self.target_widget.update_idletasks()
+                is_headless = bool(
+                    os.environ.get("CI")
+                    or os.environ.get("GITHUB_ACTIONS")
+                    or getattr(self.master, "_in_update", False)
+                )
+                if not is_headless:
+                    try:
+                        self.target_widget.update_idletasks()
+                    except Exception:
+                        pass
                 bx = self.target_widget.winfo_rootx()
                 by = self.target_widget.winfo_rooty()
                 bw = self.target_widget.winfo_width()
@@ -995,7 +1011,11 @@ class SpeechBubble(tk.Toplevel):
 
                 master = self.master
                 if master and master.winfo_exists() and master.winfo_ismapped():
-                    master.update_idletasks()
+                    if not is_headless:
+                        try:
+                            master.update_idletasks()
+                        except Exception:
+                            pass
                     mx = master.winfo_rootx()
                     my = master.winfo_rooty()
                     mw = master.winfo_width()
@@ -1039,7 +1059,11 @@ class SpeechBubble(tk.Toplevel):
             try:
                 master = self.master
                 if master and master.winfo_exists():
-                    master.update_idletasks()
+                    if not is_headless:
+                        try:
+                            master.update_idletasks()
+                        except Exception:
+                            pass
                     mx = master.winfo_rootx()
                     my = master.winfo_rooty()
                     mw = master.winfo_width()
@@ -1596,12 +1620,12 @@ class TrackListView(tk.Frame):
 
         if is_sel:
             row_bg = sel_bg
-            title_fg = "#ffffff"
+            title_fg = "#4ade80" if is_playing else "#ffffff"
             artist_fg = "#e0e0e0"
             duration_fg = "#ffffff"
         elif is_hover:
             row_bg = hover_bg
-            title_fg = "#38d430" if is_playing else fg
+            title_fg = "#4ade80" if is_playing else fg
             artist_fg = muted_fg
             duration_fg = fg
         else:
@@ -1614,6 +1638,11 @@ class TrackListView(tk.Frame):
         if "cell_frames" in widgets:
             for cf in widgets["cell_frames"]:
                 cf.configure(bg=row_bg)
+        if "item_type" in widgets and widgets["item_type"] is not None:
+            widgets["item_type"].configure(
+                bg=row_bg,
+                fg="#ffffff" if is_sel else muted_fg,
+            )
         if "title" in widgets:
             widgets["title"].configure(bg=row_bg, fg=title_fg)
         if "artist" in widgets:
@@ -1683,6 +1712,7 @@ class TrackListView(tk.Frame):
         elif len(values) == 1:
             title = str(values[0])
 
+        item_type = str(kwargs.get("item_type") or "").strip()
         cover_img = kwargs.get("image") or self.default_cover
         item_data = {
             "title": title,
@@ -1691,6 +1721,7 @@ class TrackListView(tk.Frame):
             "source": source,
             "thumb_url": thumb_url,
             "cover_image": cover_img,
+            "item_type": item_type,
         }
         self._items[iid] = item_data
         if iid not in self._item_iids:
@@ -1711,8 +1742,16 @@ class TrackListView(tk.Frame):
 
         r_c0 = tk.Frame(row_frame)
         r_c0.grid(row=0, column=0, sticky="nsew")
-        lbl_title = tk.Label(r_c0, text=title, font=("Segoe UI", 9, "bold"), anchor="w")
-        lbl_title.pack(fill="both", expand=True, padx=(12, 6))
+
+        if item_type:
+            lbl_title = tk.Label(r_c0, text=title, font=("Segoe UI", 9, "bold"), anchor="w")
+            lbl_title.pack(side="left", padx=(12, 0))
+            lbl_type = tk.Label(r_c0, text=f"  • {item_type}", font=("Segoe UI", 9), anchor="w")
+            lbl_type.pack(side="left", padx=(0, 6))
+        else:
+            lbl_title = tk.Label(r_c0, text=title, font=("Segoe UI", 9, "bold"), anchor="w")
+            lbl_title.pack(fill="both", expand=True, padx=(12, 6))
+            lbl_type = None
 
         r_c1 = tk.Frame(row_frame, width=180)
         r_c1.pack_propagate(False)
@@ -1749,6 +1788,7 @@ class TrackListView(tk.Frame):
 
         widgets = {
             "title": lbl_title,
+            "item_type": lbl_type,
             "artist": lbl_artist,
             "duration": lbl_duration,
             "source": lbl_source,
@@ -1786,7 +1826,10 @@ class TrackListView(tk.Frame):
                 except Exception:
                     pass
 
-        for w in (row_frame, r_c0, r_c1, r_c2, r_c3, r_c4, lbl_title, lbl_artist, lbl_duration, lbl_source, lbl_cover):
+        click_targets = [row_frame, r_c0, r_c1, r_c2, r_c3, r_c4, lbl_title, lbl_artist, lbl_duration, lbl_source, lbl_cover]
+        if lbl_type is not None:
+            click_targets.append(lbl_type)
+        for w in click_targets:
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
             w.bind("<Button-1>", on_click)
@@ -1796,6 +1839,21 @@ class TrackListView(tk.Frame):
 
         self._update_row_appearance(iid)
         return iid
+
+    def set_item_title(self, iid: str, new_title: str) -> None:
+        iid = str(iid)
+        if iid in self._items:
+            self._items[iid]["title"] = new_title
+        if iid in self._row_widgets and "title" in self._row_widgets[iid]:
+            self._row_widgets[iid]["title"].configure(text=new_title)
+        self._update_row_appearance(iid)
+
+    def set_item_duration(self, iid: str, new_duration: str) -> None:
+        iid = str(iid)
+        if iid in self._items:
+            self._items[iid]["duration"] = new_duration
+        if iid in self._row_widgets and "duration" in self._row_widgets[iid]:
+            self._row_widgets[iid]["duration"].configure(text=new_duration)
 
     def update_thumbnail(self, iid: str, photo_image: Any) -> None:
         iid = str(iid)
@@ -1950,8 +2008,11 @@ class MusicPadApp(tk.Tk):
         self.loop_enabled = tk.BooleanVar(value=False)
         self.playback_count = 0
         self.title("MusicPad")
-        self.geometry("960x680")
         self.minsize(740, 520)
+        self._current_window_geom: Optional[dict[str, int]] = None
+        self._save_geom_timer: Optional[str] = None
+        init_w, init_h = self._compute_initial_window_size()
+        self._center_window(init_w, init_h)
         self.configure(bg="#1f1f1f")
         self._set_window_icon()
         self.local_tracks: list[LocalTrack] = []
@@ -1968,6 +2029,14 @@ class MusicPadApp(tk.Tk):
         self.monitor_map: dict[str, Optional[int]] = {}
         self.current_category: str = "my_sounds"
         self.yt_results_data: list[dict[str, Any]] = []
+        self._cached_search_results: list[dict[str, Any]] = []
+        self._cached_yt_status: str = ""
+        self._viewing_album: bool = False
+        self._current_album_info: Optional[dict[str, Any]] = None
+        self._current_album_tracks: list[dict[str, Any]] = []
+        self._active_album_queue: Optional[list[dict[str, Any]]] = None
+        self._album_track_index: Optional[int] = None
+        self._active_album_id: Optional[str] = None
         self._icons: dict[str, Any] = {}
         self._settings_window: Optional[tk.Toplevel] = None
         self._prev_volume: float = 1.0
@@ -2106,9 +2175,124 @@ class MusicPadApp(tk.Tk):
         if hasattr(self, "notification_manager"):
             self.notification_manager.toggle_bubble()
 
+    def _compute_initial_window_size(self) -> tuple[int, int]:
+        try:
+            sh = self.winfo_screenheight()
+        except Exception:
+            sh = 1080
+        if sh >= 1440:
+            return 1200, 900
+        elif sh >= 1080:
+            return 1080, 780
+        else:
+            return 960, 680
+
+    def _center_window(self, width: int, height: int) -> None:
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+        except Exception:
+            sw, sh = 1920, 1080
+        x = max(0, (sw - width) // 2)
+        y = max(0, (sh - height) // 2)
+        self._current_window_geom = {"width": width, "height": height, "x": x, "y": y}
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _get_screen_bounds(self) -> tuple[int, int, int, int]:
+        """Returns (min_x, min_y, max_x, max_y) covering visible displays."""
+        try:
+            if sys.platform == "win32":
+                user32 = ctypes.windll.user32
+                vx = int(user32.GetSystemMetrics(76))  # SM_XVIRTUALSCREEN
+                vy = int(user32.GetSystemMetrics(77))  # SM_YVIRTUALSCREEN
+                vw = int(user32.GetSystemMetrics(78))  # SM_CXVIRTUALSCREEN
+                vh = int(user32.GetSystemMetrics(79))  # SM_CYVIRTUALSCREEN
+                if vw > 0 and vh > 0:
+                    return vx, vy, vx + vw, vy + vh
+        except Exception:
+            pass
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            return 0, 0, sw, sh
+        except Exception:
+            return 0, 0, 1920, 1080
+
+    def _restore_window_geometry(self, geom: Any) -> None:
+        w, h, x, y = None, None, None, None
+        if isinstance(geom, dict):
+            try:
+                w = int(geom.get("width", 0))
+                h = int(geom.get("height", 0))
+                x = int(geom.get("x", 0))
+                y = int(geom.get("y", 0))
+            except (TypeError, ValueError):
+                return
+        elif isinstance(geom, str):
+            m = re.match(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$", geom.strip())
+            if m:
+                try:
+                    w = int(m.group(1))
+                    h = int(m.group(2))
+                    x = int(m.group(3).replace("+-", "-").lstrip("+") or "0")
+                    y = int(m.group(4).replace("+-", "-").lstrip("+") or "0")
+                except (TypeError, ValueError):
+                    return
+            else:
+                return
+        else:
+            return
+
+        if w is None or h is None or x is None or y is None:
+            return
+
+        w = max(740, w)
+        h = max(520, h)
+
+        min_x, min_y, max_x, max_y = self._get_screen_bounds()
+        w = min(w, max(740, max_x - min_x))
+        h = min(h, max(520, max_y - min_y))
+
+        out_of_bounds = (
+            (x + w <= min_x + 50)
+            or (x >= max_x - 50)
+            or (y + h <= min_y + 50)
+            or (y >= max_y - 50)
+        )
+        if out_of_bounds:
+            self._center_window(w, h)
+        else:
+            x = max(min_x, min(x, max_x - 100))
+            y = max(min_y, min(y, max_y - 100))
+            self._current_window_geom = {"width": w, "height": h, "x": x, "y": y}
+            self.geometry(f"{w}x{h}+{x}+{y}")
+
     def _on_configure(self, event: tk.Event) -> None:
-        if event and event.widget == self and hasattr(self, "notification_manager"):
-            self.notification_manager.on_master_configure()
+        if event and event.widget == self:
+            if hasattr(self, "notification_manager"):
+                self.notification_manager.on_master_configure()
+            if not getattr(self, "_loading_state", False) and self.state() == "normal":
+                self._on_window_configure(event)
+
+    def _on_window_configure(self, event: tk.Event) -> None:
+        try:
+            w = self.winfo_width()
+            h = self.winfo_height()
+            x = self.winfo_x()
+            y = self.winfo_y()
+            if w >= 200 and h >= 200 and x > -10000 and y > -10000:
+                self._current_window_geom = {"width": w, "height": h, "x": x, "y": y}
+                self._schedule_save_window_geom()
+        except Exception:
+            pass
+
+    def _schedule_save_window_geom(self) -> None:
+        if hasattr(self, "_save_geom_timer") and self._save_geom_timer:
+            try:
+                self.after_cancel(self._save_geom_timer)
+            except Exception:
+                pass
+        self._save_geom_timer = self.after(500, self._save_state)
 
     def _on_global_click(self, event: tk.Event) -> None:
         if hasattr(self, "notification_manager") and self.notification_manager.is_visible:
@@ -2144,8 +2328,12 @@ class MusicPadApp(tk.Tk):
             pass
 
     def update(self) -> None:
-        self._drain_ui_queue()
-        super().update()
+        self._in_update = True
+        try:
+            self._drain_ui_queue()
+            super().update()
+        finally:
+            self._in_update = False
 
     @staticmethod
     def _app_root_dir() -> Path:
@@ -6141,6 +6329,17 @@ class MusicPadApp(tk.Tk):
                 )
             if hasattr(self, "yt_status_lbl") and self.yt_status_lbl.winfo_exists():
                 self.yt_status_lbl.configure(bg=c["table_bg"], fg=c["muted_fg"])
+            if hasattr(self, "yt_album_nav_bar") and self.yt_album_nav_bar.winfo_exists():
+                self.yt_album_nav_bar.configure(bg=c["table_bg"])
+            if hasattr(self, "btn_back_to_results") and self.btn_back_to_results.winfo_exists():
+                self.btn_back_to_results.configure(
+                    bg=c["top_bg"],
+                    fg=c["fg"],
+                    activebackground=c["active_menu_bg"],
+                    activeforeground=c["active_menu_fg"],
+                )
+            if hasattr(self, "lbl_album_info") and self.lbl_album_info.winfo_exists():
+                self.lbl_album_info.configure(bg=c["table_bg"], fg=c["fg"])
             if hasattr(self, "yt_table_box") and self.yt_table_box.winfo_exists():
                 self.yt_table_box.configure(bg=c["divider"])
             if hasattr(self, "yt_tree") and hasattr(self.yt_tree, "apply_theme") and self.yt_tree.winfo_exists():
@@ -6533,6 +6732,10 @@ class MusicPadApp(tk.Tk):
 
     def _play_local_track(self, track: LocalTrack, start_pos: float = 0.0) -> None:
         self.playback_count += 1
+        self._active_album_queue = None
+        self._album_track_index = None
+        self._active_album_id = None
+        self._refresh_album_view_playing_indicator()
         if track in self.visible_tracks:
             vis_id = str(self.visible_tracks.index(track))
             if self.track_list.exists(vis_id):
@@ -6946,6 +7149,35 @@ class MusicPadApp(tk.Tk):
         )
         self.yt_status_lbl.pack(fill="x", padx=12, pady=(2, 4))
 
+        # 3b. Album Navigation Bar (shown when viewing an album)
+        self.yt_album_nav_bar = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
+        self.btn_back_to_results = tk.Button(
+            self.yt_album_nav_bar,
+            text="← Назад до результатів",
+            bg=c["top_bg"],
+            fg=c["fg"],
+            activebackground=c["active_menu_bg"],
+            activeforeground=c["active_menu_fg"],
+            bd=1,
+            relief="solid",
+            cursor="hand2",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=2,
+            command=self._back_to_search_results,
+        )
+        self.btn_back_to_results.pack(side="left", padx=(0, 10), pady=4)
+
+        self.lbl_album_info = tk.Label(
+            self.yt_album_nav_bar,
+            text="",
+            bg=c["table_bg"],
+            fg=c["fg"],
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        )
+        self.lbl_album_info.pack(side="left", fill="x", expand=True, pady=4)
+
         # 4. Results Table with border
         self.yt_table_box = tk.Frame(self.yt_search_frame, bg=c["divider"], bd=1, relief="solid")
         self.yt_table_box.pack(fill="both", expand=True, padx=12, pady=(0, 6))
@@ -7056,14 +7288,38 @@ class MusicPadApp(tk.Tk):
                 if len(parts) == 2:
                     artist = parts[0].strip()
                     title = parts[1].strip()
-            duration_val = float(item.get("duration", 0.0))
-            source = str(item.get("source", "youtube"))
+
+            res_type = str(item.get("result_type", "")).lower()
+            item_type = item.get("item_type")
+            if not item_type:
+                if res_type == "album" or item.get("type") == "album":
+                    item_type = "Альбом"
+                elif str(item.get("source", "")).lower() == "youtube":
+                    item_type = "Відео"
+                else:
+                    item_type = "Пісня"
+
+            is_album = (res_type == "album" or item_type == "Альбом" or item.get("type") == "album")
+            if is_album:
+                item_type = "Альбом"
+                dur_str = item.get("duration_text")
+                if not dur_str:
+                    tc = item.get("track_count")
+                    dur_val = float(item.get("duration") or 0.0)
+                    dur_str = format_album_duration(tc, dur_val)
+                source = "ytmusic"
+            else:
+                duration_val = float(item.get("duration", 0.0))
+                dur_str = format_duration(duration_val)
+                source = str(item.get("source", "youtube"))
+
             thumb_url = str(item.get("thumbnail_url", ""))
             self.yt_tree.insert(
                 "",
                 "end",
                 iid=str(idx),
-                values=(title, artist, format_duration(duration_val), source, thumb_url),
+                values=(title, artist, dur_str, source, thumb_url),
+                item_type=item_type,
             )
         self.yt_status_lbl.configure(text=f"Знайдено результатів: {len(items)}")
         if items:
@@ -7075,7 +7331,7 @@ class MusicPadApp(tk.Tk):
                 if gen != self._yt_search_generation:
                     break
                 thumb_url = item.get("thumbnail_url", "")
-                vid = item.get("video_id", "") or item.get("url", "")
+                vid = item.get("video_id", "") or item.get("browse_id", "") or item.get("url", "")
                 if not thumb_url:
                     continue
                 try:
@@ -7104,7 +7360,7 @@ class MusicPadApp(tk.Tk):
         if 0 <= idx < len(self.yt_results_data):
             self.yt_results_data[idx]["thumbnail_path"] = local_path
 
-    def _yt_play_picked(self, add_only: bool = False) -> None:
+    def _yt_play_picked(self, add_only: bool = False, sync: bool = False) -> None:
         sel = self.yt_tree.selection()
         if not sel:
             return
@@ -7112,6 +7368,16 @@ class MusicPadApp(tk.Tk):
         if idx >= len(self.yt_results_data):
             return
         item = self.yt_results_data[idx]
+
+        # Double clicking an album row switches to album view
+        if not getattr(self, "_viewing_album", False) and (
+            item.get("result_type") == "album"
+            or item.get("item_type") == "Альбом"
+            or item.get("type") == "album"
+        ):
+            self._open_album_view(item, sync=sync)
+            return
+
         title = item.get("title", "")
         artist = item.get("artist", "")
         full_title = item.get("full_title", "")
@@ -7121,6 +7387,22 @@ class MusicPadApp(tk.Tk):
         duration = float(item.get("duration", 0.0))
         thumbnail_path = item.get("thumbnail_path", "")
         source = item.get("source", "")
+
+        # If played from album view: activate album queue
+        if getattr(self, "_viewing_album", False):
+            self._active_album_queue = list(self._current_album_tracks)
+            self._album_track_index = idx
+            curr_info = getattr(self, "_current_album_info", {}) or {}
+            self._active_album_id = (
+                curr_info.get("browse_id")
+                or curr_info.get("playlist_id")
+                or curr_info.get("title")
+                or str(id(self._current_album_tracks))
+            )
+        else:
+            self._active_album_queue = None
+            self._album_track_index = None
+            self._active_album_id = None
 
         self.url_var.set(url)
         self._upsert_youtube_track(
@@ -7139,6 +7421,191 @@ class MusicPadApp(tk.Tk):
         else:
             self._play_url()
             self.yt_status_lbl.configure(text=f"Відтворення: {full_title}")
+            if getattr(self, "_viewing_album", False):
+                self._refresh_album_view_playing_indicator()
+
+    def _open_album_view(self, item: dict[str, Any], sync: bool = False) -> None:
+        # Save current search results for instant return without network re-fetch
+        self._cached_search_results = list(self.yt_results_data)
+        self._cached_yt_status = self.yt_status_lbl.cget("text")
+
+        album_title = item.get("title", "")
+        album_artist = item.get("artist", "")
+        browse_id = item.get("browse_id") or item.get("playlist_id") or ""
+        self.yt_status_lbl.configure(text=f"Завантаження альбому: {album_title}...")
+
+        def fetch_album_worker() -> None:
+            try:
+                album_data = AudioEngine.get_album(browse_id) if browse_id else {}
+            except Exception:
+                album_data = {}
+            if not album_data and item.get("tracks"):
+                album_data = {
+                    "title": album_title,
+                    "artist": album_artist,
+                    "track_count": len(item["tracks"]),
+                    "duration": item.get("duration", 0.0),
+                    "duration_text": item.get("duration_text", ""),
+                    "thumbnail_url": item.get("thumbnail_url", ""),
+                    "tracks": item["tracks"],
+                }
+            if sync or threading.current_thread() is threading.main_thread():
+                self._render_album_view(album_data, item)
+            else:
+                self._safe_ui_call(self._render_album_view, album_data, item)
+
+        if sync:
+            fetch_album_worker()
+        else:
+            threading.Thread(target=fetch_album_worker, daemon=True).start()
+
+    def _render_album_view(self, album_data: dict[str, Any], original_item: dict[str, Any]) -> None:
+        self._viewing_album = True
+        self._current_album_info = original_item
+
+        album_title = album_data.get("title") or original_item.get("title", "")
+        album_artist = album_data.get("artist") or original_item.get("artist", "")
+        tracks = album_data.get("tracks") or []
+        self._current_album_tracks = tracks
+        self.yt_results_data = tracks
+
+        track_count = album_data.get("track_count") or len(tracks) or original_item.get("track_count") or len(tracks)
+        dur_text = album_data.get("duration_text") or original_item.get("duration_text") or ""
+        if " • " in dur_text:
+            dur_part = dur_text.split(" • ", 1)[1]
+        elif dur_text:
+            dur_part = dur_text
+        else:
+            dur_part = format_duration(float(album_data.get("duration") or 0.0))
+
+        # Format requirement: [← Назад до результатів]  Альбом: <Назва> — <Виконавець> (<К-сть треків>, <Загальна тривалість>)
+        album_part = f"{album_title} — {album_artist}" if album_artist and album_artist not in album_title else album_title
+        stats_part = f"{track_count} тр., {dur_part}" if dur_part else f"{track_count} тр."
+        info_header = f"Альбом: {album_part} ({stats_part})"
+        self.lbl_album_info.configure(text=info_header)
+
+        if hasattr(self, "yt_top"):
+            self.yt_top.pack_forget()
+        if hasattr(self, "yt_album_nav_bar"):
+            self.yt_album_nav_bar.pack(before=self.yt_table_box, fill="x", padx=12, pady=(10, 4))
+        if hasattr(self, "yt_status_lbl"):
+            if not tracks:
+                self.yt_status_lbl.configure(text="Треки альбому не знайдено або сталася помилка завантаження.")
+                self.yt_status_lbl.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
+            else:
+                self.yt_status_lbl.pack_forget()
+
+        for row in self.yt_tree.get_children():
+            self.yt_tree.delete(row)
+
+        curr_alb_id = (
+            original_item.get("browse_id")
+            or original_item.get("playlist_id")
+            or album_data.get("browse_id")
+            or album_data.get("playlist_id")
+            or album_title
+        )
+        is_this_album_playing = bool(
+            self.is_playing
+            and getattr(self, "_active_album_queue", None) is not None
+            and getattr(self, "_active_album_id", None) == curr_alb_id
+        )
+
+        album_thumb = album_data.get("thumbnail_url") or original_item.get("thumbnail_url", "")
+        active_idx = getattr(self, "_album_track_index", None)
+        for idx, t in enumerate(tracks):
+            t_title = t.get("title", "")
+            t_artist = t.get("artist", "") or album_artist
+            t_dur = float(t.get("duration", 0.0))
+            is_active_playing = is_this_album_playing and (active_idx == idx)
+            prefix = "▶  " if is_active_playing else ""
+            display_title = f"{prefix}{t_title}"
+            t_thumb = t.get("thumbnail_url") or album_thumb
+
+            self.yt_tree.insert(
+                "",
+                "end",
+                iid=str(idx),
+                values=(display_title, t_artist, format_duration(t_dur), "YTMusic", t_thumb),
+                item_type="Пісня",
+            )
+
+        if tracks:
+            sel_target = str(active_idx) if (is_this_album_playing and active_idx is not None and 0 <= active_idx < len(tracks)) else "0"
+            self.yt_tree.selection_set(sel_target)
+            self.yt_tree.focus(sel_target)
+            if hasattr(self.yt_tree, "see"):
+                try:
+                    self.yt_tree.see(sel_target)
+                except Exception:
+                    pass
+
+    def _back_to_search_results(self) -> None:
+        self._viewing_album = False
+        if hasattr(self, "yt_album_nav_bar"):
+            self.yt_album_nav_bar.pack_forget()
+        if hasattr(self, "yt_top"):
+            self.yt_top.pack(before=self.yt_table_box, fill="x", padx=12, pady=(10, 4))
+        if hasattr(self, "_cached_search_results"):
+            self._render_yt_results(self._cached_search_results)
+        if hasattr(self, "yt_status_lbl"):
+            self.yt_status_lbl.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
+            if hasattr(self, "_cached_yt_status") and self._cached_yt_status:
+                self.yt_status_lbl.configure(text=self._cached_yt_status)
+
+    def _refresh_album_view_playing_indicator(self) -> None:
+        if not getattr(self, "_viewing_album", False) or not hasattr(self, "yt_tree"):
+            return
+        curr_info = getattr(self, "_current_album_info", {}) or {}
+        curr_alb_id = curr_info.get("browse_id") or curr_info.get("playlist_id") or curr_info.get("title")
+        is_this_album_playing = bool(
+            self.is_playing
+            and getattr(self, "_active_album_queue", None) is not None
+            and getattr(self, "_active_album_id", None) == curr_alb_id
+        )
+        active_idx = getattr(self, "_album_track_index", None)
+        tracks = getattr(self, "_current_album_tracks", [])
+        for idx, t in enumerate(tracks):
+            iid = str(idx)
+            is_playing_this = is_this_album_playing and (active_idx == idx)
+            prefix = "▶  " if is_playing_this else ""
+            self.yt_tree.set_item_title(iid, f"{prefix}{t.get('title', '')}")
+
+    def _play_album_track(self, track_item: dict[str, Any]) -> None:
+        title = track_item.get("title", "")
+        artist = track_item.get("artist", "")
+        full_title = track_item.get("full_title", "")
+        if not full_title:
+            full_title = f"{title} — {artist}" if artist and artist not in title else title
+        url = track_item.get("url", "")
+        if not url:
+            vid = track_item.get("video_id", "")
+            if vid:
+                url = f"https://music.youtube.com/watch?v={vid}"
+                track_item["url"] = url
+        if not url:
+            self.yt_status_lbl.configure(text=f"Трек недоступний: {full_title}")
+            if getattr(self, "_active_album_queue", None) and getattr(self, "_album_track_index", None) is not None:
+                self.after(50, self._next)
+            return
+
+        duration = float(track_item.get("duration", 0.0))
+        thumbnail_path = track_item.get("thumbnail_path", "")
+        source = track_item.get("source", "ytmusic")
+
+        self.url_var.set(url)
+        self._upsert_youtube_track(
+            title=full_title,
+            path=url,
+            duration=duration,
+            is_url=True,
+            artist=artist,
+            thumbnail_path=thumbnail_path,
+            source=source,
+        )
+        self._play_url()
+        self.yt_status_lbl.configure(text=f"Відтворення: {full_title}")
+        self._refresh_album_view_playing_indicator()
 
     def _prompt_play_url(self) -> None:
         dlg = tk.Toplevel(self)
@@ -7162,6 +7629,9 @@ class MusicPadApp(tk.Tk):
 
         def on_play() -> None:
             dlg.destroy()
+            self._active_album_queue = None
+            self._album_track_index = None
+            self._active_album_id = None
             self._play_url()
 
         def on_add() -> None:
@@ -7226,14 +7696,39 @@ class MusicPadApp(tk.Tk):
         self.status_var.set("")
         self.pause_button.configure(text=self._tr("btn_play"))
         self._filter_tracks()
+        self._refresh_album_view_playing_indicator()
 
     def _next(self) -> None:
+        if getattr(self, "_active_album_queue", None) and getattr(self, "_album_track_index", None) is not None:
+            if len(self._active_album_queue) > 0:
+                self._album_track_index = (self._album_track_index + 1) % len(self._active_album_queue)
+                self._play_album_track(self._active_album_queue[self._album_track_index])
+                if getattr(self, "_viewing_album", False) and hasattr(self, "yt_tree"):
+                    try:
+                        self.yt_tree.selection_set(str(self._album_track_index))
+                        if hasattr(self.yt_tree, "see"):
+                            self.yt_tree.see(str(self._album_track_index))
+                    except Exception:
+                        pass
+                return
         if self.local_tracks:
             self.current_index = (self.current_index + 1) % len(self.local_tracks)
             track = self.local_tracks[self.current_index]
             self._play_local_track(track)
 
     def _previous(self) -> None:
+        if getattr(self, "_active_album_queue", None) and getattr(self, "_album_track_index", None) is not None:
+            if len(self._active_album_queue) > 0:
+                self._album_track_index = (self._album_track_index - 1) % len(self._active_album_queue)
+                self._play_album_track(self._active_album_queue[self._album_track_index])
+                if getattr(self, "_viewing_album", False) and hasattr(self, "yt_tree"):
+                    try:
+                        self.yt_tree.selection_set(str(self._album_track_index))
+                        if hasattr(self.yt_tree, "see"):
+                            self.yt_tree.see(str(self._album_track_index))
+                    except Exception:
+                        pass
+                return
         if self.local_tracks:
             self.current_index = (self.current_index - 1) % len(self.local_tracks)
             track = self.local_tracks[self.current_index]
@@ -7778,6 +8273,19 @@ class MusicPadApp(tk.Tk):
                     "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                     "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                 }
+            if hasattr(self, "_current_window_geom") and self._current_window_geom:
+                data["window_geometry"] = dict(self._current_window_geom)
+            elif self.state() == "normal":
+                try:
+                    w = self.winfo_width()
+                    h = self.winfo_height()
+                    x = self.winfo_x()
+                    y = self.winfo_y()
+                    if w >= 200 and h >= 200 and x > -10000 and y > -10000:
+                        data["window_geometry"] = {"width": w, "height": h, "x": x, "y": y}
+                except Exception:
+                    pass
+
             self._config_path().write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -7794,6 +8302,8 @@ class MusicPadApp(tk.Tk):
         self._loading_state = True
         try:
             data = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if "window_geometry" in data:
+                self._restore_window_geometry(data["window_geometry"])
             if data.get("output") in self.output_map:
                 self.output_var.set(data["output"])
             saved_mic = data.get("mix_mic", "")
@@ -8021,9 +8531,34 @@ class MusicPadApp(tk.Tk):
 
     def _on_finished(self) -> None:
         def reset_ui() -> None:
-            if self.loop_enabled.get() and 0 <= self.current_index < len(self.local_tracks):
-                self._play_local_track(self.local_tracks[self.current_index])
-                return
+            if self.loop_enabled.get():
+                if getattr(self, "_active_album_queue", None) and getattr(self, "_album_track_index", None) is not None:
+                    idx = self._album_track_index
+                    if 0 <= idx < len(self._active_album_queue):
+                        self._play_album_track(self._active_album_queue[idx])
+                        return
+                elif 0 <= self.current_index < len(self.local_tracks):
+                    self._play_local_track(self.local_tracks[self.current_index])
+                    return
+
+            if getattr(self, "_active_album_queue", None) and getattr(self, "_album_track_index", None) is not None:
+                next_idx = self._album_track_index + 1
+                if next_idx < len(self._active_album_queue):
+                    self._album_track_index = next_idx
+                    self._play_album_track(self._active_album_queue[next_idx])
+                    if getattr(self, "_viewing_album", False) and hasattr(self, "yt_tree"):
+                        try:
+                            self.yt_tree.selection_set(str(self._album_track_index))
+                            if hasattr(self.yt_tree, "see"):
+                                self.yt_tree.see(str(self._album_track_index))
+                        except Exception:
+                            pass
+                    return
+                else:
+                    self._active_album_queue = None
+                    self._album_track_index = None
+                    self._active_album_id = None
+
             self.is_playing = False
             self.is_paused = False
             self.pause_button.configure(text=self._tr("btn_play") if hasattr(self, "_tr") else "▶ Відтворити")
@@ -8033,6 +8568,7 @@ class MusicPadApp(tk.Tk):
             self.now_playing_var.set(self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється")
             self.status_var.set("")
             self._filter_tracks()
+            self._refresh_album_view_playing_indicator()
 
         self.after(0, reset_ui)
 

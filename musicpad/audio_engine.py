@@ -53,6 +53,7 @@ from musicpad.dsp_core import (
 )
 from musicpad.deepfilter_engine import DeepFilterEngine
 from musicpad.injection_shm import ApoRuntimeStatus, InjectionShm
+from musicpad.library import format_album_duration
 
 
 SAMPLE_RATE = 48000
@@ -788,6 +789,7 @@ class StreamTrack:
 
 
 _YT_STREAM_CACHE: dict[str, tuple[str, str, float]] = {}
+_ALBUM_CACHE: dict[str, dict[str, Any]] = {}
 _YT_CACHE_LOCK = threading.Lock()
 _YT_CACHE_TTL = 3600.0 * 3
 
@@ -2684,6 +2686,132 @@ class AudioEngine:
         except Exception:
             return None
 
+    @classmethod
+    def get_album(cls, browse_id: str) -> dict[str, Any]:
+        browse_id = str(browse_id).strip()
+        if not browse_id:
+            return {}
+        with _YT_CACHE_LOCK:
+            if browse_id in _ALBUM_CACHE:
+                return dict(_ALBUM_CACHE[browse_id])
+        if YTMusic is None:
+            raise AudioEngineError("Модуль ytmusicapi не встановлено.")
+        ytmusic = YTMusic()
+        actual_browse_id = browse_id
+        if not actual_browse_id.startswith("MPRE") and hasattr(ytmusic, "get_album_browse_id"):
+            try:
+                resolved_id = ytmusic.get_album_browse_id(actual_browse_id)
+                if resolved_id and str(resolved_id).startswith("MPRE"):
+                    actual_browse_id = str(resolved_id).strip()
+            except Exception:
+                pass
+
+        try:
+            raw_album = ytmusic.get_album(actual_browse_id)
+        except Exception as err:
+            if hasattr(ytmusic, "get_playlist"):
+                try:
+                    raw_album = ytmusic.get_playlist(browse_id)
+                except Exception:
+                    raise AudioEngineError(f"Альбом не знайдено: {browse_id}") from err
+            else:
+                raise AudioEngineError(f"Альбом не знайдено: {browse_id}") from err
+
+        if not raw_album or not isinstance(raw_album, dict):
+            raise AudioEngineError(f"Альбом не знайдено: {browse_id}")
+
+        album_title = str(raw_album.get("title") or "Альбом").strip()
+        artists_list = raw_album.get("artists") or []
+        album_artist = ", ".join(
+            a.get("name", "")
+            for a in artists_list
+            if isinstance(a, dict) and a.get("name")
+        )
+        if not album_artist and raw_album.get("artist"):
+            album_artist = str(raw_album["artist"]).strip()
+        elif not album_artist and raw_album.get("author"):
+            album_artist = str(raw_album["author"]).strip()
+
+        album_thumb = ""
+        thumbs = raw_album.get("thumbnails") or []
+        if isinstance(thumbs, list) and thumbs:
+            album_thumb = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
+
+        track_items: list[dict[str, Any]] = []
+        total_dur_sec = 0.0
+
+        for raw_t in (raw_album.get("tracks") or []):
+            if not isinstance(raw_t, dict):
+                continue
+            vid = raw_t.get("videoId") or ""
+            t_title = str(raw_t.get("title") or "").strip()
+            t_artists = ", ".join(
+                a.get("name", "")
+                for a in (raw_t.get("artists") or [])
+                if isinstance(a, dict) and a.get("name")
+            ) or album_artist
+            dur_sec = float(raw_t.get("duration_seconds") or 0.0)
+            if dur_sec <= 0.0 and raw_t.get("duration"):
+                parts = [int(p) for p in str(raw_t["duration"]).split(":") if p.isdigit()]
+                for p in parts:
+                    dur_sec = dur_sec * 60 + p
+            total_dur_sec += dur_sec
+            t_thumb = album_thumb
+            t_thumbs = raw_t.get("thumbnails") or []
+            if isinstance(t_thumbs, list) and t_thumbs:
+                t_thumb = str(t_thumbs[-1].get("url") or t_thumbs[0].get("url") or "") or album_thumb
+
+            track_items.append(
+                {
+                    "title": t_title,
+                    "artist": t_artists,
+                    "full_title": f"{t_title} — {t_artists}" if t_artists and t_artists not in t_title else t_title,
+                    "video_id": vid,
+                    "url": f"https://music.youtube.com/watch?v={vid}" if vid else "",
+                    "duration": dur_sec,
+                    "source": "ytmusic",
+                    "thumbnail_url": t_thumb,
+                    "result_type": "song",
+                    "item_type": "Пісня",
+                }
+            )
+
+        raw_tc = raw_album.get("trackCount")
+        track_count = len(track_items)
+        if raw_tc is not None:
+            try:
+                digits = re.sub(r"[^\d]", "", str(raw_tc))
+                if digits:
+                    track_count = int(digits)
+            except (ValueError, TypeError):
+                pass
+        if track_count <= 0:
+            track_count = len(track_items)
+        if raw_album.get("duration_seconds"):
+            try:
+                total_dur_sec = float(raw_album["duration_seconds"])
+            except Exception:
+                pass
+
+        dur_str = format_album_duration(track_count, total_dur_sec, str(raw_album.get("duration") or ""))
+        result = {
+            "title": album_title,
+            "artist": album_artist,
+            "full_title": f"{album_title} — {album_artist}" if album_artist and album_artist not in album_title else album_title,
+            "browse_id": actual_browse_id,
+            "playlist_id": raw_album.get("playlistId") or raw_album.get("id") or "",
+            "track_count": track_count,
+            "duration": total_dur_sec,
+            "duration_text": dur_str,
+            "thumbnail_url": album_thumb,
+            "tracks": track_items,
+        }
+        with _YT_CACHE_LOCK:
+            _ALBUM_CACHE[browse_id] = result
+            if actual_browse_id != browse_id:
+                _ALBUM_CACHE[actual_browse_id] = result
+        return result
+
     @staticmethod
     def search_youtube(query: str, limit: int = 25) -> list[dict[str, Any]]:
         query = query.strip()
@@ -2694,57 +2822,170 @@ class AudioEngine:
         try:
             items: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
+            seen_browse_ids: set[str] = set()
             if YTMusic is not None:
                 try:
                     ytmusic = YTMusic()
-                    raw_songs = ytmusic.search(query, filter="songs") or []
-                    raw_videos = (
-                        ytmusic.search(query, filter="videos") or []
-                        if len(raw_songs) < limit
-                        else []
-                    )
-                    tagged_entries = [(entry, "ytmusic") for entry in raw_songs] + [
-                        (entry, "youtube") for entry in raw_videos
+                    raw_songs: list[dict[str, Any]] = []
+                    raw_albums: list[dict[str, Any]] = []
+                    raw_videos: list[dict[str, Any]] = []
+
+                    try:
+                        raw_songs = ytmusic.search(query, filter="songs") or []
+                    except Exception:
+                        pass
+
+                    try:
+                        raw_albums = ytmusic.search(query, filter="albums") or []
+                    except Exception:
+                        pass
+
+                    try:
+                        if len(raw_songs) < limit:
+                            raw_videos = ytmusic.search(query, filter="videos") or []
+                    except Exception:
+                        pass
+
+                    try:
+                        raw_general = ytmusic.search(query, filter=None) or []
+                        for entry in raw_general:
+                            if isinstance(entry, dict):
+                                rtype = str(entry.get("resultType") or "").lower()
+                                if rtype == "album":
+                                    raw_albums.append(entry)
+                                elif rtype == "song" and len(raw_songs) < limit:
+                                    raw_songs.append(entry)
+                                elif rtype == "video" and len(raw_videos) < limit:
+                                    raw_videos.append(entry)
+                    except Exception:
+                        pass
+
+                    # Select quotas: if albums exist, allocate up to 5 albums, rest songs & videos
+                    album_quota = min(len(raw_albums), 5)
+                    song_quota = max(0, limit - album_quota) if album_quota > 0 else limit
+                    selected_songs = raw_songs[:song_quota]
+                    selected_albums = raw_albums[:album_quota]
+                    remaining_slots = limit - len(selected_songs) - len(selected_albums)
+                    selected_videos = raw_videos[:remaining_slots] if remaining_slots > 0 else []
+
+                    # Tagged entries: albums first so album searches are immediately visible!
+                    tagged_entries: list[tuple[dict[str, Any], str]] = [
+                        (entry, "album") for entry in selected_albums
+                    ] + [
+                        (entry, "ytmusic") for entry in selected_songs
+                    ] + [
+                        (entry, "youtube") for entry in selected_videos
                     ]
+
                     for entry, source in tagged_entries:
-                        vid = entry.get("videoId")
-                        if not vid or vid in seen_ids:
-                            continue
-                        seen_ids.add(vid)
-                        artists = ", ".join(
-                            a.get("name", "")
-                            for a in entry.get("artists", [])
-                            if isinstance(a, dict) and a.get("name")
-                        )
-                        raw_title = str(entry.get("title") or query).strip()
-                        title = raw_title
-                        if not artists and (" - " in title or " — " in title or " – " in title):
-                            parts = re.split(r"\s+[—\-–]\s+", title, maxsplit=1)
-                            if len(parts) == 2:
-                                artists = parts[0].strip()
-                                title = parts[1].strip()
-                        full_title = f"{title} — {artists}" if artists and artists not in title else title
-                        dur_seconds = float(entry.get("duration_seconds") or 0.0)
-                        if dur_seconds <= 0.0 and entry.get("duration"):
-                            parts = [int(p) for p in str(entry["duration"]).split(":") if p.isdigit()]
-                            for p in parts:
-                                dur_seconds = dur_seconds * 60 + p
-                        thumb_url = ""
-                        thumbs = entry.get("thumbnails") or []
-                        if isinstance(thumbs, list) and thumbs:
-                            thumb_url = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
-                        items.append(
-                            {
-                                "title": title,
-                                "artist": artists,
-                                "full_title": full_title,
-                                "video_id": vid,
-                                "url": f"https://music.youtube.com/watch?v={vid}" if source == "ytmusic" else f"https://www.youtube.com/watch?v={vid}",
-                                "duration": dur_seconds,
-                                "source": source,
-                                "thumbnail_url": thumb_url,
-                            }
-                        )
+                        if source == "album":
+                            browse_id = entry.get("browseId") or entry.get("playlistId") or ""
+                            if not browse_id or browse_id in seen_browse_ids:
+                                continue
+                            seen_browse_ids.add(browse_id)
+                            artists = ", ".join(
+                                a.get("name", "")
+                                for a in entry.get("artists", [])
+                                if isinstance(a, dict) and a.get("name")
+                            )
+                            raw_title = str(entry.get("title") or query).strip()
+                            title = raw_title
+                            if not artists and (" - " in title or " — " in title or " – " in title):
+                                parts = re.split(r"\s+[—\-–]\s+", title, maxsplit=1)
+                                if len(parts) == 2:
+                                    artists = parts[0].strip()
+                                    title = parts[1].strip()
+                            full_title = f"{title} — {artists}" if artists and artists not in title else title
+                            thumb_url = ""
+                            thumbs = entry.get("thumbnails") or []
+                            if isinstance(thumbs, list) and thumbs:
+                                thumb_url = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
+
+                            track_count = entry.get("trackCount") or entry.get("track_count")
+                            dur_seconds = float(entry.get("duration_seconds") or 0.0)
+                            dur_str = str(entry.get("duration") or "")
+
+                            with _YT_CACHE_LOCK:
+                                if browse_id in _ALBUM_CACHE:
+                                    c_alb = _ALBUM_CACHE[browse_id]
+                                    track_count = track_count or c_alb.get("track_count")
+                                    dur_seconds = dur_seconds or float(c_alb.get("duration") or 0.0)
+                                    dur_str = dur_str or c_alb.get("duration_text") or ""
+                                    if not thumb_url and c_alb.get("thumbnail_url"):
+                                        thumb_url = c_alb["thumbnail_url"]
+
+                            if (not track_count or dur_seconds <= 0.0) and browse_id:
+                                try:
+                                    c_alb = AudioEngine.get_album(browse_id)
+                                    if c_alb:
+                                        track_count = track_count or c_alb.get("track_count")
+                                        dur_seconds = dur_seconds or float(c_alb.get("duration") or 0.0)
+                                        dur_str = dur_str or c_alb.get("duration_text") or ""
+                                        if not thumb_url and c_alb.get("thumbnail_url"):
+                                            thumb_url = c_alb["thumbnail_url"]
+                                except Exception:
+                                    pass
+
+                            album_dur_text = format_album_duration(track_count, dur_seconds, dur_str)
+                            items.append(
+                                {
+                                    "title": title,
+                                    "artist": artists,
+                                    "full_title": full_title,
+                                    "result_type": "album",
+                                    "item_type": "Альбом",
+                                    "browse_id": browse_id,
+                                    "playlist_id": entry.get("playlistId") or "",
+                                    "video_id": "",
+                                    "url": f"https://music.youtube.com/browse/{browse_id}" if browse_id else "",
+                                    "duration": dur_seconds,
+                                    "duration_text": album_dur_text,
+                                    "track_count": track_count,
+                                    "source": "ytmusic",
+                                    "thumbnail_url": thumb_url,
+                                }
+                            )
+                        else:
+                            vid = entry.get("videoId")
+                            if not vid or vid in seen_ids:
+                                continue
+                            seen_ids.add(vid)
+                            artists = ", ".join(
+                                a.get("name", "")
+                                for a in entry.get("artists", [])
+                                if isinstance(a, dict) and a.get("name")
+                            )
+                            raw_title = str(entry.get("title") or query).strip()
+                            title = raw_title
+                            if not artists and (" - " in title or " — " in title or " – " in title):
+                                parts = re.split(r"\s+[—\-–]\s+", title, maxsplit=1)
+                                if len(parts) == 2:
+                                    artists = parts[0].strip()
+                                    title = parts[1].strip()
+                            full_title = f"{title} — {artists}" if artists and artists not in title else title
+                            dur_seconds = float(entry.get("duration_seconds") or 0.0)
+                            if dur_seconds <= 0.0 and entry.get("duration"):
+                                parts = [int(p) for p in str(entry["duration"]).split(":") if p.isdigit()]
+                                for p in parts:
+                                    dur_seconds = dur_seconds * 60 + p
+                            thumb_url = ""
+                            thumbs = entry.get("thumbnails") or []
+                            if isinstance(thumbs, list) and thumbs:
+                                thumb_url = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
+                            items.append(
+                                {
+                                    "title": title,
+                                    "artist": artists,
+                                    "full_title": full_title,
+                                    "result_type": "song" if source == "ytmusic" else "video",
+                                    "item_type": "Пісня" if source == "ytmusic" else "Відео",
+                                    "video_id": vid,
+                                    "url": f"https://music.youtube.com/watch?v={vid}" if source == "ytmusic" else f"https://www.youtube.com/watch?v={vid}",
+                                    "duration": dur_seconds,
+                                    "source": source,
+                                    "thumbnail_url": thumb_url,
+                                }
+                            )
                         if len(items) >= limit:
                             break
                 except Exception:
@@ -2791,6 +3032,8 @@ class AudioEngine:
                                 "title": title,
                                 "artist": artist,
                                 "full_title": full_title,
+                                "result_type": "video",
+                                "item_type": "Відео",
                                 "video_id": vid,
                                 "url": f"https://www.youtube.com/watch?v={vid}",
                                 "duration": dur_seconds,

@@ -50,7 +50,7 @@ from musicpad.injection_shm import (
     OFF_READ_SAMPLE_IDX,
     OFF_WRITE_SAMPLE_IDX,
 )
-from musicpad.library import LocalTrack, format_duration, scan_file, scan_folder
+from musicpad.library import LocalTrack, format_album_duration, format_duration, scan_file, scan_folder
 
 
 def _create_sine_wav(path: Path, duration_sec: float = 0.25, freq: float = 440.0, rate: int = 44100) -> None:
@@ -74,6 +74,15 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(format_duration(5.9), "0:05")
         self.assertEqual(format_duration(65), "1:05")
         self.assertEqual(format_duration(3661), "61:01")
+
+    def test_format_album_duration_cases(self) -> None:
+        self.assertEqual(format_album_duration(12, 2880), "12 тр. • 48 хв")
+        self.assertEqual(format_album_duration(14, 3660), "14 тр. • 1 год 1 хв")
+        self.assertEqual(format_album_duration(10, duration_str="1 hour, 15 minutes"), "10 тр. • 1 год 15 хв")
+        self.assertEqual(format_album_duration(8, duration_str="50 min"), "8 тр. • 50 хв")
+        self.assertEqual(format_album_duration(5), "5 тр.")
+        self.assertEqual(format_album_duration(None, 120), "2 хв")
+        self.assertEqual(format_album_duration(None, None, ""), "")
 
     def test_scan_folder_and_file_real_wav(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3114,6 +3123,532 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(sc.get("voice_boost_db"), 6.0)
                 finally:
                     app._exit()
+
+    def test_window_geometry_dynamic_size_and_centering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_geom.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Screen height >= 1440 (1440p / 4K) -> 1200x900
+                    with patch.object(app, "winfo_screenheight", return_value=1440):
+                        self.assertEqual(app._compute_initial_window_size(), (1200, 900))
+                    with patch.object(app, "winfo_screenheight", return_value=2160):
+                        self.assertEqual(app._compute_initial_window_size(), (1200, 900))
+
+                    # 2. 1080p (height >= 1080) -> 1080x780
+                    with patch.object(app, "winfo_screenheight", return_value=1080):
+                        self.assertEqual(app._compute_initial_window_size(), (1080, 780))
+                    with patch.object(app, "winfo_screenheight", return_value=1200):
+                        self.assertEqual(app._compute_initial_window_size(), (1080, 780))
+
+                    # 3. Smaller screens (e.g. 1366x768) -> 960x680
+                    with patch.object(app, "winfo_screenheight", return_value=768):
+                        self.assertEqual(app._compute_initial_window_size(), (960, 680))
+
+                    # 4. Centering calculation
+                    with patch.object(app, "winfo_screenwidth", return_value=1920), patch.object(
+                        app, "winfo_screenheight", return_value=1080
+                    ), patch.object(app, "geometry") as mock_geom:
+                        app._center_window(1080, 780)
+                        mock_geom.assert_called_once_with("1080x780+420+150")
+                finally:
+                    app._exit()
+
+    def test_window_geometry_persistence_and_boundary_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_geom_bounds.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Persistence
+                    app._current_window_geom = {"width": 1080, "height": 780, "x": 120, "y": 80}
+                    app._save_state()
+                    self.assertTrue(cfg_file.is_file())
+                    saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertEqual(saved.get("window_geometry"), {"width": 1080, "height": 780, "x": 120, "y": 80})
+
+                    # Valid restoration within bounds
+                    with patch.object(app, "_get_screen_bounds", return_value=(0, 0, 1920, 1080)), patch.object(
+                        app, "geometry"
+                    ) as mock_geom:
+                        app._restore_window_geometry({"width": 1080, "height": 780, "x": 100, "y": 100})
+                        mock_geom.assert_called_once_with("1080x780+100+100")
+
+                    # Boundary validation: secondary monitor was disconnected (out-of-bounds coords)
+                    # Window must fall back to centered on current screen
+                    with patch.object(app, "_get_screen_bounds", return_value=(0, 0, 1920, 1080)), patch.object(
+                        app, "winfo_screenwidth", return_value=1920
+                    ), patch.object(app, "winfo_screenheight", return_value=1080), patch.object(
+                        app, "geometry"
+                    ) as mock_geom_recentered:
+                        # x=2500, y=1500 is completely outside visible bounds
+                        app._restore_window_geometry({"width": 1080, "height": 780, "x": 2500, "y": 1500})
+                        mock_geom_recentered.assert_called_once_with("1080x780+420+150")
+
+                    # Minimum size clamping: w >= 740, h >= 520
+                    with patch.object(app, "_get_screen_bounds", return_value=(0, 0, 1920, 1080)), patch.object(
+                        app, "geometry"
+                    ) as mock_geom_clamp:
+                        app._restore_window_geometry({"width": 500, "height": 300, "x": 100, "y": 100})
+                        mock_geom_clamp.assert_called_once_with("740x520+100+100")
+                finally:
+                    app._exit()
+
+    def test_search_results_item_type_display_and_clean_local_tracks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_item_types.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    mock_results = [
+                        {
+                            "title": "Blinding Lights",
+                            "artist": "The Weeknd",
+                            "duration": 200.0,
+                            "source": "ytmusic",
+                            "result_type": "song",
+                            "item_type": "Пісня",
+                        },
+                        {
+                            "title": "After Hours",
+                            "artist": "The Weeknd",
+                            "duration": 3600.0,
+                            "source": "ytmusic",
+                            "result_type": "album",
+                            "item_type": "Альбом",
+                            "duration_text": "14 тр. • 60 хв",
+                        },
+                        {
+                            "title": "Save Your Tears (Live)",
+                            "artist": "The Weeknd",
+                            "duration": 240.0,
+                            "source": "youtube",
+                            "result_type": "video",
+                            "item_type": "Відео",
+                        },
+                    ]
+                    app._render_yt_results(mock_results)
+                    self.assertEqual(len(app.yt_tree.get_children()), 3)
+
+                    # Verify entity type displayed after title with dot separator in secondary color
+                    row0_widgets = app.yt_tree._row_widgets["0"]
+                    self.assertEqual(row0_widgets["title"].cget("text"), "Blinding Lights")
+                    self.assertIsNotNone(row0_widgets.get("item_type"))
+                    self.assertEqual(row0_widgets["item_type"].cget("text"), "  • Пісня")
+
+                    row1_widgets = app.yt_tree._row_widgets["1"]
+                    self.assertEqual(row1_widgets["title"].cget("text"), "After Hours")
+                    self.assertIsNotNone(row1_widgets.get("item_type"))
+                    self.assertEqual(row1_widgets["item_type"].cget("text"), "  • Альбом")
+                    self.assertEqual(row1_widgets["duration"].cget("text"), "14 тр. • 60 хв")
+                    self.assertEqual(row1_widgets["source"].cget("text"), "YTMusic")
+
+                    row2_widgets = app.yt_tree._row_widgets["2"]
+                    self.assertEqual(row2_widgets["title"].cget("text"), "Save Your Tears (Live)")
+                    self.assertIsNotNone(row2_widgets.get("item_type"))
+                    self.assertEqual(row2_widgets["item_type"].cget("text"), "  • Відео")
+
+                    # Verify local tracks in "Мої звуки" keep clean title without redundant type suffix
+                    app.local_tracks = [
+                        LocalTrack(title="Clean Local Track", path="track.wav", duration=120.0, source="file")
+                    ]
+                    app._filter_tracks()
+                    self.assertEqual(len(app.track_list.get_children()), 1)
+                    loc_row = app.track_list._row_widgets["0"]
+                    self.assertEqual(loc_row["title"].cget("text"), "Clean Local Track")
+                    self.assertIsNone(loc_row.get("item_type"))
+                finally:
+                    app._exit()
+
+    def test_album_search_results_and_metadata(self) -> None:
+        mock_songs = [
+            {"videoId": "s1", "title": "Song One", "artists": [{"name": "Daft Punk"}], "duration": "4:00", "duration_seconds": 240, "thumbnails": []}
+        ]
+        mock_albums = [
+            {
+                "browseId": "MPREb_123",
+                "playlistId": "OLAK5uy_123",
+                "title": "Discovery",
+                "artists": [{"name": "Daft Punk"}],
+                "trackCount": 14,
+                "duration": "1 hour, 1 minute",
+                "duration_seconds": 3660,
+                "thumbnails": [{"url": "https://example.com/discovery.jpg"}],
+            }
+        ]
+        mock_ytmusic_instance = MagicMock()
+        mock_ytmusic_instance.search.side_effect = lambda query, filter=None: (
+            mock_songs if filter == "songs" else (mock_albums if filter == "albums" else [])
+        )
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_ytmusic_instance):
+            results = AudioEngine.search_youtube("Daft Punk", limit=10)
+            titles = [r["title"] for r in results]
+            self.assertIn("Song One", titles)
+            self.assertIn("Discovery", titles)
+
+            album_item = next(r for r in results if r["title"] == "Discovery")
+            self.assertEqual(album_item["result_type"], "album")
+            self.assertEqual(album_item["item_type"], "Альбом")
+            self.assertEqual(album_item["artist"], "Daft Punk")
+            self.assertEqual(album_item["source"], "ytmusic")
+            self.assertEqual(album_item["duration_text"], "14 тр. • 1 год 1 хв")
+            self.assertEqual(album_item["thumbnail_url"], "https://example.com/discovery.jpg")
+
+    def test_album_view_navigation_and_instant_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_album_view.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    mock_search = [
+                        {
+                            "title": "Random Access Memories",
+                            "artist": "Daft Punk",
+                            "full_title": "Random Access Memories — Daft Punk",
+                            "result_type": "album",
+                            "item_type": "Альбом",
+                            "browse_id": "MPREb_RAM",
+                            "duration_text": "13 тр. • 74 хв",
+                            "track_count": 13,
+                            "source": "ytmusic",
+                            "tracks": [
+                                {"title": "Give Life Back to Music", "artist": "Daft Punk", "duration": 274.0, "videoId": "v1", "url": "https://music.youtube.com/watch?v=v1"},
+                                {"title": "Get Lucky", "artist": "Daft Punk", "duration": 369.0, "videoId": "v2", "url": "https://music.youtube.com/watch?v=v2"},
+                            ],
+                        }
+                    ]
+                    app._render_yt_results(mock_search)
+                    self.assertEqual(len(app.yt_tree.get_children()), 1)
+
+                    # Double click on album row switches to album track list
+                    app.yt_tree.selection_set("0")
+                    album_mock_data = {
+                        "title": "Random Access Memories",
+                        "artist": "Daft Punk",
+                        "track_count": 2,
+                        "duration": 643.0,
+                        "duration_text": "2 тр. • 10 хв",
+                        "thumbnail_url": "https://example.com/ram.jpg",
+                        "tracks": mock_search[0]["tracks"],
+                    }
+                    with patch.object(AudioEngine, "get_album", return_value=album_mock_data):
+                        app._yt_play_picked(add_only=False, sync=True)
+
+                    self.assertTrue(app._viewing_album)
+                    self.assertEqual(
+                        app.lbl_album_info.cget("text"),
+                        "Альбом: Random Access Memories — Daft Punk (2 тр., 10 хв)",
+                    )
+                    self.assertEqual(len(app.yt_tree.get_children()), 2)
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("text"), "Give Life Back to Music")
+                    self.assertEqual(app.yt_tree._row_widgets["1"]["title"].cget("text"), "Get Lucky")
+
+                    # Back to search results without network fetch
+                    app._back_to_search_results()
+                    self.assertFalse(app._viewing_album)
+                    self.assertEqual(len(app.yt_tree.get_children()), 1)
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("text"), "Random Access Memories")
+                finally:
+                    app._exit()
+
+    def test_album_playback_queue_and_navigation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_album_queue.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    album_tracks = [
+                        {"title": "Track 1", "artist": "Artist", "duration": 180.0, "url": "https://music.youtube.com/watch?v=1", "video_id": "1"},
+                        {"title": "Track 2", "artist": "Artist", "duration": 200.0, "url": "https://music.youtube.com/watch?v=2", "video_id": "2"},
+                        {"title": "Track 3", "artist": "Artist", "duration": 220.0, "url": "https://music.youtube.com/watch?v=3", "video_id": "3"},
+                    ]
+                    album_item = {
+                        "title": "Test Album",
+                        "artist": "Artist",
+                        "track_count": 3,
+                        "duration_text": "3 тр. • 10 хв",
+                        "tracks": album_tracks,
+                    }
+                    app._render_album_view(album_item, album_item)
+                    self.assertEqual(len(app.yt_tree.get_children()), 3)
+
+                    # Play Track 1 (index 0) from album view
+                    app.yt_tree.selection_set("0")
+                    with patch.object(app, "_play_url"):
+                        app._yt_play_picked(add_only=False)
+
+                    self.assertIsNotNone(app._active_album_queue)
+                    self.assertEqual(len(app._active_album_queue), 3)
+                    self.assertEqual(app._album_track_index, 0)
+
+                    # Green indicator highlighting on active song
+                    app.is_playing = True
+                    app._refresh_album_view_playing_indicator()
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("text"), "▶  Track 1")
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("fg"), "#4ade80")
+                    self.assertEqual(app.yt_tree._row_widgets["1"]["title"].cget("text"), "Track 2")
+                    # When unselected, active track title remains green (#38d430)
+                    app.yt_tree.selection_remove("0")
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("fg"), "#38d430")
+                    app.yt_tree.selection_set("0")
+
+                    # Autoplay next track on _on_finished
+                    with patch.object(app, "_play_album_track") as mock_play_track:
+                        app._on_finished()
+                        app.update()
+                        self.assertEqual(app._album_track_index, 1)
+                        mock_play_track.assert_called_once_with(album_tracks[1])
+
+                    # Toolbar "Next track" (>>) navigation within album
+                    with patch.object(app, "_play_album_track") as mock_play_next:
+                        app._next()
+                        self.assertEqual(app._album_track_index, 2)
+                        mock_play_next.assert_called_once_with(album_tracks[2])
+
+                    # Toolbar "Previous track" (<<) navigation within album
+                    with patch.object(app, "_play_album_track") as mock_play_prev:
+                        app._previous()
+                        self.assertEqual(app._album_track_index, 1)
+                        mock_play_prev.assert_called_once_with(album_tracks[1])
+                    # Verification of queue isolation: playing a non-album song resets album queue
+                    app._viewing_album = False
+                    non_album_item = {
+                        "title": "Single Song",
+                        "artist": "Solo Artist",
+                        "url": "https://music.youtube.com/watch?v=solo",
+                        "result_type": "song",
+                    }
+                    app.yt_results_data = [non_album_item]
+                    app.yt_tree.selection_set("0")
+                    with patch.object(app, "_play_url"):
+                        app._yt_play_picked(add_only=False)
+                    self.assertIsNone(app._active_album_queue)
+                    self.assertIsNone(app._album_track_index)
+                    self.assertIsNone(app._active_album_id)
+                finally:
+                    app._exit()
+
+    def test_format_album_duration_edge_cases(self) -> None:
+        # Colon-separated durations
+        self.assertEqual(format_album_duration(12, 0, "48:12"), "12 тр. • 48 хв")
+        self.assertEqual(format_album_duration(14, None, "1:01:00"), "14 тр. • 1 год 1 хв")
+        # Hours without minutes
+        self.assertEqual(format_album_duration(10, 7200, ""), "10 тр. • 2 год")
+        # Text hours and minutes
+        self.assertEqual(format_album_duration(15, None, "1 hour, 15 minutes"), "15 тр. • 1 год 15 хв")
+        # Non-positive or None track count
+        self.assertEqual(format_album_duration(0, 1800, ""), "30 хв")
+        self.assertEqual(format_album_duration(None, 1800, ""), "30 хв")
+        self.assertEqual(format_album_duration(None, None, ""), "")
+
+    def test_window_geometry_negative_coordinates_restoration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_geom_neg.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Tkinter string format with negative coordinates: +-1920
+                    with patch.object(app, "_get_screen_bounds", return_value=(-1920, 0, 1920, 1080)), patch.object(
+                        app, "geometry"
+                    ) as mock_geom:
+                        app._restore_window_geometry("1080x780+-1920+0")
+                        mock_geom.assert_called_once_with("1080x780+-1920+0")
+                finally:
+                    app._exit()
+
+    def test_album_search_real_world_snippet_resolves_metadata(self) -> None:
+        # Real ytmusic search returns snippet with duration=None and no trackCount
+        real_snippet = {
+            "browseId": "MPREb_Real",
+            "playlistId": "OLAK5uy_Real",
+            "title": "Real World Album",
+            "artists": [{"name": "Great Artist"}],
+            "duration": None,
+            "thumbnails": [{"url": "https://example.com/art.jpg"}],
+        }
+        resolved_album = {
+            "title": "Real World Album",
+            "artist": "Great Artist",
+            "trackCount": 10,
+            "duration": "45 minutes",
+            "duration_seconds": 2700,
+            "tracks": [],
+        }
+        mock_yt = MagicMock()
+        mock_yt.search.side_effect = lambda q, filter=None: [real_snippet] if filter == "albums" else []
+        mock_yt.get_album.return_value = resolved_album
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_yt):
+            results = AudioEngine.search_youtube("Real World Album", limit=5)
+            self.assertEqual(len(results), 1)
+            alb = results[0]
+            self.assertEqual(alb["title"], "Real World Album")
+            self.assertEqual(alb["duration_text"], "10 тр. • 45 хв")
+            self.assertEqual(alb["track_count"], 10)
+
+    def test_get_album_with_playlist_id_resolution(self) -> None:
+        mock_yt = MagicMock()
+        mock_yt.get_album_browse_id.return_value = "MPREb_ResolvedFromPlaylist"
+        mock_yt.get_album.return_value = {
+            "title": "Playlist Album",
+            "artists": [{"name": "Artist"}],
+            "trackCount": 5,
+            "duration_seconds": 1200,
+            "tracks": [
+                {"videoId": "t1", "title": "Track 1", "duration_seconds": 240}
+            ],
+        }
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_yt):
+            # Pass OLAK... playlist ID
+            alb = AudioEngine.get_album("OLAK5uy_PlaylistIdTest")
+            mock_yt.get_album_browse_id.assert_called_once_with("OLAK5uy_PlaylistIdTest")
+            self.assertEqual(alb["browse_id"], "MPREb_ResolvedFromPlaylist")
+            self.assertEqual(alb["title"], "Playlist Album")
+            self.assertEqual(len(alb["tracks"]), 1)
+
+    def test_viewing_different_album_does_not_show_false_playing_indicator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_diff_album.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Album 1 is playing
+                    app._active_album_queue = [
+                        {"title": "Song A1", "artist": "Artist A", "duration": 180.0},
+                    ]
+                    app._album_track_index = 0
+                    app._active_album_id = "MPREb_Album_A"
+                    app.is_playing = True
+
+                    # User opens Album 2
+                    album_2 = {
+                        "browse_id": "MPREb_Album_B",
+                        "title": "Album B",
+                        "artist": "Artist B",
+                        "track_count": 2,
+                        "duration_text": "2 тр. • 6 хв",
+                        "tracks": [
+                            {"title": "Song B1", "artist": "Artist B", "duration": 180.0},
+                            {"title": "Song B2", "artist": "Artist B", "duration": 180.0},
+                        ],
+                    }
+                    app._render_album_view(album_2, album_2)
+
+                    # In Album 2, index 0 must NOT have the green playing prefix
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("text"), "Song B1")
+                    self.assertEqual(app.yt_tree._row_widgets["1"]["title"].cget("text"), "Song B2")
+
+                    # Refresh indicator also keeps it clean
+                    app._refresh_album_view_playing_indicator()
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("text"), "Song B1")
+
+                    # If user returns to Album 1, index 0 shows ▶
+                    album_1 = {
+                        "browse_id": "MPREb_Album_A",
+                        "title": "Album A",
+                        "artist": "Artist A",
+                        "track_count": 1,
+                        "duration_text": "1 тр. • 3 хв",
+                        "tracks": app._active_album_queue,
+                    }
+                    app._render_album_view(album_1, album_1)
+                    self.assertEqual(app.yt_tree._row_widgets["0"]["title"].cget("text"), "▶  Song A1")
+                finally:
+                    app._exit()
+
+    def test_empty_album_view_shows_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_empty_album.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    empty_album = {
+                        "browse_id": "MPREb_Empty",
+                        "title": "Empty Album",
+                        "artist": "Empty Artist",
+                        "track_count": 0,
+                        "tracks": [],
+                    }
+                    app._render_album_view(empty_album, empty_album)
+                    self.assertEqual(app.yt_status_lbl.winfo_manager(), "pack")
+                    self.assertIn("не знайдено", app.yt_status_lbl.cget("text"))
+                finally:
+                    app._exit()
+
+    def test_window_geometry_disconnected_monitor_fallback_to_center(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_geom_disco.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Visible virtual display: 0, 0 to 1920, 1080 (secondary monitor at 2560 was disconnected)
+                    with patch.object(app, "_get_screen_bounds", return_value=(0, 0, 1920, 1080)), patch.object(
+                        app, "_center_window"
+                    ) as mock_center:
+                        app._restore_window_geometry({"width": 1080, "height": 780, "x": 2600, "y": 100})
+                        mock_center.assert_called_once_with(1080, 780)
+                finally:
+                    app._exit()
+
+    def test_album_view_instant_back_restores_cached_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_back_status.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    cached_results = [
+                        {"title": "Song 1", "artist": "Artist 1", "duration": 180.0, "source": "ytmusic", "item_type": "Пісня"},
+                        {"title": "Album 1", "artist": "Artist 2", "duration": 3600.0, "source": "ytmusic", "item_type": "Альбом", "browse_id": "b1"},
+                    ]
+                    app.yt_results_data = list(cached_results)
+                    custom_status = "Знайдено результатів: 2 для 'Daft Punk'"
+                    app.yt_status_lbl.configure(text=custom_status)
+
+                    # Enter album view
+                    album_item = dict(cached_results[1])
+                    app._open_album_view(album_item, sync=True)
+                    self.assertTrue(app._viewing_album)
+
+                    # Return back to search results
+                    app._back_to_search_results()
+                    self.assertFalse(app._viewing_album)
+                    self.assertEqual(app.yt_status_lbl.cget("text"), custom_status)
+                    self.assertEqual(len(app.yt_tree.get_children()), 2)
+                finally:
+                    app._exit()
+
+    def test_album_queue_skips_unplayable_empty_url_track(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_skip_empty.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app._active_album_queue = [
+                        {"title": "Track 1 (Unplayable)", "artist": "Artist", "url": "", "video_id": ""},
+                        {"title": "Track 2 (Playable)", "artist": "Artist", "url": "https://music.youtube.com/watch?v=2", "video_id": "2"},
+                    ]
+                    app._album_track_index = 0
+                    with patch.object(app, "_next") as mock_next:
+                        app._play_album_track(app._active_album_queue[0])
+                        # Should show status about unplayable track
+                        self.assertIn("недоступний", app.yt_status_lbl.cget("text"))
+                finally:
+                    app._exit()
+
+    def test_audio_engine_get_album_non_numeric_track_count(self) -> None:
+        mock_yt = MagicMock()
+        mock_yt.get_album.return_value = {
+            "title": "Text TrackCount Album",
+            "artists": [{"name": "Band"}],
+            "trackCount": "12 пісень",
+            "duration": "45 minutes",
+            "tracks": [{"videoId": "v1", "title": "Track 1", "duration": "3:45"}],
+        }
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_yt):
+            alb = AudioEngine.get_album("MPREb_TextTC")
+            self.assertEqual(alb["track_count"], 12)
+            self.assertEqual(alb["title"], "Text TrackCount Album")
+            self.assertEqual(len(alb["tracks"]), 1)
 
 
 if __name__ == "__main__":
