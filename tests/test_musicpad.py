@@ -3780,6 +3780,248 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                 finally:
                     app2._exit()
 
+    def test_album_view_tracks_inherit_thumbnails_and_cached_photo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_alb_thumb.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    album_item = {
+                        "title": "Test Album",
+                        "artist": "Test Artist",
+                        "browse_id": "MPREb_Test",
+                        "thumbnail_url": "https://example.com/cover.jpg",
+                        "item_type": "Альбом",
+                    }
+                    album_data = {
+                        "title": "Test Album",
+                        "artist": "Test Artist",
+                        "thumbnail_url": "https://example.com/cover.jpg",
+                        "track_count": 2,
+                        "tracks": [
+                            {"title": "Track 1", "artist": "Test Artist", "duration": 180.0, "url": "https://yt.com/1"},
+                            {"title": "Track 2", "artist": "Test Artist", "duration": 200.0, "url": "https://yt.com/2"},
+                        ],
+                    }
+                    # Pre-cache a dummy photo for the album
+                    dummy_photo = main.tk.PhotoImage(width=40, height=40)
+                    app._yt_thumb_cache[album_item["thumbnail_url"]] = dummy_photo
+
+                    app._render_album_view(album_data, album_item)
+
+                    # Both tracks must have inherited the album thumbnail_url and dummy photo
+                    self.assertEqual(len(app.yt_tree.get_children()), 2)
+                    for iid in ("0", "1"):
+                        item_data = app.yt_tree._items[iid]
+                        self.assertEqual(item_data["thumb_url"], "https://example.com/cover.jpg")
+                        self.assertEqual(item_data["cover_image"], dummy_photo)
+                finally:
+                    app._exit()
+
+    def test_album_view_scroll_anchoring_single_track(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_scroll.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Populate search results with 25 items so canvas is tall
+                    items = [
+                        {"title": f"Song {i}", "artist": "Art", "duration": 180.0, "source": "ytmusic", "item_type": "Пісня"}
+                        for i in range(25)
+                    ]
+                    app._render_yt_results(items)
+                    app.yt_tree.update_idletasks()
+
+                    # Scroll down to bottom
+                    app.yt_tree.canvas.yview_moveto(0.85)
+
+                    # 2. Render a 1-track album (the exact scenario from user's Photo 1 & Photo 2)
+                    one_track_album = {
+                        "title": "Не смотри наверх",
+                        "artist": "Три дня дождя",
+                        "track_count": 1,
+                        "tracks": [
+                            {"title": "Не смотри наверх", "artist": "Три дня дождя", "duration": 219.0, "url": "https://yt.com/song"}
+                        ],
+                    }
+                    orig_item = dict(one_track_album)
+                    orig_item["browse_id"] = "b_single"
+                    app._render_album_view(one_track_album, orig_item)
+                    app.yt_tree.update_idletasks()
+
+                    # 3. Canvas yview MUST be pinned to 0.0 (top)
+                    y_top, _ = app.yt_tree.canvas.yview()
+                    self.assertAlmostEqual(y_top, 0.0, places=2)
+                    # And item "0" must exist and be selected
+                    self.assertEqual(app.yt_tree.selection(), ("0",))
+                finally:
+                    app._exit()
+
+    def test_back_to_search_results_restores_album_position(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_back_scroll.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Search results with 20 items
+                    items = [
+                        {"title": f"Song {i}", "artist": "Art", "duration": 180.0, "source": "ytmusic", "item_type": "Пісня"}
+                        for i in range(19)
+                    ]
+                    items.append({
+                        "title": "Target Album",
+                        "artist": "Art",
+                        "duration": 3600.0,
+                        "source": "ytmusic",
+                        "item_type": "Альбом",
+                        "browse_id": "b_target",
+                    })
+                    app._render_yt_results(items)
+
+                    # User selects the album at index 19 (at the bottom)
+                    app.yt_tree.selection_set("19")
+                    app.yt_tree.focus("19")
+
+                    # Open album view
+                    app._open_album_view(items[19], sync=True)
+                    self.assertTrue(app._viewing_album)
+                    self.assertEqual(app._cached_selected_album_iid, "19")
+
+                    # Back to search results
+                    with patch.object(app.yt_tree, "see") as mock_see:
+                        app._back_to_search_results()
+                        self.assertFalse(app._viewing_album)
+                        # Selection is restored to "19"
+                        self.assertEqual(app.yt_tree.selection(), ("19",))
+                        mock_see.assert_called_with("19")
+                finally:
+                    app._exit()
+
+
+    def test_redesigned_top_toolbar_elements_and_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_tb_layout.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Height is 60px
+                    self.assertEqual(int(app.top_bar.cget("height")), 60)
+
+                    # 2. Controls exist in toolbar
+                    self.assertTrue(hasattr(app, "btn_tb_mic_mute"))
+                    self.assertTrue(hasattr(app, "btn_tb_loop"))
+                    self.assertTrue(hasattr(app, "lbl_np_title"))
+                    self.assertTrue(hasattr(app, "lbl_np_artist"))
+                    self.assertTrue(hasattr(app, "lbl_np_cover"))
+
+                    # 3. Loop button alias
+                    self.assertIs(app.btn_b_loop, app.btn_tb_loop)
+
+                    # 4. Elements ordering in top_bar
+                    tb_children = app.top_bar.winfo_children()
+                    p_idx = tb_children.index(app.pause_button)
+                    s_idx = tb_children.index(app.btn_tb_stop)
+                    pr_idx = tb_children.index(app.btn_tb_prev)
+                    n_idx = tb_children.index(app.btn_tb_next)
+                    sep_idx = tb_children.index(app.top_bar_sep1)
+                    t_idx = tb_children.index(app.time_label)
+                    sk_idx = tb_children.index(app.seek_scale)
+                    self.assertTrue(p_idx < s_idx < pr_idx < n_idx < sep_idx < t_idx < sk_idx)
+                finally:
+                    app._exit()
+
+    def test_mute_track_to_others_broadcast_and_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_mute_others.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    self.assertFalse(app.mute_track_to_others_var.get())
+                    # Toggle on
+                    app._toggle_mute_track_to_others()
+                    self.assertTrue(app.mute_track_to_others_var.get())
+                    self.assertTrue(app.engine.get_mute_broadcast())
+                    self.assertFalse(app.engine._route_mic)
+                    self.assertTrue(app.engine._route_speakers)
+                finally:
+                    # app._exit() saves state with mute_track_to_others=True
+                    app._exit()
+
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.assertTrue(data.get("mute_track_to_others"))
+
+                # Verify persistence on re-load
+                app2 = main.MusicPadApp()
+                try:
+                    self.assertTrue(app2.mute_track_to_others_var.get())
+                    self.assertTrue(app2.engine.get_mute_broadcast())
+
+                    # Toggle off in app2
+                    app2._toggle_mute_track_to_others()
+                    self.assertFalse(app2.mute_track_to_others_var.get())
+                    self.assertFalse(app2.engine.get_mute_broadcast())
+                finally:
+                    app2._exit()
+
+                # Verify toggle off persisted
+                app3 = main.MusicPadApp()
+                try:
+                    self.assertFalse(app3.mute_track_to_others_var.get())
+                    self.assertFalse(app3.engine.get_mute_broadcast())
+                finally:
+                    app3._exit()
+
+    def test_update_now_playing_display_title_artist_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_np_disp.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Initially nothing playing
+                    self.assertIn("Нічого", app.lbl_np_title.cget("text"))
+                    self.assertEqual(app.lbl_np_artist.cget("text"), "")
+
+                    # Update with title, artist and dummy photo
+                    dummy_cov = main.tk.PhotoImage(width=40, height=40)
+                    app._update_now_playing_display("Bohemian Rhapsody", "Queen", dummy_cov)
+                    self.assertEqual(app.lbl_np_title.cget("text"), "Bohemian Rhapsody")
+                    self.assertEqual(app.lbl_np_artist.cget("text"), "  •  Queen")
+                    self.assertEqual(app.lbl_np_cover.cget("image"), str(dummy_cov))
+
+                    # Reset / clear
+                    app._update_now_playing_display("", "")
+                    self.assertIn("Нічого", app.lbl_np_title.cget("text"))
+                    self.assertEqual(app.lbl_np_artist.cget("text"), "")
+                finally:
+                    app._exit()
+
+    def test_speech_bubble_suppressed_for_playing_track(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_bubble_suppress.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Mock bubble.show
+                    bubble = app.notification_manager.bubble
+                    with patch.object(bubble, "show") as mock_show:
+                        # 1. Playing notification via notify_info
+                        app.notify_info("Відтворюється: Song A")
+                        mock_show.assert_not_called()
+
+                        # 2. Playing notification via status_var
+                        app.status_var.set("Відтворюється: Song B")
+                        mock_show.assert_not_called()
+
+                        app.status_var.set("Зараз грає: Song C")
+                        mock_show.assert_not_called()
+
+                        # 3. Non-playback notifications should still show
+                        app.status_var.set("Дію скасовано.")
+                        mock_show.assert_called_once_with("Дію скасовано.", "info")
+                finally:
+                    app._exit()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1525,6 +1525,33 @@ class AudioEngine:
             except Exception:
                 pass
 
+    def set_mute_broadcast(self, mute: bool) -> None:
+        """Mute track audio to broadcast (virtual cable / mic injection) while keeping headphones monitor."""
+        with self._lock:
+            self._route_mic = not bool(mute)
+            shm = self._injection_shm
+            track_active_for_apo = bool(
+                self._active_track is not None
+                and self._route_mic
+                and not self._pause_event.is_set()
+            )
+        if shm is not None and shm.has_lease:
+            try:
+                shm.update_control(
+                    mic_gain=self._effective_mic_gain(),
+                    mic_mute=self._mic_muted,
+                    track_playing=track_active_for_apo,
+                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_param1=self._deepfilter_wet,
+                    passthrough=False,
+                    target_endpoint_guid=self.target_endpoint_guid,
+                )
+            except Exception:
+                pass
+
+    def get_mute_broadcast(self) -> bool:
+        return not self._route_mic
+
     def get_position(self) -> float:
         return self._position_seconds
 

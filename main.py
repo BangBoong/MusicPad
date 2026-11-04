@@ -1237,6 +1237,16 @@ class NotificationStringVar(tk.StringVar):
         text = str(value).strip() if value is not None else ""
         if not text:
             return
+        lower_txt = text.lower()
+        if (
+            lower_txt.startswith("відтворюється:")
+            or lower_txt.startswith("відтворення:")
+            or lower_txt.startswith("відтворення з youtube:")
+            or lower_txt.startswith("зараз грає:")
+            or lower_txt.startswith("playing:")
+            or lower_txt.startswith("now playing:")
+        ):
+            return
         cat = category
         if cat is None:
             lower = text.lower()
@@ -1286,6 +1296,16 @@ class NotificationManager:
         """Post a notification. Thread-safe."""
         text = str(message).strip() if message is not None else ""
         if not text:
+            return
+        lower_txt = text.lower()
+        if (
+            lower_txt.startswith("відтворюється:")
+            or lower_txt.startswith("відтворення:")
+            or lower_txt.startswith("відтворення з youtube:")
+            or lower_txt.startswith("зараз грає:")
+            or lower_txt.startswith("playing:")
+            or lower_txt.startswith("now playing:")
+        ):
             return
         cat = "error" if str(category).lower() == "error" else "info"
 
@@ -1783,7 +1803,10 @@ class TrackListView(tk.Frame):
         r_c4 = tk.Frame(row_frame, width=100)
         r_c4.pack_propagate(False)
         r_c4.grid(row=0, column=4, sticky="ns")
-        lbl_cover = tk.Label(r_c4, image=cover_img, width=40, height=40, anchor="center")
+        try:
+            lbl_cover = tk.Label(r_c4, image=cover_img, width=40, height=40, anchor="center")
+        except Exception:
+            lbl_cover = tk.Label(r_c4, image=self.default_cover or "", width=40, height=40, anchor="center")
         lbl_cover.place(relx=0.5, rely=0.5, width=40, height=40, anchor="center")
 
         widgets = {
@@ -1885,6 +1908,11 @@ class TrackListView(tk.Frame):
             if iid in self._item_iids:
                 self._item_iids.remove(iid)
             self._selected_iids.discard(iid)
+        if not self._item_iids:
+            try:
+                self.canvas.yview_moveto(0.0)
+            except Exception:
+                pass
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def selection_set(self, *iids: Any) -> None:
@@ -1938,6 +1966,13 @@ class TrackListView(tk.Frame):
             self.selection_set(iid)
         return self._selected_iid or ""
 
+    def reset_scroll(self) -> None:
+        try:
+            self.canvas.yview_moveto(0.0)
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except Exception:
+            pass
+
     def see(self, iid: str) -> None:
         iid = str(iid)
         if iid not in self._row_frames:
@@ -1945,6 +1980,7 @@ class TrackListView(tk.Frame):
         try:
             total = len(self._item_iids)
             if total <= 1:
+                self.canvas.yview_moveto(0.0)
                 return
             idx = self._item_iids.index(iid)
             top_frac = idx / total
@@ -2006,6 +2042,7 @@ class MusicPadApp(tk.Tk):
         self._hotkeys_enabled: bool = True
         self.auto_keys_enabled = tk.BooleanVar(value=True)
         self.loop_enabled = tk.BooleanVar(value=False)
+        self.mute_track_to_others_var = tk.BooleanVar(value=False)
         self.playback_count = 0
         self.title("MusicPad")
         self.minsize(740, 520)
@@ -2620,6 +2657,22 @@ class MusicPadApp(tk.Tk):
             d.rectangle([(29, 48), (35, 57)], fill=blue)
             d.rectangle([(18, 57), (46, 62)], fill=blue)
             self._icons["mic"] = ImageTk.PhotoImage(img.resize((16, 16), Image.Resampling.LANCZOS))
+
+            # Mic Mute (mic with red X across it, 16x16)
+            img_mic_mute = img.copy()
+            d_mic_mute = ImageDraw.Draw(img_mic_mute)
+            d_mic_mute.line([(14, 14), (50, 50)], fill=red, width=7)
+            d_mic_mute.line([(50, 14), (14, 50)], fill=red, width=7)
+            self._icons["mic_mute"] = ImageTk.PhotoImage(img_mic_mute.resize((16, 16), Image.Resampling.LANCZOS))
+
+            # Placeholder cover for toolbar (40x40)
+            img_cov = Image.new("RGBA", (80, 80), (32, 32, 32, 255))
+            d_cov = ImageDraw.Draw(img_cov)
+            d_cov.rounded_rectangle([(0, 0), (79, 79)], radius=8, outline=(60, 60, 60, 255), width=2)
+            d_cov.ellipse([(24, 46), (42, 64)], fill=blue)
+            d_cov.rectangle([(37, 16), (42, 52)], fill=blue)
+            d_cov.polygon([(42, 16), (56, 26), (42, 40)], fill=blue)
+            self._icons["note_cover_40"] = ImageTk.PhotoImage(img_cov.resize((40, 40), Image.Resampling.LANCZOS))
 
             # Mute (headphones with bright red X inside, 16x16)
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -3894,9 +3947,13 @@ class MusicPadApp(tk.Tk):
 
     def _build_top_toolbar(self) -> None:
         c = self._get_theme_colors()
-        self.top_bar = tk.Frame(self, bg=c["top_bg"], height=38)
+        self.top_bar = tk.Frame(self, bg=c["top_bg"], height=60)
         self.top_bar.pack(fill="x", side="top")
         self.top_bar.pack_propagate(False)
+
+        self.top_bar.grid_rowconfigure(0, weight=1)
+        self.top_bar.grid_rowconfigure(1, weight=1)
+        self.top_bar.grid_columnconfigure(6, weight=1)
 
         btn_kw = {
             "bg": c["top_bg"],
@@ -3918,7 +3975,7 @@ class MusicPadApp(tk.Tk):
             command=self._toggle_pause,
             **btn_kw,
         )
-        self.pause_button.pack(side="left", padx=(8, 3), pady=4)
+        self.pause_button.grid(row=0, column=0, rowspan=2, padx=(8, 2), pady=4, sticky="ns")
 
         # 5. Stop
         self.btn_tb_stop = tk.Button(
@@ -3928,7 +3985,7 @@ class MusicPadApp(tk.Tk):
             command=self._stop,
             **btn_kw,
         )
-        self.btn_tb_stop.pack(side="left", padx=3, pady=4)
+        self.btn_tb_stop.grid(row=0, column=1, rowspan=2, padx=2, pady=4, sticky="ns")
 
         # 6. Prev
         self.btn_tb_prev = tk.Button(
@@ -3938,7 +3995,7 @@ class MusicPadApp(tk.Tk):
             command=self._previous,
             **btn_kw,
         )
-        self.btn_tb_prev.pack(side="left", padx=3, pady=4)
+        self.btn_tb_prev.grid(row=0, column=2, rowspan=2, padx=2, pady=4, sticky="ns")
 
         # 7. Next
         self.btn_tb_next = tk.Button(
@@ -3948,11 +4005,11 @@ class MusicPadApp(tk.Tk):
             command=self._next,
             **btn_kw,
         )
-        self.btn_tb_next.pack(side="left", padx=3, pady=4)
+        self.btn_tb_next.grid(row=0, column=3, rowspan=2, padx=2, pady=4, sticky="ns")
 
         # Vertical separator between Next and 0:00 (authentic to Soundpad)
-        self.top_bar_sep1 = tk.Frame(self.top_bar, width=1, bg=c["divider"], height=18)
-        self.top_bar_sep1.pack(side="left", padx=(3, 3), pady=8)
+        self.top_bar_sep1 = tk.Frame(self.top_bar, width=1, bg=c["divider"], height=36)
+        self.top_bar_sep1.grid(row=0, column=4, rowspan=2, padx=4, pady=8, sticky="ns")
 
         # 8. Time label (0:00)
         self.time_label = tk.Label(
@@ -3965,7 +4022,7 @@ class MusicPadApp(tk.Tk):
             width=5,
             anchor="center",
         )
-        self.time_label.pack(side="left", padx=(1, 4), pady=4)
+        self.time_label.grid(row=0, column=5, padx=(2, 4), pady=(4, 2), sticky="w")
 
         # 9. Seek scale (Timeline canvas)
         self.seek_scale = SoundpadTimelineSlider(
@@ -3975,14 +4032,14 @@ class MusicPadApp(tk.Tk):
             bg=c["top_bg"],
         )
         self.seek_scale.set_theme(self.theme)
-        self.seek_scale.pack(side="left", fill="x", expand=True, padx=(2, 6), pady=4)
+        self.seek_scale.grid(row=0, column=6, padx=(2, 6), pady=(4, 2), sticky="ew")
         self.seek_scale.bind("<ButtonPress-1>", self._on_seek_press)
         self.seek_scale.bind("<B1-Motion>", self._on_seek_motion)
         self.seek_scale.bind("<ButtonRelease-1>", self._on_seek_release)
 
         # 10. Vertical separator
-        self.top_bar_sep2 = tk.Frame(self.top_bar, width=1, bg=c["divider"], height=18)
-        self.top_bar_sep2.pack(side="left", padx=(2, 6), pady=8)
+        self.top_bar_sep2 = tk.Frame(self.top_bar, width=1, bg=c["divider"], height=36)
+        self.top_bar_sep2.grid(row=0, column=7, rowspan=2, padx=(4, 6), pady=8, sticky="ns")
 
         # 11. Mute button (musical note without X when sound is on, musical note with red X when muted/off)
         init_icon = (
@@ -3997,7 +4054,7 @@ class MusicPadApp(tk.Tk):
             command=self._toggle_mute,
             **btn_kw,
         )
-        self.btn_tb_mute.pack(side="left", padx=(2, 4), pady=4)
+        self.btn_tb_mute.grid(row=0, column=8, padx=2, pady=(4, 2))
         self.volume_var.trace_add("write", lambda *_: self._update_mute_icon())
 
         # 12. Volume scale (custom slider canvas)
@@ -4008,7 +4065,70 @@ class MusicPadApp(tk.Tk):
             bg=c["top_bg"],
         )
         self.volume_scale.set_theme(self.theme)
-        self.volume_scale.pack(side="left", padx=(2, 10), pady=4)
+        self.volume_scale.grid(row=0, column=9, padx=(2, 8), pady=(4, 2), sticky="w")
+
+        # Row 2 (under timeline seek slider): Now playing info & 40x40 cover art
+        self.np_container = tk.Frame(self.top_bar, bg=c["top_bg"], height=30)
+        self.np_container.grid(row=1, column=5, columnspan=2, sticky="ew", padx=(2, 6), pady=(0, 4))
+
+        # Far right of lower row under seek slider: Cover art 40x40 px
+        default_cov = self._icons.get("note_cover_40") or self._icons.get("note")
+        self.lbl_np_cover = tk.Label(
+            self.np_container,
+            image=default_cov,
+            width=40,
+            height=40,
+            bg=c["top_bg"],
+            anchor="center",
+        )
+        self.lbl_np_cover.pack(side="right", padx=(6, 0))
+
+        # Far left of lower row under seek slider: Track title and artist
+        self.np_text_frame = tk.Frame(self.np_container, bg=c["top_bg"])
+        self.np_text_frame.pack(side="left", fill="x", expand=True)
+
+        self.lbl_np_title = tk.Label(
+            self.np_text_frame,
+            text=self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється",
+            font=("Segoe UI", 9, "bold"),
+            fg=c["muted_fg"],
+            bg=c["top_bg"],
+            anchor="w",
+        )
+        self.lbl_np_title.pack(side="left")
+
+        self.lbl_np_artist = tk.Label(
+            self.np_text_frame,
+            text="",
+            font=("Segoe UI", 9),
+            fg=c["muted_fg"],
+            bg=c["top_bg"],
+            anchor="w",
+        )
+        self.lbl_np_artist.pack(side="left")
+
+        # Under btn_tb_mute (Col 8, Row 1): Mic mute button (mutes to others, keeps monitor)
+        is_mic_muted = getattr(getattr(self, "mute_track_to_others_var", None), "get", lambda: False)()
+        mic_icon = self._icons.get("mic_mute") if is_mic_muted else self._icons.get("mic")
+        self.btn_tb_mic_mute = tk.Button(
+            self.top_bar,
+            image=mic_icon,
+            text="",
+            command=self._toggle_mute_track_to_others,
+            **btn_kw,
+        )
+        self.btn_tb_mic_mute.grid(row=1, column=8, padx=2, pady=(0, 4))
+
+        # Under volume_scale (Col 9, Row 1): Loop button (🔁)
+        self.btn_tb_loop = tk.Button(
+            self.top_bar,
+            image=self._icons.get("loop"),
+            text="🔁",
+            command=self._toggle_loop,
+            **btn_kw,
+        )
+        self.btn_tb_loop.grid(row=1, column=9, padx=(2, 0), pady=(0, 4), sticky="w")
+        self.btn_b_loop = self.btn_tb_loop
 
         # Underline below toolbar
         self.top_bar_divider = tk.Frame(self, height=1, bg=c["divider"])
@@ -4361,20 +4481,7 @@ class MusicPadApp(tk.Tk):
         )
         self.btn_b_ff.pack(side="right", padx=2, pady=4)
 
-        # Loop (🔁)
-        self.btn_b_loop = tk.Button(
-            self.bottom_bar,
-            image=self._icons.get("loop"),
-            text="🔁",
-            command=self._toggle_loop,
-            **btn_kw,
-        )
-        self.btn_b_loop.pack(side="right", padx=2, pady=4)
 
-        # Vertical separator before Loop
-        sep4 = tk.Frame(self.bottom_bar, width=1, bg=c["divider"], height=16)
-        sep4.pack(side="right", padx=6, pady=6)
-        self.bottom_bar_seps.append(sep4)
 
     def _init_settings_variables(self) -> None:
         if hasattr(self, "_settings_initialized") and self._settings_initialized:
@@ -6171,7 +6278,7 @@ class MusicPadApp(tk.Tk):
         # Top Toolbar
         if hasattr(self, "top_bar") and hasattr(self.top_bar, "configure"):
             self.top_bar.configure(bg=c["top_bg"])
-        for btn_name in ("pause_button", "btn_tb_stop", "btn_tb_prev", "btn_tb_next", "btn_tb_mute"):
+        for btn_name in ("pause_button", "btn_tb_stop", "btn_tb_prev", "btn_tb_next", "btn_tb_mute", "btn_tb_mic_mute", "btn_tb_loop"):
             btn = getattr(self, btn_name, None)
             if btn and hasattr(btn, "configure"):
                 btn.configure(
@@ -6185,6 +6292,16 @@ class MusicPadApp(tk.Tk):
                 sep.configure(bg=c["divider"])
         if hasattr(self, "time_label") and hasattr(self.time_label, "configure"):
             self.time_label.configure(bg=c["top_bg"], fg="#ffffff" if dark else "#20242b")
+        if hasattr(self, "np_container") and hasattr(self.np_container, "configure"):
+            self.np_container.configure(bg=c["top_bg"])
+        if hasattr(self, "np_text_frame") and hasattr(self.np_text_frame, "configure"):
+            self.np_text_frame.configure(bg=c["top_bg"])
+        if hasattr(self, "lbl_np_title") and hasattr(self.lbl_np_title, "configure"):
+            self.lbl_np_title.configure(bg=c["top_bg"], fg=c["fg"])
+        if hasattr(self, "lbl_np_artist") and hasattr(self.lbl_np_artist, "configure"):
+            self.lbl_np_artist.configure(bg=c["top_bg"], fg=c["muted_fg"])
+        if hasattr(self, "lbl_np_cover") and hasattr(self.lbl_np_cover, "configure"):
+            self.lbl_np_cover.configure(bg=c["top_bg"])
 
         # Recursive Menu Bar theming
         def _update_menu_recursively(menu: tk.Menu) -> None:
@@ -6552,6 +6669,8 @@ class MusicPadApp(tk.Tk):
                 self.engine.set_mic_volume(self.mic_volume_var.get())
         self.engine.set_volume(self.volume_var.get())
         self.engine.set_mic_muted(self.mic_muted.get())
+        if hasattr(self, "mute_track_to_others_var") and hasattr(self.engine, "set_mute_broadcast"):
+            self.engine.set_mute_broadcast(self.mute_track_to_others_var.get())
         if hasattr(self, "_on_voice_fx_changed"):
             try:
                 self._on_voice_fx_changed()
@@ -6789,6 +6908,17 @@ class MusicPadApp(tk.Tk):
         self.time_display_var.set(format_duration(start_pos))
         self.time_var.set(f"{format_duration(start_pos)} / {format_duration(track.duration)}")
         self._filter_tracks()
+        local_photo = None
+        thumb_path = getattr(track, "thumbnail_path", "")
+        if thumb_path and os.path.isfile(thumb_path):
+            try:
+                if Image is not None and ImageTk is not None:
+                    pil_img = Image.open(thumb_path)
+                    local_photo = ImageTk.PhotoImage(pil_img)
+            except Exception:
+                local_photo = None
+        self._current_track_photo = local_photo
+        self._update_now_playing_display(track.title, getattr(track, "artist", ""), local_photo)
         is_url = bool(track.is_url and not Path(track.path).is_file())
         if is_url:
             self._start(StreamTrack(track.title, track.path, is_url=True, start_pos=start_pos))
@@ -7524,6 +7654,23 @@ class MusicPadApp(tk.Tk):
             self._album_track_index = None
             self._active_album_id = None
 
+        alb_photo = getattr(self, "_current_track_photo", None)
+        active_idx = getattr(self, "_album_track_index", None)
+        if hasattr(self, "_yt_thumb_cache"):
+            if active_idx is not None and str(active_idx) in self._yt_thumb_cache:
+                alb_photo = self._yt_thumb_cache[str(active_idx)]
+            elif item.get("thumbnail_url") in self._yt_thumb_cache:
+                alb_photo = self._yt_thumb_cache[item["thumbnail_url"]]
+        if alb_photo is None and thumbnail_path and os.path.isfile(thumbnail_path):
+            try:
+                if Image is not None and ImageTk is not None:
+                    pil_img = Image.open(thumbnail_path)
+                    alb_photo = ImageTk.PhotoImage(pil_img)
+            except Exception:
+                alb_photo = None
+        self._current_track_photo = alb_photo
+        self._update_now_playing_display(title, artist, alb_photo)
+
         self.url_var.set(url)
         self._upsert_youtube_track(
             title=full_title,
@@ -7539,6 +7686,20 @@ class MusicPadApp(tk.Tk):
             self._add_url_to_list()
             self.yt_status_lbl.configure(text=f"Закешування розпочато: {full_title}...")
         else:
+            row_photo = None
+            if hasattr(self, "_yt_thumb_cache") and sel[0] in self._yt_thumb_cache:
+                row_photo = self._yt_thumb_cache[sel[0]]
+            elif hasattr(self, "_yt_thumb_cache") and item.get("thumbnail_url") in self._yt_thumb_cache:
+                row_photo = self._yt_thumb_cache[item["thumbnail_url"]]
+            elif thumbnail_path and os.path.isfile(thumbnail_path):
+                try:
+                    if Image is not None and ImageTk is not None:
+                        pil_img = Image.open(thumbnail_path)
+                        row_photo = ImageTk.PhotoImage(pil_img)
+                except Exception:
+                    row_photo = None
+            self._current_track_photo = row_photo
+            self._update_now_playing_display(title, artist, row_photo)
             self._play_url()
             self.yt_status_lbl.configure(text=f"Відтворення: {full_title}")
             if getattr(self, "_viewing_album", False):
@@ -7548,6 +7709,8 @@ class MusicPadApp(tk.Tk):
         # Save current search results for instant return without network re-fetch
         self._cached_search_results = list(self.yt_results_data)
         self._cached_yt_status = self.yt_status_lbl.cget("text")
+        sel = self.yt_tree.selection() if hasattr(self, "yt_tree") else ()
+        self._cached_selected_album_iid = sel[0] if sel else "0"
 
         album_title = item.get("title", "")
         album_artist = item.get("artist", "")
@@ -7616,8 +7779,18 @@ class MusicPadApp(tk.Tk):
             else:
                 status_widget.pack_forget()
 
+        self._yt_search_generation += 1
+        gen = self._yt_search_generation
+
         for row in self.yt_tree.get_children():
             self.yt_tree.delete(row)
+        if hasattr(self.yt_tree, "reset_scroll"):
+            self.yt_tree.reset_scroll()
+        elif hasattr(self.yt_tree, "canvas"):
+            try:
+                self.yt_tree.canvas.yview_moveto(0.0)
+            except Exception:
+                pass
 
         curr_alb_id = (
             original_item.get("browse_id")
@@ -7633,6 +7806,26 @@ class MusicPadApp(tk.Tk):
         )
 
         album_thumb = album_data.get("thumbnail_url") or original_item.get("thumbnail_url", "")
+        album_thumb_path = album_data.get("thumbnail_path") or original_item.get("thumbnail_path", "")
+
+        cached_album_photo = None
+        orig_iid = getattr(self, "_cached_selected_album_iid", "")
+        if hasattr(self, "_yt_thumb_cache"):
+            if orig_iid and orig_iid in self._yt_thumb_cache:
+                cached_album_photo = self._yt_thumb_cache[orig_iid]
+            elif album_thumb in self._yt_thumb_cache:
+                cached_album_photo = self._yt_thumb_cache[album_thumb]
+
+        if cached_album_photo is None and album_thumb_path and os.path.isfile(album_thumb_path):
+            try:
+                if Image is not None and ImageTk is not None:
+                    pil_img = Image.open(album_thumb_path)
+                    cached_album_photo = ImageTk.PhotoImage(pil_img)
+                    if hasattr(self, "_yt_thumb_cache"):
+                        self._yt_thumb_cache[album_thumb] = cached_album_photo
+            except Exception:
+                pass
+
         active_idx = getattr(self, "_album_track_index", None)
         for idx, t in enumerate(tracks):
             t_title = t.get("title", "")
@@ -7642,14 +7835,22 @@ class MusicPadApp(tk.Tk):
             prefix = "▶  " if is_active_playing else ""
             display_title = f"{prefix}{t_title}"
             t_thumb = t.get("thumbnail_url") or album_thumb
+            t["thumbnail_url"] = t_thumb
+            if not t.get("thumbnail_path") and album_thumb_path:
+                t["thumbnail_path"] = album_thumb_path
+
+            row_photo = cached_album_photo if cached_album_photo else None
 
             self.yt_tree.insert(
                 "",
                 "end",
                 iid=str(idx),
                 values=(display_title, t_artist, format_duration(t_dur), "YTMusic", t_thumb),
+                image=row_photo,
                 item_type="Пісня",
             )
+            if row_photo and hasattr(self, "_yt_thumb_cache"):
+                self._yt_thumb_cache[str(idx)] = row_photo
 
         if tracks:
             sel_target = str(active_idx) if (is_this_album_playing and active_idx is not None and 0 <= active_idx < len(tracks)) else "0"
@@ -7660,6 +7861,36 @@ class MusicPadApp(tk.Tk):
                     self.yt_tree.see(sel_target)
                 except Exception:
                     pass
+
+        def fetch_album_thumbs_worker() -> None:
+            nonlocal cached_album_photo
+            shared_photo = cached_album_photo
+            for idx, item in enumerate(tracks):
+                if gen != self._yt_search_generation:
+                    break
+                if shared_photo:
+                    self._safe_ui_call(self._update_yt_row_thumbnail, gen, str(idx), shared_photo, item.get("thumbnail_path", ""))
+                    continue
+                thumb_url = item.get("thumbnail_url", "")
+                vid = item.get("video_id", "") or item.get("browse_id", "") or item.get("url", "")
+                if not thumb_url:
+                    continue
+                try:
+                    cached_path = AudioEngine.fetch_thumbnail(thumb_url, vid)
+                    if cached_path and os.path.isfile(cached_path):
+                        item["thumbnail_path"] = cached_path
+                        if gen != self._yt_search_generation:
+                            break
+                        if Image is not None and ImageTk is not None:
+                            pil_img = Image.open(cached_path)
+                            photo = ImageTk.PhotoImage(pil_img)
+                            shared_photo = photo
+                            cached_album_photo = photo
+                            self._safe_ui_call(self._update_yt_row_thumbnail, gen, str(idx), photo, cached_path)
+                except Exception:
+                    pass
+
+        threading.Thread(target=fetch_album_thumbs_worker, daemon=True).start()
 
     def _back_to_search_results(self) -> None:
         self._viewing_album = False
@@ -7674,6 +7905,17 @@ class MusicPadApp(tk.Tk):
             status_widget.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 4))
             if hasattr(self, "_cached_yt_status") and self._cached_yt_status:
                 self.yt_status_lbl.configure(text=self._cached_yt_status)
+
+        saved_iid = getattr(self, "_cached_selected_album_iid", None)
+        if saved_iid is not None and hasattr(self, "yt_tree"):
+            if self.yt_tree.exists(saved_iid):
+                self.yt_tree.selection_set(saved_iid)
+                self.yt_tree.focus(saved_iid)
+                if hasattr(self.yt_tree, "see"):
+                    try:
+                        self.yt_tree.see(saved_iid)
+                    except Exception:
+                        pass
 
     def _refresh_album_view_playing_indicator(self) -> None:
         if not getattr(self, "_viewing_album", False) or not hasattr(self, "yt_tree"):
@@ -7768,12 +8010,12 @@ class MusicPadApp(tk.Tk):
     def _start(self, track: StreamTrack) -> None:
         try:
             engine = self._ensure_engine()
-            engine.play(track)
+            route_mic = not self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else True
+            engine.play(track, mic=route_mic)
             self.is_playing = True
             self.is_paused = False
             self.pause_button.configure(text=self._tr("btn_pause"))
             self.now_playing_var.set(self._tr("now_playing", track.title))
-            self.status_var.set(self._tr("playing", track.title))
             self._filter_tracks()
         except AudioEngineError as exc:
             self._show_error(str(exc))
@@ -7815,6 +8057,8 @@ class MusicPadApp(tk.Tk):
         self.time_display_var.set("0:00")
         self.time_var.set(f"0:00 / {format_duration(self.current_duration)}")
         self.now_playing_var.set(self._tr("nothing_playing"))
+        self._current_track_photo = None
+        self._update_now_playing_display("", "")
         self.status_var.set("")
         self.pause_button.configure(text=self._tr("btn_play"))
         self._filter_tracks()
@@ -7889,6 +8133,52 @@ class MusicPadApp(tk.Tk):
                 text="♪✕" if is_muted else "♪",
                 fg="#ff2020" if is_muted else c["accent"],
             )
+
+    def _toggle_mute_track_to_others(self) -> None:
+        val = not self.mute_track_to_others_var.get()
+        self.mute_track_to_others_var.set(val)
+        if hasattr(self, "engine") and hasattr(self.engine, "set_mute_broadcast"):
+            self.engine.set_mute_broadcast(val)
+        self._update_mic_mute_icon()
+        if not getattr(self, "_loading_state", False):
+            self._save_state()
+
+    def _update_mic_mute_icon(self) -> None:
+        if not hasattr(self, "btn_tb_mic_mute") or not hasattr(self, "_icons"):
+            return
+        is_muted = self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False
+        img = self._icons.get("mic_mute") if is_muted else self._icons.get("mic")
+        if img:
+            self.btn_tb_mic_mute.configure(image=img)
+        else:
+            self.btn_tb_mic_mute.configure(text="🎙❌" if is_muted else "🎙")
+
+    def _update_now_playing_display(self, title: str = "", artist: str = "", photo: Optional[Any] = None) -> None:
+        if not hasattr(self, "lbl_np_title"):
+            return
+        c = self._get_theme_colors()
+        if not title:
+            self.lbl_np_title.configure(text=self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється", fg=c["muted_fg"])
+            self.lbl_np_artist.configure(text="")
+            default_cov = self._icons.get("note_cover_40") or self._icons.get("note") or ""
+            self.lbl_np_cover.configure(image=default_cov)
+            return
+
+        self.lbl_np_title.configure(text=title, fg=c["fg"])
+        if artist:
+            self.lbl_np_artist.configure(text=f"  •  {artist}", fg=c["muted_fg"])
+        else:
+            self.lbl_np_artist.configure(text="")
+
+        if photo is not None:
+            try:
+                self.lbl_np_cover.configure(image=photo)
+                self._current_track_photo = photo
+            except Exception:
+                pass
+        else:
+            default_cov = self._icons.get("note_cover_40") or self._icons.get("note") or ""
+            self.lbl_np_cover.configure(image=default_cov)
 
     def _toggle_mute(self) -> None:
         curr = float(self.volume_var.get())
@@ -8275,6 +8565,7 @@ class MusicPadApp(tk.Tk):
                 "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                 "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                 "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
+                "mute_track_to_others": self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False,
                 "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
                 "volume": self.volume_var.get(),
                 "mic_volume": self.mic_volume_var.get(),
@@ -8428,6 +8719,12 @@ class MusicPadApp(tk.Tk):
             data = json.loads(cfg_file.read_text(encoding="utf-8"))
             if "window_geometry" in data:
                 self._restore_window_geometry(data["window_geometry"])
+            if "mute_track_to_others" in data and hasattr(self, "mute_track_to_others_var"):
+                val = bool(data["mute_track_to_others"])
+                self.mute_track_to_others_var.set(val)
+                self._update_mic_mute_icon()
+                if hasattr(self, "engine") and hasattr(self.engine, "set_mute_broadcast"):
+                    self.engine.set_mute_broadcast(val)
             saved_filter = data.get("yt_search_filter")
             if not saved_filter and isinstance(data.get("settings_custom"), dict):
                 saved_filter = data["settings_custom"].get("yt_search_filter")
@@ -8695,6 +8992,8 @@ class MusicPadApp(tk.Tk):
             self.time_display_var.set("0:00")
             self.time_var.set(f"0:00 / {format_duration(self.current_duration)}")
             self.now_playing_var.set(self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється")
+            self._current_track_photo = None
+            self._update_now_playing_display("", "")
             self.status_var.set("")
             self._filter_tracks()
             self._refresh_album_view_playing_indicator()
@@ -8713,7 +9012,17 @@ class MusicPadApp(tk.Tk):
                 self.seek_scale.configure(to=max(1.0, self.current_duration))
                 self.time_var.set(f"0:00 / {format_duration(self.current_duration)}")
             self.now_playing_var.set(self._tr("now_playing", title) if hasattr(self, "_tr") else f"Зараз грає: {title}")
-            self.notify_info(self._tr("playing", title) if hasattr(self, "_tr") else f"Відтворюється: {title}")
+            artist = getattr(active, "artist", "") if active else ""
+            if not artist and " — " in title:
+                parts = title.split(" — ", 1)
+                display_t, artist = parts[0], parts[1]
+            elif not artist and " - " in title:
+                parts = title.split(" - ", 1)
+                display_t, artist = parts[0], parts[1]
+            else:
+                display_t = title
+            cover_photo = getattr(self, "_current_track_photo", None)
+            self._update_now_playing_display(display_t, artist, cover_photo)
             self._filter_tracks()
 
         self.after(0, update_title)
