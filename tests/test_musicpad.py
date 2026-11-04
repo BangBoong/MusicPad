@@ -1836,10 +1836,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # YouTube panel in dark theme
                     self.assertEqual(app.yt_search_frame.cget("bg"), c_dark["table_bg"])
-                    self.assertEqual(app.yt_titlebar.cget("bg"), c_dark["hdr_bg"])
                     self.assertEqual(app.yt_top.cget("bg"), c_dark["table_bg"])
-                    self.assertEqual(app.yt_bottom.cget("bg"), c_dark["table_bg"])
-                    self.assertEqual(app.btn_yt_play.cget("bg"), c_dark["top_bg"])
+                    self.assertEqual(app.btn_yt_search.cget("bg"), c_dark["top_bg"])
 
                     # Recursive menus in dark theme
                     for child in app.menubar.winfo_children():
@@ -1864,10 +1862,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # YouTube panel completely light
                     self.assertEqual(app.yt_search_frame.cget("bg"), "#ffffff")
-                    self.assertEqual(app.yt_titlebar.cget("bg"), "#e0e3e8")
                     self.assertEqual(app.yt_top.cget("bg"), "#ffffff")
-                    self.assertEqual(app.yt_bottom.cget("bg"), "#ffffff")
-                    self.assertEqual(app.btn_yt_play.cget("bg"), "#eaedf1")
+                    self.assertEqual(app.btn_yt_search.cget("bg"), "#eaedf1")
 
                     # Recursive menus completely light
                     for child in app.menubar.winfo_children():
@@ -1897,7 +1893,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.seek_scale.theme, "dark")
                     self.assertEqual(app.volume_scale.theme, "dark")
                     self.assertEqual(app.yt_search_frame.cget("bg"), "#1e1e1e")
-                    self.assertEqual(app.yt_titlebar.cget("bg"), "#292929")
+                    self.assertEqual(app.btn_yt_search.cget("bg"), "#212121")
 
                     # Popdown listbox dynamically reverted to dark
                     self.assertEqual(app.tk.eval(f"{lb} cget -background"), "#262626")
@@ -2188,8 +2184,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app._settings_window.destroy()
                     app._settings_window = None
 
-                    # 5. Close search panel via bottom "Закрити" button
-                    app.btn_yt_close.invoke()
+                    # 5. Close search panel
+                    app._hide_yt_search_panel()
                     app.update()
                     self.assertEqual(app.current_category, "my_sounds")
                     self.assertEqual(app.info_cat_name_lbl.cget("text"), "Мої звуки")
@@ -4113,6 +4109,144 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     a_idx = children.index(app.lbl_np_artist)
                     c_idx = children.index(app.lbl_np_cover)
                     self.assertTrue(t_idx < a_idx < c_idx)
+                finally:
+                    app._exit()
+
+    def test_yt_panel_titlebar_and_bottom_bar_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_yt_removals.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Title bar and bottom bar are completely removed
+                    self.assertIsNone(app.yt_titlebar)
+                    self.assertIsNone(app.btn_yt_close_x)
+                    self.assertIsNone(app.yt_bottom)
+                    self.assertIsNone(app.btn_yt_play)
+                    self.assertIsNone(app.btn_yt_cache)
+                    self.assertIsNone(app.btn_yt_close)
+
+                    # Table box expands fully
+                    self.assertTrue(hasattr(app, "yt_table_box"))
+                    self.assertEqual(app.yt_table_box.winfo_manager(), "pack")
+
+                    # Right click context menu exists for tracks
+                    self.assertTrue(hasattr(app, "_yt_context_menu"))
+                finally:
+                    app._exit()
+
+    def test_full_ui_localization_uk_and_en(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_i18n.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Default: Ukrainian
+                    self.assertEqual(app.cat_hdr_lbl1.cget("text"), "Категорія")
+                    self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.lbl_stats_sounds.cget("text"), "Звуки: ")
+                    self.assertEqual(app.lbl_stats_plays.cget("text"), "Лічильник відтворень: ")
+                    self.assertEqual(app.lbl_stats_sel.cget("text"), "Вибрано: ")
+                    self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Очистити кеш")
+                    self.assertEqual(app.btn_yt_search.cget("text"), "🔍 Знайти")
+                    self.assertTrue(app.btn_yt_filter.cget("text").startswith("Фільтр:"))
+
+                    # Switch to English
+                    app.lang_var.set("English")
+                    app._apply_language()
+                    app.update()
+
+                    self.assertEqual(app.cat_hdr_lbl1.cget("text"), "Category")
+                    self.assertEqual(app.cat_title_lbl.cget("text"), "My Sounds")
+                    self.assertEqual(app.lbl_stats_sounds.cget("text"), "Sounds: ")
+                    self.assertEqual(app.lbl_stats_plays.cget("text"), "Playback count: ")
+                    self.assertEqual(app.lbl_stats_sel.cget("text"), "Selected: ")
+                    self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Clear cache")
+                    self.assertEqual(app.btn_yt_search.cget("text"), "🔍 Search")
+                    self.assertTrue(app.btn_yt_filter.cget("text").startswith("Filter:"))
+                    self.assertEqual(app.btn_back_to_results.cget("text"), "← Back to results")
+                    # Photo 1 verification: top playback bar nothing playing display
+                    self.assertEqual(app.lbl_np_title.cget("text"), "Nothing is playing")
+
+                    # Photo 2 verification: search status results found and badges in English
+                    app.yt_results_data = [{"title": "Album 1", "artist": "Artist 1", "duration": 180, "result_type": "album"}]
+                    app._apply_language()
+                    app.update()
+                    self.assertEqual(app.yt_status_lbl.cget("text"), "Results found: 1")
+
+                    # Switch back to Ukrainian
+                    app.lang_var.set("Українська")
+                    app._apply_language()
+                    app.update()
+
+                    self.assertEqual(app.cat_hdr_lbl1.cget("text"), "Категорія")
+                    self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Очистити кеш")
+                    self.assertEqual(app.btn_yt_search.cget("text"), "🔍 Знайти")
+                finally:
+                    app._exit()
+
+    def test_filter_track_count_slider_and_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_filter_slider.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    self.assertEqual(app.yt_search_limit_var.get(), 35)
+
+                    # Change track count to 20
+                    app.yt_search_limit_var.set(20)
+                    app._save_state()
+
+                    # Verify saved to state file
+                    with open(cfg_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    self.assertEqual(data.get("yt_search_limit"), 20)
+
+                    # Toggle in-frame filter panel
+                    app._toggle_yt_filter_flyout()
+                    self.assertIsNotNone(app._yt_filter_flyout)
+                    self.assertTrue(app.yt_filter_panel.winfo_exists())
+                    self.assertEqual(app.yt_filter_panel.winfo_manager(), "pack")
+                    self.assertTrue(app.btn_yt_filter.cget("text").endswith("▴"))
+
+                    # Close panel
+                    app._close_yt_filter_flyout()
+                    self.assertIsNone(app._yt_filter_flyout)
+                    self.assertEqual(app.yt_filter_panel.winfo_manager(), "")
+                    self.assertTrue(app.btn_yt_filter.cget("text").endswith("▾"))
+
+                    # Mock search_youtube to verify f_limit parameter is passed
+                    with patch.object(main.AudioEngine, "search_youtube", return_value=[]) as mock_search:
+                        app.yt_query_var.set("test query")
+                        app._perform_yt_search()
+                        mock_search.assert_called_with("test query", limit=20, filter_mode="all")
+                finally:
+                    app._exit()
+
+    def test_album_autoplay_advances_when_broadcast_muted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_album_mute.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Mute broadcast to others
+                    app.mute_track_to_others_var.set(True)
+
+                    # Set up album queue with 2 tracks
+                    track1 = {"title": "Song 1", "artist": "Artist 1", "url": "https://music.youtube.com/watch?v=1", "duration": 180.0}
+                    track2 = {"title": "Song 2", "artist": "Artist 2", "url": "https://music.youtube.com/watch?v=2", "duration": 200.0}
+                    app._active_album_queue = [track1, track2]
+                    app._album_track_index = 0
+
+                    with patch.object(app, "_play_album_track") as mock_play:
+                        # Call _on_finished
+                        app._on_finished()
+                        app.update()
+
+                        # Album track index advanced to 1, and _play_album_track called with track2
+                        self.assertEqual(app._album_track_index, 1)
+                        mock_play.assert_called_once_with(track2)
                 finally:
                     app._exit()
 

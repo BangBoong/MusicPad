@@ -316,6 +316,45 @@ I18N: dict[str, dict[str, str]] = {
         # Status bar notifications
         "settings_saved": "Налаштування збережено та застосовано.",
         "settings_reset": "Параметри скинуто до значень за замовчуванням.",
+        # Categories and sidebar
+        "cat_header": "Категорія",
+        "cat_ctx_add": "➕ Додати аудіофайли...",
+        "cat_ctx_folder": "📁 Вибрати папку...",
+        "cat_ctx_search": "🔍 Пошук YouTube...",
+        # Cache button
+        "btn_clear_cache": "🗑 Очистити кеш",
+        # YouTube Search UI
+        "yt_search_placeholder": "Введіть запит і натисніть Знайти",
+        "yt_search_btn": "🔍 Знайти",
+        "filter_prefix": "Фільтр",
+        "filter_all": "Всі результати",
+        "filter_no_albums": "Без альбомів",
+        "filter_albums_only": "Тільки альбоми",
+        "filter_track_count": "Кількість треків: {count}",
+        "yt_status_found": "Знайдено результатів: {count}",
+        "yt_status_searching": "Пошук на YouTube{hint}: {query}...",
+        "yt_status_error": "Помилка пошуку: {err}",
+        "yt_status_loading_album": "Завантаження альбому: {title}...",
+        "yt_status_no_album_tracks": "Треки альбому не знайдено або сталася помилка завантаження.",
+        "yt_status_track_unavailable": "Трек недоступний: {title}",
+        "yt_status_playing": "Відтворення: {title}",
+        "badge_album": "Альбом",
+        "badge_song": "Пісня",
+        "badge_video": "Відео",
+        # Table column headings
+        "yt_col_title": "Назва",
+        "yt_col_artist": "Виконавець",
+        "yt_col_duration": "Тривалість",
+        "yt_col_source": "Джерело",
+        "yt_col_cover": "Обкладинка",
+        # Album view navigation
+        "btn_back_to_results": "← Назад до результатів",
+        "album_prefix": "Альбом",
+        "album_tracks_unit": "тр.",
+        # YouTube context menu
+        "yt_ctx_play": "▶ Відтворити",
+        "yt_ctx_cache": "➕ Додати в саундпад (миттєвий старт)",
+        "yt_ctx_copy": "📋 Копіювати посилання",
     },
     "en": {
         "menu_file": "File",
@@ -468,6 +507,45 @@ I18N: dict[str, dict[str, str]] = {
         # Status bar notifications
         "settings_saved": "Settings saved and applied.",
         "settings_reset": "Settings reset to defaults.",
+        # Categories and sidebar
+        "cat_header": "Category",
+        "cat_ctx_add": "➕ Add sound files...",
+        "cat_ctx_folder": "📁 Choose folder...",
+        "cat_ctx_search": "🔍 Search YouTube...",
+        # Cache button
+        "btn_clear_cache": "🗑 Clear cache",
+        # YouTube Search UI
+        "yt_search_placeholder": "Enter query and click Search",
+        "yt_search_btn": "🔍 Search",
+        "filter_prefix": "Filter",
+        "filter_all": "All results",
+        "filter_no_albums": "No albums",
+        "filter_albums_only": "Albums only",
+        "filter_track_count": "Track count: {count}",
+        "yt_status_found": "Results found: {count}",
+        "yt_status_searching": "Searching on YouTube{hint}: {query}...",
+        "yt_status_error": "Search error: {err}",
+        "yt_status_loading_album": "Loading album: {title}...",
+        "yt_status_no_album_tracks": "No album tracks found or loading error.",
+        "yt_status_track_unavailable": "Track unavailable: {title}",
+        "yt_status_playing": "Playing: {title}",
+        "badge_album": "Album",
+        "badge_song": "Track",
+        "badge_video": "Video",
+        # Table column headings
+        "yt_col_title": "Title",
+        "yt_col_artist": "Artist",
+        "yt_col_duration": "Duration",
+        "yt_col_source": "Source",
+        "yt_col_cover": "Cover",
+        # Album view navigation
+        "btn_back_to_results": "← Back to results",
+        "album_prefix": "Album",
+        "album_tracks_unit": "tr.",
+        # YouTube context menu
+        "yt_ctx_play": "▶ Play",
+        "yt_ctx_cache": "➕ Add to soundpad (instant start)",
+        "yt_ctx_copy": "📋 Copy link",
     },
 }
 
@@ -2115,12 +2193,12 @@ class MusicPadApp(tk.Tk):
             return False
         return str(self.lang_var.get()).strip().lower() in ("english", "en")
 
-    def _tr(self, key: str, *args: Any) -> str:
+    def _tr(self, key: str, *args: Any, **kwargs: Any) -> str:
         lang = "en" if self._is_english() else "uk"
         text = I18N.get(lang, {}).get(key, I18N["uk"].get(key, key))
-        if args:
+        if args or kwargs:
             try:
-                text = text.format(*args)
+                text = text.format(*args, **kwargs)
             except Exception:
                 pass
         return text
@@ -2136,14 +2214,81 @@ class MusicPadApp(tk.Tk):
         if hasattr(self, "track_list"):
             self.track_list.heading("index", text=self._tr("col_index"))
             self.track_list.heading("title", text=self._tr("col_title"))
+            self.track_list.heading("artist", text=self._tr("yt_col_artist"))
             self.track_list.heading("duration", text=self._tr("col_duration"))
+            self.track_list.heading("source", text=self._tr("yt_col_source"))
+            self.track_list.heading("cover", text=self._tr("yt_col_cover"))
             self.track_list.heading("hotkey", text=self._tr("col_hotkey"))
 
         # 3. Category & info panel labels
-        if hasattr(self, "cat_title_lbl"):
+        if hasattr(self, "cat_hdr_lbl1") and hasattr(self.cat_hdr_lbl1, "configure"):
+            self.cat_hdr_lbl1.configure(text=self._tr("cat_header"))
+        if hasattr(self, "cat_title_lbl") and hasattr(self.cat_title_lbl, "configure"):
             self.cat_title_lbl.configure(text=self._tr("cat_my_sounds"))
         if hasattr(self, "_update_category_info_panel"):
             self._update_category_info_panel()
+
+        # 3b. Info panel stats captions
+        if hasattr(self, "lbl_stats_sounds") and hasattr(self.lbl_stats_sounds, "configure"):
+            self.lbl_stats_sounds.configure(text=self._tr("info_sounds"))
+        if hasattr(self, "lbl_stats_plays") and hasattr(self.lbl_stats_plays, "configure"):
+            self.lbl_stats_plays.configure(text=self._tr("info_plays"))
+        if hasattr(self, "lbl_stats_sel") and hasattr(self.lbl_stats_sel, "configure"):
+            self.lbl_stats_sel.configure(text=self._tr("info_selected"))
+
+        # 3c. Clear cache button
+        if hasattr(self, "btn_clear_cache") and hasattr(self.btn_clear_cache, "configure"):
+            self.btn_clear_cache.configure(text=self._tr("btn_clear_cache"))
+
+        # 3d. Categories context menu
+        if hasattr(self, "_cat_menu") and self._cat_menu is not None:
+            try:
+                self._cat_menu.delete(0, "end")
+                self._cat_menu.add_command(label=self._tr("cat_ctx_add"), command=self._add_files)
+                self._cat_menu.add_command(label=self._tr("cat_ctx_folder"), command=self._choose_folder)
+                self._cat_menu.add_command(label=self._tr("cat_ctx_search"), command=self._open_yt_search)
+            except Exception:
+                pass
+
+        # 3e. YouTube search controls & table
+        if hasattr(self, "btn_yt_search") and hasattr(self.btn_yt_search, "configure"):
+            self.btn_yt_search.configure(text=self._tr("yt_search_btn"))
+        if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
+            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+            self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾")
+        if hasattr(self, "menu_yt_filter") and hasattr(self.menu_yt_filter, "entryconfigure"):
+            try:
+                self.menu_yt_filter.entryconfigure(0, label=self._tr("filter_all"))
+                self.menu_yt_filter.entryconfigure(1, label=self._tr("filter_no_albums"))
+                self.menu_yt_filter.entryconfigure(2, label=self._tr("filter_albums_only"))
+            except Exception:
+                pass
+        if hasattr(self, "btn_back_to_results") and hasattr(self.btn_back_to_results, "configure"):
+            self.btn_back_to_results.configure(text=self._tr("btn_back_to_results"))
+        if hasattr(self, "yt_tree"):
+            self.yt_tree.heading("title", text=self._tr("yt_col_title"))
+            self.yt_tree.heading("artist", text=self._tr("yt_col_artist"))
+            self.yt_tree.heading("duration", text=self._tr("yt_col_duration"))
+            self.yt_tree.heading("source", text=self._tr("yt_col_source"))
+            self.yt_tree.heading("cover", text=self._tr("yt_col_cover"))
+        if hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack":
+            self._build_yt_filter_panel_content()
+
+        if hasattr(self, "yt_status_lbl") and hasattr(self.yt_status_lbl, "cget"):
+            curr_st = self.yt_status_lbl.cget("text")
+            if not curr_st or curr_st in ("Введіть запит і натисніть Знайти", "Enter query and click Search"):
+                self.yt_status_lbl.configure(text=self._tr("yt_search_placeholder"))
+            elif hasattr(self, "yt_results_data") and self.yt_results_data and not getattr(self, "_viewing_album", False):
+                self.yt_status_lbl.configure(text=self._tr("yt_status_found", count=len(self.yt_results_data)))
+
+        # Re-render active results to update type badges and duration units
+        if getattr(self, "_viewing_album", False):
+            if hasattr(self, "_refresh_album_info_label"):
+                self._refresh_album_info_label()
+            if hasattr(self, "_current_album_data") and hasattr(self, "_current_album_info"):
+                self._render_album_view(self._current_album_data, self._current_album_info)
+        elif hasattr(self, "yt_results_data") and self.yt_results_data:
+            self._render_yt_results(self.yt_results_data)
 
         # 4. Play / pause button & now playing
         if hasattr(self, "pause_button"):
@@ -2161,6 +2306,17 @@ class MusicPadApp(tk.Tk):
                     self.now_playing_var.set(self._tr("now_playing", title))
             else:
                 self.now_playing_var.set(self._tr("nothing_playing"))
+
+        # Synchronize top playback bar center box (Photo 1)
+        if hasattr(self, "_update_now_playing_display"):
+            if getattr(self, "is_playing", False) or getattr(self, "is_paused", False):
+                active = getattr(getattr(self, "engine", None), "_active_track", None)
+                t_name = getattr(self, "_current_track_title", "") or (active.title if active else "")
+                t_art = getattr(self, "_current_track_artist", "")
+                t_cov = getattr(self, "_current_track_photo", None)
+                self._update_now_playing_display(t_name, t_art, t_cov)
+            else:
+                self._update_now_playing_display("", "", None)
 
         # 5. Settings window if open or created
         if hasattr(self, "_settings_window") and self._settings_window is not None and self._settings_window.winfo_exists():
@@ -2595,6 +2751,8 @@ class MusicPadApp(tk.Tk):
         self._yt_thumb_cache: dict[str, Any] = {}
         self._yt_search_generation: int = 0
         self.yt_filter_var = tk.StringVar(value="all")
+        self.yt_search_limit_var = tk.IntVar(value=35)
+        self._yt_filter_flyout: Optional[tk.Toplevel] = None
         self._init_settings_variables()
 
     def _create_icons(self) -> None:
@@ -6450,13 +6608,13 @@ class MusicPadApp(tk.Tk):
         # YouTube Search Panel
         if hasattr(self, "yt_search_frame") and self.yt_search_frame is not None and self.yt_search_frame.winfo_exists():
             self.yt_search_frame.configure(bg=c["table_bg"])
-            if hasattr(self, "yt_titlebar") and self.yt_titlebar.winfo_exists():
+            if getattr(self, "yt_titlebar", None) and self.yt_titlebar.winfo_exists():
                 self.yt_titlebar.configure(bg=c["hdr_bg"])
-            if hasattr(self, "yt_title_icon") and self.yt_title_icon.winfo_exists():
+            if getattr(self, "yt_title_icon", None) and self.yt_title_icon.winfo_exists():
                 self.yt_title_icon.configure(bg=c["hdr_bg"], fg=c["accent"])
-            if hasattr(self, "yt_title_lbl") and self.yt_title_lbl.winfo_exists():
+            if getattr(self, "yt_title_lbl", None) and self.yt_title_lbl.winfo_exists():
                 self.yt_title_lbl.configure(bg=c["hdr_bg"], fg=c["fg"])
-            if hasattr(self, "btn_yt_close_x") and self.btn_yt_close_x.winfo_exists():
+            if getattr(self, "btn_yt_close_x", None) and self.btn_yt_close_x.winfo_exists():
                 self.btn_yt_close_x.configure(bg=c["hdr_bg"], fg=c["muted_fg"])
             if hasattr(self, "yt_top") and self.yt_top.winfo_exists():
                 self.yt_top.configure(bg=c["table_bg"])
@@ -6508,7 +6666,7 @@ class MusicPadApp(tk.Tk):
                 self.yt_table_box.configure(bg=c["divider"])
             if hasattr(self, "yt_tree") and hasattr(self.yt_tree, "apply_theme") and self.yt_tree.winfo_exists():
                 self.yt_tree.apply_theme(c)
-            if hasattr(self, "yt_bottom") and self.yt_bottom.winfo_exists():
+            if getattr(self, "yt_bottom", None) and self.yt_bottom.winfo_exists():
                 self.yt_bottom.configure(bg=c["table_bg"])
             for btn_name in ("btn_yt_play", "btn_yt_cache", "btn_yt_close"):
                 btn = getattr(self, btn_name, None)
@@ -7247,53 +7405,25 @@ class MusicPadApp(tk.Tk):
 
 
 
+    def _get_filter_display_name(self, mode: str) -> str:
+        if mode == "no_albums":
+            return self._tr("filter_no_albums")
+        elif mode == "albums_only":
+            return self._tr("filter_albums_only")
+        return self._tr("filter_all")
+
     def _build_yt_search_panel(self, parent: tk.Widget) -> None:
         c = self._get_theme_colors()
         self.yt_search_frame = tk.Frame(parent, bg=c["table_bg"], bd=1, relief="solid")
 
-        # 1. Custom Title bar authentic to Soundpad design
-        self.yt_titlebar = tk.Frame(self.yt_search_frame, bg=c["hdr_bg"], height=28)
-        self.yt_titlebar.pack(fill="x", side="top")
-        self.yt_titlebar.pack_propagate(False)
+        # Title bar removed per user design request; keeping safe null references
+        self.yt_titlebar = None
+        self.yt_title_icon = None
+        self.yt_title_lbl = None
+        self.btn_yt_close_x = None
+        self.btn_close_x = None
 
-        self.yt_title_icon = tk.Label(
-            self.yt_titlebar,
-            image=self._icons.get("yt_title_icon") or self._icons.get("headphones"),
-            text="🎧",
-            bg=c["hdr_bg"],
-            fg=c["accent"],
-        )
-        self.yt_title_icon.pack(side="left", padx=(8, 6), pady=4)
-
-        self.yt_title_lbl = tk.Label(
-            self.yt_titlebar,
-            text="Швидкий пошук YouTube / YouTube Music",
-            bg=c["hdr_bg"],
-            fg=c["fg"],
-            font=("Segoe UI", 9, "bold"),
-        )
-        self.yt_title_lbl.pack(side="left", pady=4)
-
-        self.btn_yt_close_x = tk.Button(
-            self.yt_titlebar,
-            text="✕",
-            bg=c["hdr_bg"],
-            fg=c["muted_fg"],
-            activebackground="#e81123",
-            activeforeground="#ffffff",
-            bd=0,
-            relief="flat",
-            cursor="hand2",
-            font=("Segoe UI", 9),
-            padx=8,
-            command=self._hide_yt_search_panel,
-        )
-        self.btn_yt_close_x.pack(side="right", fill="y")
-        self.btn_yt_close_x.bind("<Enter>", lambda _: self.btn_yt_close_x.configure(bg="#e81123", fg="#ffffff"))
-        self.btn_yt_close_x.bind("<Leave>", lambda _: self._update_yt_close_btn_color())
-        self.btn_close_x = self.btn_yt_close_x
-
-        # 2. Search Bar Area
+        # 1. Search Bar Area (at the top)
         self.yt_top = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
         self.yt_top.pack(fill="x", padx=12, pady=(10, 4))
 
@@ -7317,7 +7447,7 @@ class MusicPadApp(tk.Tk):
 
         self.btn_yt_search = tk.Button(
             self.yt_top,
-            text="🔍 Знайти",
+            text=self._tr("yt_search_btn"),
             bg=c["top_bg"],
             fg=c["fg"],
             activebackground=c["active_menu_bg"],
@@ -7333,13 +7463,17 @@ class MusicPadApp(tk.Tk):
         self.btn_yt_search.pack(side="right")
         self.btn_search = self.btn_yt_search
 
-        # 3. Status and Filter bar
+        # 2. Status and Filter bar
         self.yt_status_bar = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
         self.yt_status_bar.pack(fill="x", padx=12, pady=(2, 4))
 
+        # 2a. In-frame Filter and Track Count Slider panel (collapsible)
+        self.yt_filter_panel = tk.Frame(self.yt_search_frame, bg=c["top_bg"], bd=1, relief="solid")
+        self._yt_filter_flyout = None
+
         self.yt_status_lbl = tk.Label(
             self.yt_status_bar,
-            text="Введіть запит і натисніть Знайти",
+            text=self._tr("yt_search_placeholder"),
             bg=c["table_bg"],
             fg=c["muted_fg"],
             font=("Segoe UI", 9),
@@ -7347,9 +7481,10 @@ class MusicPadApp(tk.Tk):
         )
         self.yt_status_lbl.pack(side="left", fill="x", expand=True)
 
-        self.btn_yt_filter = tk.Menubutton(
+        cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+        self.btn_yt_filter = tk.Button(
             self.yt_status_bar,
-            text="Фільтр: Всі результати ▾",
+            text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾",
             bg=c["top_bg"],
             fg=c["fg"],
             activebackground=c["active_menu_bg"],
@@ -7360,6 +7495,7 @@ class MusicPadApp(tk.Tk):
             font=("Segoe UI", 9),
             padx=8,
             pady=2,
+            command=self._toggle_yt_filter_flyout,
         )
         self.menu_yt_filter = tk.Menu(
             self.btn_yt_filter,
@@ -7369,17 +7505,16 @@ class MusicPadApp(tk.Tk):
             activebackground=c["accent"],
             activeforeground="#ffffff",
         )
-        self.menu_yt_filter.add_command(label="Всі результати", command=lambda: self._set_yt_filter("all"))
-        self.menu_yt_filter.add_command(label="Без альбомів", command=lambda: self._set_yt_filter("no_albums"))
-        self.menu_yt_filter.add_command(label="Тільки альбоми", command=lambda: self._set_yt_filter("albums_only"))
-        self.btn_yt_filter.configure(menu=self.menu_yt_filter)
+        self.menu_yt_filter.add_command(label=self._tr("filter_all"), command=lambda: self._set_yt_filter("all"))
+        self.menu_yt_filter.add_command(label=self._tr("filter_no_albums"), command=lambda: self._set_yt_filter("no_albums"))
+        self.menu_yt_filter.add_command(label=self._tr("filter_albums_only"), command=lambda: self._set_yt_filter("albums_only"))
         self.btn_yt_filter.pack(side="right")
 
-        # 3b. Album Navigation Bar (shown when viewing an album)
+        # 2b. Album Navigation Bar (shown when viewing an album)
         self.yt_album_nav_bar = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
         self.btn_back_to_results = tk.Button(
             self.yt_album_nav_bar,
-            text="← Назад до результатів",
+            text=self._tr("btn_back_to_results"),
             bg=c["top_bg"],
             fg=c["fg"],
             activebackground=c["active_menu_bg"],
@@ -7404,9 +7539,9 @@ class MusicPadApp(tk.Tk):
         )
         self.lbl_album_info.pack(side="left", fill="x", expand=True, pady=4)
 
-        # 4. Results Table with border
+        # 3. Results Table with border - expanded cleanly down to bottom
         self.yt_table_box = tk.Frame(self.yt_search_frame, bg=c["divider"], bd=1, relief="solid")
-        self.yt_table_box.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        self.yt_table_box.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
         self.yt_tree = YTSearchResultsList(
             self.yt_table_box,
@@ -7417,93 +7552,278 @@ class MusicPadApp(tk.Tk):
 
         self.yt_tree.bind("<Double-1>", lambda _: self._yt_play_picked(add_only=False))
         self.yt_tree.bind("<Return>", lambda _: self._yt_play_picked(add_only=False))
+        self.yt_tree.bind("<Button-3>", self._show_yt_context_menu)
 
-        # 5. Bottom Actions Bar
-        self.yt_bottom = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
-        self.yt_bottom.pack(fill="x", padx=12, pady=(4, 10))
+        # Context menu for YouTube tracks
+        self._yt_context_menu = tk.Menu(self, tearoff=0)
 
-        self.btn_yt_play = tk.Button(
-            self.yt_bottom,
-            text="▶ Відтворити вибране",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            font=("Segoe UI", 9),
-            padx=10,
-            pady=3,
-            command=lambda: self._yt_play_picked(add_only=False),
-        )
-        self.btn_yt_play.pack(side="left")
-
-        self.btn_yt_cache = tk.Button(
-            self.yt_bottom,
-            text="➕ Закешувати в саундпад (0мс старт)",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            font=("Segoe UI", 9),
-            padx=10,
-            pady=3,
-            command=lambda: self._yt_play_picked(add_only=True),
-        )
-        self.btn_yt_cache.pack(side="left", padx=8)
-
-        self.btn_yt_close = tk.Button(
-            self.yt_bottom,
-            text="Закрити",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            font=("Segoe UI", 9),
-            padx=16,
-            pady=3,
-            command=self._hide_yt_search_panel,
-        )
-        self.btn_yt_close.pack(side="right")
+        # Bottom buttons bar removed per user design request; keeping safe null references
+        self.yt_bottom = None
+        self.btn_yt_play = None
+        self.btn_yt_cache = None
+        self.btn_yt_close = None
 
     def _on_clear_cache_clicked(self) -> None:
         try:
             bytes_sz = AudioEngine.get_cache_size_bytes()
             mb_sz = bytes_sz / (1024 * 1024)
-            msg = f"Очистити кеш завантажених аудіофайлів та обкладинок (зайнято {mb_sz:.1f} МБ)?"
-            if not messagebox.askyesno("Очищення кешу", msg):
+            is_en = self._is_english()
+            msg = (
+                f"Clear cache of downloaded audio tracks and covers ({mb_sz:.1f} MB used)?"
+                if is_en
+                else f"Очистити кеш завантажених аудіофайлів та обкладинок (зайнято {mb_sz:.1f} МБ)?"
+            )
+            title = "Clear Cache" if is_en else "Очищення кешу"
+            if not messagebox.askyesno(title, msg):
                 return
             del_count, freed_bytes = AudioEngine.purge_cache()
             if hasattr(self, "_yt_thumb_cache"):
                 self._yt_thumb_cache.clear()
             freed_mb = freed_bytes / (1024 * 1024)
-            self.status_var.set(f"Кеш успішно очищено (видалено {del_count} файлів, звільнено {freed_mb:.1f} МБ).")
+            succ_msg = (
+                f"Cache cleared successfully ({del_count} files removed, {freed_mb:.1f} MB freed)."
+                if is_en
+                else f"Кеш успішно очищено (видалено {del_count} файлів, звільнено {freed_mb:.1f} МБ)."
+            )
+            self.status_var.set(succ_msg)
         except Exception as exc:
-            self.notify_error(f"Помилка очищення кешу: {exc}")
+            err_pfx = "Cache clear error" if self._is_english() else "Помилка очищення кешу"
+            self.notify_error(f"{err_pfx}: {exc}")
 
     def _set_yt_filter(self, mode: str) -> None:
         if mode not in ("all", "no_albums", "albums_only"):
             mode = "all"
         self.yt_filter_var.set(mode)
-        labels = {
-            "all": "Всі результати",
-            "no_albums": "Без альбомів",
-            "albums_only": "Тільки альбоми",
-        }
-        lbl = labels.get(mode, "Всі результати")
+        lbl = self._get_filter_display_name(mode)
+        arrow = "▴" if (hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack") else "▾"
         if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
-            self.btn_yt_filter.configure(text=f"Фільтр: {lbl} ▾")
+            self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {lbl} {arrow}")
         if not getattr(self, "_loading_state", False):
             self._save_state()
             if hasattr(self, "yt_query_var") and self.yt_query_var.get().strip():
                 self._perform_yt_search()
+
+    def _toggle_yt_filter_flyout(self) -> None:
+        if not hasattr(self, "yt_filter_panel"):
+            return
+        if self.yt_filter_panel.winfo_manager() == "pack":
+            self.yt_filter_panel.pack_forget()
+            self._yt_filter_flyout = None
+            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+            if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
+                self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾")
+        else:
+            self._build_yt_filter_panel_content()
+            self.yt_filter_panel.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 6))
+            self._yt_filter_flyout = self.yt_filter_panel
+            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+            if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
+                self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▴")
+
+    def _close_yt_filter_flyout(self) -> None:
+        if hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack":
+            self.yt_filter_panel.pack_forget()
+            self._yt_filter_flyout = None
+            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+            if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
+                self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾")
+
+    def _build_yt_filter_panel_content(self) -> None:
+        if not hasattr(self, "yt_filter_panel"):
+            return
+        c = self._get_theme_colors()
+        self.yt_filter_panel.configure(bg=c["top_bg"])
+        for child in self.yt_filter_panel.winfo_children():
+            child.destroy()
+
+        inner = tk.Frame(self.yt_filter_panel, bg=c["top_bg"], padx=10, pady=6)
+        inner.pack(fill="x", expand=True)
+
+        # 1. Left: Filter modes (Radio buttons)
+        modes_box = tk.Frame(inner, bg=c["top_bg"])
+        modes_box.pack(side="left", padx=(0, 16))
+
+        curr_mode = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+        modes = [
+            ("all", self._tr("filter_all")),
+            ("no_albums", self._tr("filter_no_albums")),
+            ("albums_only", self._tr("filter_albums_only")),
+        ]
+
+        def on_pick_mode(m: str) -> None:
+            self._set_yt_filter(m)
+            self._build_yt_filter_panel_content()
+
+        for m_key, m_lbl in modes:
+            row = tk.Frame(modes_box, bg=c["top_bg"], cursor="hand2")
+            row.pack(side="left", padx=(0, 12))
+            is_sel = (curr_mode == m_key)
+            prefix = "● " if is_sel else "○ "
+            r_lbl = tk.Label(
+                row,
+                text=f"{prefix}{m_lbl}",
+                bg=c["top_bg"],
+                fg=c["accent"] if is_sel else c["fg"],
+                font=("Segoe UI", 9, "bold" if is_sel else "normal"),
+                cursor="hand2",
+            )
+            r_lbl.pack(side="left")
+            for w in (row, r_lbl):
+                w.bind("<Button-1>", lambda _, m=m_key: on_pick_mode(m))
+
+        # 2. Divider
+        div = tk.Frame(inner, width=1, bg=c["divider"])
+        div.pack(side="left", fill="y", padx=(0, 16))
+
+        # 3. Middle: Track count slider
+        slider_box = tk.Frame(inner, bg=c["top_bg"])
+        slider_box.pack(side="left", fill="x", expand=True)
+
+        cur_lim = int(self.yt_search_limit_var.get() or 35) if hasattr(self, "yt_search_limit_var") else 35
+        lbl_limit = tk.Label(
+            slider_box,
+            text=self._tr("filter_track_count", count=cur_lim),
+            bg=c["top_bg"],
+            fg=c["fg"],
+            font=("Segoe UI", 9),
+        )
+        lbl_limit.pack(side="left", padx=(0, 8))
+
+        def on_slider(val_str: str) -> None:
+            try:
+                v = int(float(val_str))
+            except (ValueError, TypeError):
+                v = 35
+            self.yt_search_limit_var.set(v)
+            lbl_limit.configure(text=self._tr("filter_track_count", count=v))
+            if not getattr(self, "_loading_state", False):
+                self._save_state()
+
+        tk.Label(slider_box, text="5", bg=c["top_bg"], fg=c["muted_fg"], font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+
+        slider = tk.Scale(
+            slider_box,
+            from_=5,
+            to=35,
+            orient="horizontal",
+            resolution=1,
+            showvalue=False,
+            variable=self.yt_search_limit_var,
+            command=on_slider,
+            bg=c["top_bg"],
+            fg=c["accent"],
+            troughcolor=c["table_bg"],
+            activebackground=c["accent"],
+            highlightthickness=0,
+            bd=0,
+            sliderrelief="flat",
+            length=140,
+            cursor="hand2",
+        )
+        slider.pack(side="left", fill="x", padx=4)
+
+        tk.Label(slider_box, text="35", bg=c["top_bg"], fg=c["muted_fg"], font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+
+        # 4. Far Right: Close button
+        btn_close_panel = tk.Button(
+            inner,
+            text="✕",
+            bg=c["top_bg"],
+            fg=c["muted_fg"],
+            activebackground=c["active_menu_bg"],
+            activeforeground=c["fg"],
+            bd=0,
+            relief="flat",
+            cursor="hand2",
+            font=("Segoe UI", 9),
+            padx=6,
+            command=self._toggle_yt_filter_flyout,
+        )
+        btn_close_panel.pack(side="right")
+
+    def _show_yt_context_menu(self, event: Any) -> None:
+        if not hasattr(self, "yt_tree"):
+            return
+        iid = self.yt_tree.identify_row(event.y)
+        if not iid:
+            sel = self.yt_tree.selection()
+            if sel:
+                iid = sel[0]
+        if not iid:
+            return
+        self.yt_tree.selection_set(iid)
+
+        menu = getattr(self, "_yt_context_menu", None)
+        if menu is None:
+            menu = tk.Menu(self, tearoff=0)
+            self._yt_context_menu = menu
+
+        menu.delete(0, "end")
+        c = self._get_theme_colors()
+        menu.configure(
+            bg=c["top_bg"],
+            fg=c["fg"],
+            activebackground=c["accent"],
+            activeforeground="#ffffff",
+        )
+        menu.add_command(
+            label=self._tr("yt_ctx_play"),
+            command=lambda: self._yt_play_picked(add_only=False),
+        )
+        menu.add_command(
+            label=self._tr("yt_ctx_cache"),
+            command=lambda: self._yt_play_picked(add_only=True),
+        )
+        menu.add_separator()
+        menu.add_command(
+            label=self._tr("yt_ctx_copy"),
+            command=self._copy_yt_picked_url,
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_yt_picked_url(self) -> None:
+        sel = self.yt_tree.selection() if hasattr(self, "yt_tree") else []
+        if not sel:
+            return
+        iid = sel[0]
+        try:
+            idx = int(iid)
+        except ValueError:
+            return
+        if not hasattr(self, "yt_results_data") or idx < 0 or idx >= len(self.yt_results_data):
+            return
+        item = self.yt_results_data[idx]
+        url = item.get("url") or (f"https://music.youtube.com/watch?v={item.get('video_id')}" if item.get("video_id") else "")
+        if url:
+            self.clipboard_clear()
+            self.clipboard_append(url)
+            self.status_var.set(f"Посилання скопійовано: {url}")
+
+    def _refresh_album_info_label(self) -> None:
+        if not getattr(self, "_viewing_album", False) or not hasattr(self, "lbl_album_info"):
+            return
+        orig = getattr(self, "_current_album_info", {}) or {}
+        data = getattr(self, "_current_album_data", {}) or {}
+        tracks = getattr(self, "_current_album_tracks", [])
+        album_title = data.get("title") or orig.get("title", "")
+        album_artist = data.get("artist") or orig.get("artist", "")
+        track_count = data.get("track_count") or len(tracks) or orig.get("track_count") or len(tracks)
+        dur_text = data.get("duration_text") or orig.get("duration_text") or ""
+        if " • " in dur_text:
+            dur_part = dur_text.split(" • ", 1)[1]
+        elif dur_text:
+            dur_part = dur_text
+        else:
+            dur_part = format_duration(float(data.get("duration") or 0.0))
+        album_part = f"{album_title} — {album_artist}" if album_artist and album_artist not in album_title else album_title
+        unit = self._tr("album_tracks_unit")
+        stats_part = f"{track_count} {unit}, {dur_part}" if dur_part else f"{track_count} {unit}"
+        alb_pref = self._tr("album_prefix")
+        info_header = f"{alb_pref}: {album_part} ({stats_part})"
+        self.lbl_album_info.configure(text=info_header)
 
     def _open_yt_search(self) -> None:
         query = self.url_var.get().strip()
@@ -7520,14 +7840,16 @@ class MusicPadApp(tk.Tk):
         f_mode = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
         filter_hint = ""
         if f_mode == "no_albums":
-            filter_hint = " (без альбомів)"
+            filter_hint = f" ({self._tr('filter_no_albums').lower()})"
         elif f_mode == "albums_only":
-            filter_hint = " (тільки альбоми)"
-        self.yt_status_lbl.configure(text=f"Пошук на YouTube{filter_hint}: {q}...")
+            filter_hint = f" ({self._tr('filter_albums_only').lower()})"
+        self.yt_status_lbl.configure(text=self._tr("yt_status_searching", hint=filter_hint, query=q))
+
+        f_limit = int(self.yt_search_limit_var.get()) if hasattr(self, "yt_search_limit_var") else 35
 
         def worker() -> None:
             try:
-                items = AudioEngine.search_youtube(q, limit=35, filter_mode=f_mode)
+                items = AudioEngine.search_youtube(q, limit=f_limit, filter_mode=f_mode)
                 self._safe_ui_call(self._render_yt_results, items)
             except Exception as exc:
                 self._safe_ui_call(self._render_yt_results, [], str(exc))
@@ -7542,7 +7864,7 @@ class MusicPadApp(tk.Tk):
         for row in self.yt_tree.get_children():
             self.yt_tree.delete(row)
         if err:
-            self.yt_status_lbl.configure(text=f"Помилка пошуку: {err}")
+            self.yt_status_lbl.configure(text=self._tr("yt_status_error", err=err))
             return
         for idx, item in enumerate(items):
             title = str(item.get("title", "")).strip()
@@ -7554,23 +7876,19 @@ class MusicPadApp(tk.Tk):
                     title = parts[1].strip()
 
             res_type = str(item.get("result_type", "")).lower()
-            item_type = item.get("item_type")
-            if not item_type:
-                if res_type == "album" or item.get("type") == "album":
-                    item_type = "Альбом"
-                elif str(item.get("source", "")).lower() == "youtube":
-                    item_type = "Відео"
-                else:
-                    item_type = "Пісня"
+            if res_type == "album" or item.get("type") == "album":
+                item_type = self._tr("badge_album")
+            elif str(item.get("source", "")).lower() == "youtube":
+                item_type = self._tr("badge_video")
+            else:
+                item_type = self._tr("badge_song")
 
-            is_album = (res_type == "album" or item_type == "Альбом" or item.get("type") == "album")
+            is_album = (res_type == "album" or item.get("type") == "album")
             if is_album:
-                item_type = "Альбом"
-                dur_str = item.get("duration_text")
-                if not dur_str:
-                    tc = item.get("track_count")
-                    dur_val = float(item.get("duration") or 0.0)
-                    dur_str = format_album_duration(tc, dur_val)
+                tc = item.get("track_count")
+                dur_val = float(item.get("duration") or 0.0)
+                dur_raw = item.get("duration_text", "")
+                dur_str = format_album_duration(tc, dur_val, dur_raw, lang=("en" if self._is_english() else "uk"))
                 source = "ytmusic"
             else:
                 duration_val = float(item.get("duration", 0.0))
@@ -7585,7 +7903,7 @@ class MusicPadApp(tk.Tk):
                 values=(title, artist, dur_str, source, thumb_url),
                 item_type=item_type,
             )
-        self.yt_status_lbl.configure(text=f"Знайдено результатів: {len(items)}")
+        self.yt_status_lbl.configure(text=self._tr("yt_status_found", count=len(items)))
         if items:
             self.yt_tree.selection_set("0")
             self.yt_tree.focus("0")
@@ -7766,22 +8084,10 @@ class MusicPadApp(tk.Tk):
         album_artist = album_data.get("artist") or original_item.get("artist", "")
         tracks = album_data.get("tracks") or []
         self._current_album_tracks = tracks
+        self._current_album_data = album_data
         self.yt_results_data = tracks
 
-        track_count = album_data.get("track_count") or len(tracks) or original_item.get("track_count") or len(tracks)
-        dur_text = album_data.get("duration_text") or original_item.get("duration_text") or ""
-        if " • " in dur_text:
-            dur_part = dur_text.split(" • ", 1)[1]
-        elif dur_text:
-            dur_part = dur_text
-        else:
-            dur_part = format_duration(float(album_data.get("duration") or 0.0))
-
-        # Format requirement: [← Назад до результатів]  Альбом: <Назва> — <Виконавець> (<К-сть треків>, <Загальна тривалість>)
-        album_part = f"{album_title} — {album_artist}" if album_artist and album_artist not in album_title else album_title
-        stats_part = f"{track_count} тр., {dur_part}" if dur_part else f"{track_count} тр."
-        info_header = f"Альбом: {album_part} ({stats_part})"
-        self.lbl_album_info.configure(text=info_header)
+        self._refresh_album_info_label()
 
         if hasattr(self, "yt_top"):
             self.yt_top.pack_forget()
@@ -7863,7 +8169,7 @@ class MusicPadApp(tk.Tk):
                 iid=str(idx),
                 values=(display_title, t_artist, format_duration(t_dur), "YTMusic", t_thumb),
                 image=row_photo,
-                item_type="Пісня",
+                item_type=self._tr("badge_song"),
             )
             if row_photo and hasattr(self, "_yt_thumb_cache"):
                 self._yt_thumb_cache[str(idx)] = row_photo
@@ -8583,6 +8889,7 @@ class MusicPadApp(tk.Tk):
                 "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                 "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                 "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
+                "yt_search_limit": int(self.yt_search_limit_var.get()) if hasattr(self, "yt_search_limit_var") else 35,
                 "mute_track_to_others": self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False,
                 "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
                 "volume": self.volume_var.get(),
@@ -8748,6 +9055,12 @@ class MusicPadApp(tk.Tk):
                 saved_filter = data["settings_custom"].get("yt_search_filter")
             if saved_filter:
                 self._set_yt_filter(str(saved_filter))
+            saved_limit = data.get("yt_search_limit")
+            if saved_limit is not None and hasattr(self, "yt_search_limit_var"):
+                try:
+                    self.yt_search_limit_var.set(max(5, min(35, int(saved_limit))))
+                except (ValueError, TypeError):
+                    pass
             if data.get("output") in self.output_map:
                 self.output_var.set(data["output"])
             saved_mic = data.get("mix_mic", "")

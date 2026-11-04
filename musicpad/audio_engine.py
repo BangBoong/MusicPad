@@ -2261,6 +2261,12 @@ class AudioEngine:
                                         apo_ch,
                                     )
                                     shm.write_samples(inj_samples)
+                        elif not track_active_for_apo:
+                            # Discard injection frames when broadcast to mic is muted/inactive
+                            avail_inj_drain = self._ring_buffer.available(READER_INJECTION)
+                            if avail_inj_drain > 0:
+                                drain_cnt = frames if monitor_stream is not None else avail_inj_drain
+                                self._ring_buffer.read(min(avail_inj_drain, drain_cnt), reader_id=READER_INJECTION)
 
                     # Monitor reader
                     if monitor_stream is not None:
@@ -2272,13 +2278,27 @@ class AudioEngine:
                         avail_shm_now = shm.available_to_read() if shm is not None else 0
                         read_frames = frames if (track_active_for_apo and avail_shm_now > 0) else 0
 
-                    avail_inj = self._ring_buffer.available(READER_INJECTION)
+                    # If broadcast to mic is muted or APO inactive, discard any leftover injection frames
+                    if not (self._route_mic and apo_status is not None):
+                        leftover_inj = self._ring_buffer.available(READER_INJECTION)
+                        if leftover_inj > 0 and (monitor_stream is None or self._ring_buffer.available(READER_MONITOR) == 0):
+                            self._ring_buffer.read(leftover_inj, reader_id=READER_INJECTION)
+
+                    avail_inj = (
+                        self._ring_buffer.available(READER_INJECTION)
+                        if (self._route_mic and apo_status is not None)
+                        else 0
+                    )
                     avail_mon = (
                         self._ring_buffer.available(READER_MONITOR)
                         if monitor_stream is not None
                         else 0
                     )
-                    avail_shm = shm.available_to_read() if shm is not None else 0
+                    avail_shm = (
+                        shm.available_to_read()
+                        if (self._route_mic and shm is not None)
+                        else 0
+                    )
                     has_music = (
                         read_frames > 0
                         or self._process is not None

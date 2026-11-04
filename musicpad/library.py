@@ -72,13 +72,28 @@ def format_album_duration(
     track_count: Optional[int],
     duration_sec: Optional[float] = None,
     duration_str: str = "",
+    lang: str = "uk",
 ) -> str:
+    if duration_str and re.search(r"\bтр\b\.?|\btr\b\.?|tracks?", duration_str, re.IGNORECASE):
+        if lang == "en":
+            s = re.sub(r"\bтр\b\.?|tracks?", "tr.", duration_str, flags=re.IGNORECASE)
+            s = re.sub(r"\bхв\b\.?|minutes?|mins?", "min", s, flags=re.IGNORECASE)
+            s = re.sub(r"\bгод\b\.?|hours?|hrs?", "hr", s, flags=re.IGNORECASE)
+        else:
+            s = re.sub(r"\btr\b\.?|tracks?", "тр.", duration_str, flags=re.IGNORECASE)
+            s = re.sub(r"\bmin\b\.?|minutes?|mins?", "хв", s, flags=re.IGNORECASE)
+            s = re.sub(r"\bhr\b\.?|hours?|hrs?", "год", s, flags=re.IGNORECASE)
+        return s
+
     parts: list[str] = []
+    unit_tr = "tr." if lang == "en" else "тр."
+    unit_hr = "hr" if lang == "en" else "год"
+    unit_min = "min" if lang == "en" else "хв"
     if track_count is not None:
         try:
             tc_int = int(track_count)
             if tc_int > 0:
-                parts.append(f"{tc_int} тр.")
+                parts.append(f"{tc_int} {unit_tr}")
         except (ValueError, TypeError):
             pass
 
@@ -88,9 +103,9 @@ def format_album_duration(
         hours = sec // 3600
         mins = (sec % 3600) // 60
         if hours > 0:
-            dur_text = f"{hours} год {mins} хв" if mins > 0 else f"{hours} год"
+            dur_text = f"{hours} {unit_hr} {mins} {unit_min}" if mins > 0 else f"{hours} {unit_hr}"
         else:
-            dur_text = f"{max(1, mins)} хв"
+            dur_text = f"{max(1, mins)} {unit_min}"
     elif duration_str:
         ds = str(duration_str).lower().strip()
         h_m = re.search(r"(\d+)\s*(?:hour|hr|h|год)", ds)
@@ -99,17 +114,17 @@ def format_album_duration(
             h = int(h_m.group(1)) if h_m else 0
             m = int(m_m.group(1)) if m_m else 0
             if h > 0:
-                dur_text = f"{h} год {m} хв" if m > 0 else f"{h} год"
+                dur_text = f"{h} {unit_hr} {m} {unit_min}" if m > 0 else f"{h} {unit_hr}"
             elif m > 0:
-                dur_text = f"{m} хв"
+                dur_text = f"{m} {unit_min}"
         elif ":" in ds:
             col_parts = [int(p) for p in ds.split(":") if p.isdigit()]
             if len(col_parts) == 3:
                 h, m = col_parts[0], col_parts[1]
-                dur_text = f"{h} год {m} хв" if m > 0 else f"{h} год"
+                dur_text = f"{h} {unit_hr} {m} {unit_min}" if m > 0 else f"{h} {unit_hr}"
             elif len(col_parts) == 2:
                 m = col_parts[0]
-                dur_text = f"{max(1, m)} хв"
+                dur_text = f"{max(1, m)} {unit_min}"
             else:
                 dur_text = duration_str
         else:
