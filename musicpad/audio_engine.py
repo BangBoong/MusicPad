@@ -785,6 +785,7 @@ class StreamTrack:
     is_url: bool = False
     duration: float = 0.0
     start_pos: float = 0.0
+    artist: str = ""
     _resolved_source: Optional[str] = None
 
 
@@ -1633,6 +1634,7 @@ class AudioEngine:
                 is_url=base.is_url,
                 duration=base.duration,
                 start_pos=pos,
+                artist=getattr(base, "artist", ""),
                 _resolved_source=self._active_resolved_source,
             )
             self._pending_track = seek_track

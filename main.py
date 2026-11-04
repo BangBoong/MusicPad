@@ -4067,45 +4067,48 @@ class MusicPadApp(tk.Tk):
         self.volume_scale.set_theme(self.theme)
         self.volume_scale.grid(row=0, column=9, padx=(2, 8), pady=(4, 2), sticky="w")
 
-        # Row 2 (under timeline seek slider): Now playing info & 40x40 cover art
-        self.np_container = tk.Frame(self.top_bar, bg=c["top_bg"], height=30)
-        self.np_container.grid(row=1, column=5, columnspan=2, sticky="ew", padx=(2, 6), pady=(0, 4))
+        # Row 2 (under timeline seek slider): Now playing info & 40x40 cover art centered
+        self.np_container = tk.Frame(self.top_bar, bg=c["top_bg"], height=42)
+        self.np_container.grid(row=1, column=5, columnspan=2, sticky="ew", padx=(2, 6), pady=(0, 2))
 
-        # Far right of lower row under seek slider: Cover art 40x40 px
+        # Centered container for Title, Artist, and Cover
+        self.np_center_box = tk.Frame(self.np_container, bg=c["top_bg"])
+        self.np_center_box.place(relx=0.5, rely=0.5, anchor="center")
+        self.np_text_frame = self.np_center_box
+
+        # Title (bold)
+        self.lbl_np_title = tk.Label(
+            self.np_center_box,
+            text=self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється",
+            font=("Segoe UI", 9, "bold"),
+            fg=c["muted_fg"],
+            bg=c["top_bg"],
+            anchor="center",
+        )
+        self.lbl_np_title.pack(side="left")
+
+        # Artist (regular muted)
+        self.lbl_np_artist = tk.Label(
+            self.np_center_box,
+            text="",
+            font=("Segoe UI", 9),
+            fg=c["muted_fg"],
+            bg=c["top_bg"],
+            anchor="center",
+        )
+        self.lbl_np_artist.pack(side="left")
+
+        # Cover art 40x40 px to the right of artist
         default_cov = self._icons.get("note_cover_40") or self._icons.get("note")
         self.lbl_np_cover = tk.Label(
-            self.np_container,
+            self.np_center_box,
             image=default_cov,
             width=40,
             height=40,
             bg=c["top_bg"],
             anchor="center",
         )
-        self.lbl_np_cover.pack(side="right", padx=(6, 0))
-
-        # Far left of lower row under seek slider: Track title and artist
-        self.np_text_frame = tk.Frame(self.np_container, bg=c["top_bg"])
-        self.np_text_frame.pack(side="left", fill="x", expand=True)
-
-        self.lbl_np_title = tk.Label(
-            self.np_text_frame,
-            text=self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється",
-            font=("Segoe UI", 9, "bold"),
-            fg=c["muted_fg"],
-            bg=c["top_bg"],
-            anchor="w",
-        )
-        self.lbl_np_title.pack(side="left")
-
-        self.lbl_np_artist = tk.Label(
-            self.np_text_frame,
-            text="",
-            font=("Segoe UI", 9),
-            fg=c["muted_fg"],
-            bg=c["top_bg"],
-            anchor="w",
-        )
-        self.lbl_np_artist.pack(side="left")
+        self.lbl_np_cover.pack(side="left", padx=(10, 0))
 
         # Under btn_tb_mute (Col 8, Row 1): Mic mute button (mutes to others, keeps monitor)
         is_mic_muted = getattr(getattr(self, "mute_track_to_others_var", None), "get", lambda: False)()
@@ -4387,7 +4390,7 @@ class MusicPadApp(tk.Tk):
             pady=3,
             command=self._on_clear_cache_clicked,
         )
-        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10)
+        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10, after=self.btn_wrench)
 
     def _build_bottom_toolbar(self) -> None:
         c = self._get_theme_colors()
@@ -6294,6 +6297,8 @@ class MusicPadApp(tk.Tk):
             self.time_label.configure(bg=c["top_bg"], fg="#ffffff" if dark else "#20242b")
         if hasattr(self, "np_container") and hasattr(self.np_container, "configure"):
             self.np_container.configure(bg=c["top_bg"])
+        if hasattr(self, "np_center_box") and hasattr(self.np_center_box, "configure"):
+            self.np_center_box.configure(bg=c["top_bg"])
         if hasattr(self, "np_text_frame") and hasattr(self.np_text_frame, "configure"):
             self.np_text_frame.configure(bg=c["top_bg"])
         if hasattr(self, "lbl_np_title") and hasattr(self.lbl_np_title, "configure"):
@@ -6917,11 +6922,14 @@ class MusicPadApp(tk.Tk):
                     local_photo = ImageTk.PhotoImage(pil_img)
             except Exception:
                 local_photo = None
+        artist_val = getattr(track, "artist", "") or ""
         self._current_track_photo = local_photo
-        self._update_now_playing_display(track.title, getattr(track, "artist", ""), local_photo)
+        self._current_track_artist = artist_val
+        self._current_track_title = track.title
+        self._update_now_playing_display(track.title, artist_val, local_photo)
         is_url = bool(track.is_url and not Path(track.path).is_file())
         if is_url:
-            self._start(StreamTrack(track.title, track.path, is_url=True, start_pos=start_pos))
+            self._start(StreamTrack(track.title, track.path, is_url=True, start_pos=start_pos, artist=artist_val))
             if not self._is_mocked_env():
                 threading.Thread(
                     target=self._background_cache_youtube,
@@ -6929,7 +6937,7 @@ class MusicPadApp(tk.Tk):
                     daemon=True,
                 ).start()
         else:
-            self._start(StreamTrack(track.title, track.path, start_pos=start_pos))
+            self._start(StreamTrack(track.title, track.path, start_pos=start_pos, artist=artist_val))
 
     def _play_url(self) -> None:
         query = self.url_var.get().strip()
@@ -6944,7 +6952,13 @@ class MusicPadApp(tk.Tk):
             self.seek_scale.configure(to=max(1.0, duration or 100.0))
             self.time_display_var.set("0:00")
             self.time_var.set(f"0:00 / {format_duration(duration)}")
-            self._start(StreamTrack(resolved_title, local_path, is_url=False, duration=duration))
+            parts = resolved_title.split(" — ", 1) if " — " in resolved_title else (resolved_title.split(" - ", 1) if " - " in resolved_title else (resolved_title, ""))
+            t_name = parts[0]
+            t_art = parts[1] if len(parts) > 1 else getattr(self, "_current_track_artist", "")
+            self._current_track_artist = t_art
+            self._current_track_title = t_name
+            self._update_now_playing_display(t_name, t_art, getattr(self, "_current_track_photo", None))
+            self._start(StreamTrack(resolved_title, local_path, is_url=False, duration=duration, artist=t_art))
             return
 
         self.current_duration = 0.0
@@ -6953,7 +6967,7 @@ class MusicPadApp(tk.Tk):
         self.time_display_var.set("0:00")
         self.time_var.set("0:00 / 0:00")
         self.status_var.set(f"Відтворення з YouTube: {query}...")
-        self._start(StreamTrack(query, query, is_url=True))
+        self._start(StreamTrack(query, query, is_url=True, artist=getattr(self, "_current_track_artist", "")))
         if not self._is_mocked_env():
             threading.Thread(
                 target=self._background_cache_youtube,
@@ -7121,8 +7135,8 @@ class MusicPadApp(tk.Tk):
                 )
             if hasattr(self, "btn_clear_cache") and self.btn_clear_cache.winfo_exists():
                 if self.btn_clear_cache.winfo_manager() != "pack":
-                    if hasattr(self, "btn_wrench") and self.btn_wrench.winfo_exists():
-                        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10, before=self.btn_wrench)
+                    if hasattr(self, "btn_wrench") and self.btn_wrench.winfo_exists() and self.btn_wrench.winfo_manager() == "pack":
+                        self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10, after=self.btn_wrench)
                     else:
                         self.btn_clear_cache.pack(side="right", padx=(0, 12), pady=10)
             if hasattr(self, "stats_frame"):
@@ -7669,6 +7683,8 @@ class MusicPadApp(tk.Tk):
             except Exception:
                 alb_photo = None
         self._current_track_photo = alb_photo
+        self._current_track_artist = artist
+        self._current_track_title = title
         self._update_now_playing_display(title, artist, alb_photo)
 
         self.url_var.set(url)
@@ -8058,6 +8074,8 @@ class MusicPadApp(tk.Tk):
         self.time_var.set(f"0:00 / {format_duration(self.current_duration)}")
         self.now_playing_var.set(self._tr("nothing_playing"))
         self._current_track_photo = None
+        self._current_track_artist = ""
+        self._current_track_title = ""
         self._update_now_playing_display("", "")
         self.status_var.set("")
         self.pause_button.configure(text=self._tr("btn_play"))
@@ -8993,6 +9011,8 @@ class MusicPadApp(tk.Tk):
             self.time_var.set(f"0:00 / {format_duration(self.current_duration)}")
             self.now_playing_var.set(self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється")
             self._current_track_photo = None
+            self._current_track_artist = ""
+            self._current_track_title = ""
             self._update_now_playing_display("", "")
             self.status_var.set("")
             self._filter_tracks()
@@ -9012,15 +9032,24 @@ class MusicPadApp(tk.Tk):
                 self.seek_scale.configure(to=max(1.0, self.current_duration))
                 self.time_var.set(f"0:00 / {format_duration(self.current_duration)}")
             self.now_playing_var.set(self._tr("now_playing", title) if hasattr(self, "_tr") else f"Зараз грає: {title}")
-            artist = getattr(active, "artist", "") if active else ""
+            artist = getattr(active, "artist", "") or getattr(self, "_current_track_artist", "")
+            if not artist:
+                active_src = getattr(active, "source", "")
+                for lt in getattr(self, "local_tracks", []):
+                    if (active_src and (lt.path == active_src or lt.title == title)) or lt.title == title:
+                        if getattr(lt, "artist", ""):
+                            artist = lt.artist
+                            break
+
+            display_t = getattr(self, "_current_track_title", "") or title
             if not artist and " — " in title:
                 parts = title.split(" — ", 1)
                 display_t, artist = parts[0], parts[1]
             elif not artist and " - " in title:
                 parts = title.split(" - ", 1)
                 display_t, artist = parts[0], parts[1]
-            else:
-                display_t = title
+
+            self._current_track_artist = artist
             cover_photo = getattr(self, "_current_track_photo", None)
             self._update_now_playing_display(display_t, artist, cover_photo)
             self._filter_tracks()

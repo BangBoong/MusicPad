@@ -4023,5 +4023,99 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     app._exit()
 
 
+    def test_btn_wrench_placed_to_the_right_of_clear_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_btn_order.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update_idletasks()
+                    # Initial state in "my_sounds": wrench is to the right of clear cache
+                    self.assertEqual(app.btn_clear_cache.winfo_manager(), "pack")
+                    self.assertEqual(app.btn_wrench.winfo_manager(), "pack")
+                    self.assertGreater(app.btn_wrench.winfo_x(), app.btn_clear_cache.winfo_x())
+
+                    # Switch to youtube and back
+                    app._select_category("youtube")
+                    app.update_idletasks()
+                    self.assertEqual(app.btn_clear_cache.winfo_manager(), "")
+
+                    app._select_category("my_sounds")
+                    app.update_idletasks()
+                    self.assertEqual(app.btn_clear_cache.winfo_manager(), "pack")
+                    self.assertGreater(app.btn_wrench.winfo_x(), app.btn_clear_cache.winfo_x())
+                finally:
+                    app._exit()
+
+    def test_local_track_artist_displayed_on_toolbar_and_preserved_across_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_artist_test.json"
+            dummy_wav = Path(tmp) / "join_us.wav"
+            dummy_wav.write_bytes(b"RIFF....WAVEfmt ....data....")
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    track = main.LocalTrack(
+                        title="Join Us for a Bite",
+                        path=str(dummy_wav),
+                        duration=236.0,
+                        artist="JT Music, Andrea Storm Kaden",
+                    )
+                    app.local_tracks = [track]
+                    app.visible_tracks = [track]
+                    app._filter_tracks()
+
+                    # Play track
+                    with patch.object(app.engine, "play") as mock_play:
+                        app._play_local_track(track)
+                        app.update()
+
+                        # Verify StreamTrack received artist
+                        call_track = mock_play.call_args[0][0]
+                        self.assertEqual(getattr(call_track, "artist", ""), "JT Music, Andrea Storm Kaden")
+
+                    # Verify toolbar UI labels show Title and Artist
+                    self.assertEqual(app.lbl_np_title.cget("text"), "Join Us for a Bite")
+                    self.assertEqual(app.lbl_np_artist.cget("text"), "  •  JT Music, Andrea Storm Kaden")
+
+                    # Simulate audio engine emitting resolved track title callback (which previously wiped artist)
+                    app._on_track_title("Join Us for a Bite")
+                    app.update()
+
+                    # Artist must still be preserved!
+                    self.assertEqual(app.lbl_np_title.cget("text"), "Join Us for a Bite")
+                    self.assertEqual(app.lbl_np_artist.cget("text"), "  •  JT Music, Andrea Storm Kaden")
+                finally:
+                    app._exit()
+
+    def test_now_playing_centered_box_layout_and_elements_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_center_layout.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # np_center_box exists inside np_container
+                    self.assertTrue(hasattr(app, "np_center_box"))
+                    self.assertIs(app.np_center_box.master, app.np_container)
+
+                    # np_center_box uses place with relx=0.5, rely=0.5, anchor=center
+                    p_info = app.np_center_box.place_info()
+                    self.assertEqual(p_info.get("relx"), "0.5")
+                    self.assertEqual(p_info.get("rely"), "0.5")
+                    self.assertEqual(p_info.get("anchor"), "center")
+
+                    # Children of np_center_box are title, artist, cover in order
+                    children = app.np_center_box.winfo_children()
+                    self.assertIn(app.lbl_np_title, children)
+                    self.assertIn(app.lbl_np_artist, children)
+                    self.assertIn(app.lbl_np_cover, children)
+                    t_idx = children.index(app.lbl_np_title)
+                    a_idx = children.index(app.lbl_np_artist)
+                    c_idx = children.index(app.lbl_np_cover)
+                    self.assertTrue(t_idx < a_idx < c_idx)
+                finally:
+                    app._exit()
+
+
 if __name__ == "__main__":
     unittest.main()
