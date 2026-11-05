@@ -71,6 +71,10 @@ _VK_MAP: dict[str, int] = {
     "RIGHT": 0x27,
     "INSERT": 0x2D,
     "DELETE": 0x2E,
+    "DEL": 0x2E,
+    "BACKSPACE": 0x08,
+    "ESCAPE": 0x1B,
+    "ESC": 0x1B,
     "HOME": 0x24,
     "END": 0x23,
     "PRIOR": 0x21,
@@ -4664,32 +4668,15 @@ class MusicPadApp(tk.Tk):
         self.special_hotkeys_dict: dict[str, str] = {
             "Зупинити відтворення": "",
             "Призупинити/продовжити відтворення": "Space",
-            "Відтворити попередній файл": "",
-            "Відтворити наступний файл": "",
-            "Відтворити вибраний файл": "",
-            "Відтворити випадковий файл": "",
-            "Відтворити випадковий файл із усіх категорій": "",
-            "Зберегти список звуків": "Ctrl+S",
             "Скасувати": "Ctrl+Z",
-            "Відновити": "Ctrl+Y",
-            "Вирізати": "Ctrl+X",
             "Копіювати": "Ctrl+C",
             "Вставити": "Ctrl+V",
             "Видалити вибрані записи": "Del",
-            "Вибрати все": "Ctrl+A",
             "Пошук": "Ctrl+F",
-            "Записування звуку": "Ctrl+R",
-            "Озвучення тексту": "Ctrl+T",
             "Вихід": "Alt+F4",
         }
-        self.numpad_alt_var = tk.BooleanVar(value=False)
-        self.numpad_ctrl_alt_var = tk.BooleanVar(value=False)
-        self.auto_keys_list: list[tuple[str, str]] = []
-        self.pass_hotkeys_var = tk.BooleanVar(value=False)
         if not hasattr(self, "auto_stop_var"):
             self.auto_stop_var = tk.BooleanVar(value=True)
-        self.allow_lr_modifiers_var = tk.BooleanVar(value=False)
-        self.same_hotkeys_all_categories_var = tk.BooleanVar(value=False)
 
         # Interface Tab
         self.lang_var = tk.StringVar(value="За замовчуванням")
@@ -5166,16 +5153,16 @@ class MusicPadApp(tk.Tk):
 
         # Group 1: Спеціальні гарячі клавіші
         g1 = ttk.LabelFrame(f, text="Спеціальні гарячі клавіші", padding=8)
-        g1.pack(fill="x", pady=(0, 6))
+        g1.pack(fill="both", expand=True, pady=(0, 6))
 
         tree_frame = ttk.Frame(g1)
-        tree_frame.pack(fill="x", expand=True)
+        tree_frame.pack(fill="both", expand=True)
 
         self.special_hotkeys_tree = ttk.Treeview(
             tree_frame,
             columns=("action", "shortcut"),
             show="headings",
-            height=7,
+            height=12,
             selectmode="browse",
         )
         self.special_hotkeys_tree.heading("action", text="Дія")
@@ -5185,77 +5172,15 @@ class MusicPadApp(tk.Tk):
 
         sb_tree = ttk.Scrollbar(tree_frame, orient="vertical", command=self.special_hotkeys_tree.yview)
         self.special_hotkeys_tree.configure(yscrollcommand=sb_tree.set)
-        self.special_hotkeys_tree.pack(side="left", fill="x", expand=True)
+        self.special_hotkeys_tree.pack(side="left", fill="both", expand=True)
         sb_tree.pack(side="right", fill="y")
+
+        self.special_hotkeys_tree.bind("<Double-1>", lambda _: self._set_special_hotkey())
 
         btns_sh = ttk.Frame(g1)
         btns_sh.pack(fill="x", pady=(6, 2))
         ttk.Button(btns_sh, text="Встановити гарячу клавішу", command=self._set_special_hotkey).pack(side="left", padx=(0, 6))
-        ttk.Button(btns_sh, text="Змінити значення", command=self._change_special_hotkey_value).pack(side="left")
-
-        # Group 2: Гарячі клавіші цифрового блоку
-        g2 = ttk.LabelFrame(f, text="Гарячі клавіші цифрового блоку", padding=8)
-        g2.pack(fill="x", pady=(0, 6))
-
-        row_np1 = ttk.Frame(g2)
-        row_np1.pack(fill="x", pady=2)
-        ttk.Checkbutton(
-            row_np1,
-            text="Дозволити комбінації клавіш «Alt + цифровий код»",
-            variable=self.numpad_alt_var,
-        ).pack(side="left")
-        ttk.Button(
-            row_np1,
-            text="Змінити модифікатор",
-            command=lambda: self._show_settings_hint("Модифікатор", "Поточний модифікатор цифрового блоку: Alt"),
-        ).pack(side="right")
-
-        row_np2 = ttk.Frame(g2)
-        row_np2.pack(fill="x", pady=2)
-        ttk.Checkbutton(
-            row_np2,
-            text="Дозволити комбінації клавіш «Ctrl+Alt + індекс»",
-            variable=self.numpad_ctrl_alt_var,
-        ).pack(side="left")
-        ttk.Button(
-            row_np2,
-            text="Змінити модифікатор",
-            command=lambda: self._show_settings_hint("Модифікатор", "Поточний модифікатор цифрового блоку: Ctrl+Alt"),
-        ).pack(side="right")
-
-        # Group 3: Автоклавіші
-        g3 = ttk.LabelFrame(f, text="Автоклавіші", padding=8)
-        g3.pack(fill="x", pady=(0, 6))
-        ttk.Label(g3, text="Автоматично натискає клавіші під час відтворення звуків.").pack(anchor="w", pady=(0, 4))
-
-        ak_frame = ttk.Frame(g3)
-        ak_frame.pack(fill="x")
-        self.auto_keys_tree = ttk.Treeview(
-            ak_frame,
-            columns=("key", "type"),
-            show="headings",
-            height=3,
-            selectmode="browse",
-        )
-        self.auto_keys_tree.heading("key", text="Клавіша")
-        self.auto_keys_tree.heading("type", text="Тип")
-        self.auto_keys_tree.column("key", width=220, anchor="w")
-        self.auto_keys_tree.column("type", width=280, anchor="w")
-        self.auto_keys_tree.pack(fill="x", expand=True)
-
-        btns_ak = ttk.Frame(g3)
-        btns_ak.pack(fill="x", pady=(6, 2))
-        ttk.Button(btns_ak, text="Додати", command=self._add_auto_key).pack(side="left", padx=(0, 6))
-        ttk.Button(btns_ak, text="Редагувати", command=self._edit_auto_key).pack(side="left", padx=(0, 6))
-        ttk.Button(btns_ak, text="Видалити", command=self._remove_auto_key).pack(side="left")
-
-        # Group 4: Розширені параметри
-        g4 = ttk.LabelFrame(f, text="Розширені параметри", padding=8)
-        g4.pack(fill="x", pady=(0, 4))
-        ttk.Checkbutton(g4, text="Передавати гарячі клавіші", variable=self.pass_hotkeys_var).pack(anchor="w", pady=1)
-        ttk.Checkbutton(g4, text="Автозупинка (рекомендовано)", variable=self.auto_stop_var).pack(anchor="w", pady=1)
-        ttk.Checkbutton(g4, text="Дозволити ліві та праві модифікатори", variable=self.allow_lr_modifiers_var).pack(anchor="w", pady=1)
-        ttk.Checkbutton(g4, text="Однакові гарячі клавіші в усіх категоріях", variable=self.same_hotkeys_all_categories_var).pack(anchor="w", pady=1)
+        ttk.Button(btns_sh, text="Очистити", command=self._clear_special_hotkey).pack(side="left")
 
     def _build_tab_interface(self) -> None:
         f = self.tab_interface
@@ -5700,44 +5625,181 @@ class MusicPadApp(tk.Tk):
         item_id = sel[0]
         action = self.special_hotkeys_tree.item(item_id, "values")[0]
         cur = self.special_hotkeys_dict.get(action, "")
-        val = simpledialog.askstring("Встановити гарячу клавішу", f"Введіть клавішу для «{action}» (наприклад: F5, Space, Ctrl+K):", initialvalue=cur, parent=self._settings_window)
-        if val is not None:
-            self.special_hotkeys_dict[action] = val.strip()
-            self.special_hotkeys_tree.item(item_id, values=(action, val.strip()))
 
-    def _change_special_hotkey_value(self) -> None:
-        self._set_special_hotkey()
+        self._capturing_hotkey = True
+        parent_win = self._settings_window if (self._settings_window and self._settings_window.winfo_exists()) else self
+        dlg = tk.Toplevel(parent_win)
+        dlg.title("Призначити гарячу клавішу")
+        dlg.geometry("460x170")
+        dlg.resizable(False, False)
+        dlg.configure(bg="#1f1f1f" if self.theme == "dark" else "#f4f5f7")
+        dlg.transient(parent_win)
+        dlg.grab_set()
+        self._apply_dark_title_bar(dlg)
 
-    def _add_auto_key(self) -> None:
-        key = simpledialog.askstring("Додати автоклавішу", "Введіть клавішу для автоматичного натискання (наприклад: F, Enter, Space):", parent=self._settings_window)
-        if key and key.strip():
-            k = key.strip().upper()
-            t = "Натиснути та відпустити"
-            self.auto_keys_list.append((k, t))
-            self.auto_keys_tree.insert("", "end", values=(k, t))
+        ttk.Label(
+            dlg,
+            text=f"Дія: {action}",
+            font=("Segoe UI", 10, "bold"),
+            padding=(16, 14, 16, 2),
+        ).pack(fill="x")
+        ttk.Label(
+            dlg,
+            text=f"Поточна комбінація: {cur if cur else 'Не призначено'}",
+            font=("Segoe UI", 9),
+            padding=(16, 2, 16, 4),
+        ).pack(fill="x")
+        ttk.Label(
+            dlg,
+            text="Натисніть бажану клавішу або комбінацію (напр. Space, F5, Ctrl+K)\nEsc — скасувати, Backspace — очистити",
+            padding=(16, 4, 16, 8),
+        ).pack(fill="x")
 
-    def _edit_auto_key(self) -> None:
-        sel = self.auto_keys_tree.selection()
+        def on_key(event: tk.Event) -> None:
+            keysym = str(getattr(event, "keysym", "")).upper()
+            keycode = getattr(event, "keycode", None)
+            if keysym == "ESCAPE" or keycode == 0x1B:
+                self._capturing_hotkey = False
+                dlg.destroy()
+                return
+
+            if keysym in ("BACKSPACE",) or keycode == 0x08:
+                self._capturing_hotkey = False
+                self.special_hotkeys_dict[action] = ""
+                self.special_hotkeys_tree.item(item_id, values=(action, ""))
+                self._save_state()
+                self._apply_special_hotkeys()
+                dlg.destroy()
+                return
+
+            hk = _format_tk_hotkey(event)
+            if not hk:
+                return
+
+            self._capturing_hotkey = False
+
+            # Check for conflicts
+            conflict_name: Optional[str] = None
+            conflict_is_track = False
+            for other_act, other_hk in self.special_hotkeys_dict.items():
+                if other_act != action and other_hk.strip().upper() == hk.upper():
+                    conflict_name = other_act
+                    break
+
+            if not conflict_name:
+                for tr in getattr(self, "local_tracks", []):
+                    if tr.hotkey.strip().upper() == hk.upper():
+                        conflict_name = f"Трек «{tr.title}»"
+                        conflict_is_track = True
+                        break
+
+            if conflict_name:
+                dlg.grab_release()
+                reassign = messagebox.askyesno(
+                    "Конфлікт гарячих клавіш",
+                    f"Гаряча клавіша [{hk}] вже використовується для «{conflict_name}».\nПерепризначити її?",
+                    parent=dlg,
+                )
+                dlg.grab_set()
+                if not reassign:
+                    self._capturing_hotkey = True
+                    return
+
+                if conflict_is_track:
+                    for tr in getattr(self, "local_tracks", []):
+                        if tr.hotkey.strip().upper() == hk.upper():
+                            tr.hotkey = ""
+                    self._filter_tracks()
+                    self._save_state()
+                else:
+                    self.special_hotkeys_dict[conflict_name] = ""
+                    for child in self.special_hotkeys_tree.get_children():
+                        if self.special_hotkeys_tree.item(child, "values")[0] == conflict_name:
+                            self.special_hotkeys_tree.item(child, values=(conflict_name, ""))
+
+            self.special_hotkeys_dict[action] = hk
+            self.special_hotkeys_tree.item(item_id, values=(action, hk))
+            self._save_state()
+            self._apply_special_hotkeys()
+            dlg.destroy()
+
+        dlg.bind("<KeyPress>", on_key)
+        dlg.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (setattr(self, "_capturing_hotkey", False), dlg.destroy()),
+        )
+        dlg.focus_force()
+
+    def _clear_special_hotkey(self) -> None:
+        sel = self.special_hotkeys_tree.selection()
         if not sel:
+            messagebox.showinfo("Гарячі клавіші", "Виберіть дію зі списку.", parent=self._settings_window)
             return
-        item = sel[0]
-        cur_k, cur_t = self.auto_keys_tree.item(item, "values")
-        new_k = simpledialog.askstring("Редагувати автоклавішу", "Введіть нову клавішу:", initialvalue=cur_k, parent=self._settings_window)
-        if new_k and new_k.strip():
-            k = new_k.strip().upper()
-            idx = self.auto_keys_tree.index(item)
-            self.auto_keys_list[idx] = (k, cur_t)
-            self.auto_keys_tree.item(item, values=(k, cur_t))
+        item_id = sel[0]
+        action = self.special_hotkeys_tree.item(item_id, "values")[0]
+        self.special_hotkeys_dict[action] = ""
+        self.special_hotkeys_tree.item(item_id, values=(action, ""))
+        self._save_state()
+        self._apply_special_hotkeys()
 
-    def _remove_auto_key(self) -> None:
-        sel = self.auto_keys_tree.selection()
-        if not sel:
-            return
-        item = sel[0]
-        idx = self.auto_keys_tree.index(item)
-        if 0 <= idx < len(self.auto_keys_list):
-            del self.auto_keys_list[idx]
-        self.auto_keys_tree.delete(item)
+    @staticmethod
+    def _hotkey_to_tk_sequences(hk: str) -> list[str]:
+        if not hk or not hk.strip():
+            return []
+        parts = [p.strip() for p in hk.split("+") if p.strip()]
+        if not parts:
+            return []
+        main_key = parts[-1]
+        mods = parts[:-1]
+
+        tk_mods: list[str] = []
+        for m in mods:
+            m_up = m.upper()
+            if m_up == "CTRL":
+                tk_mods.append("Control")
+            elif m_up == "ALT":
+                tk_mods.append("Alt")
+            elif m_up == "SHIFT":
+                tk_mods.append("Shift")
+
+        main_up = main_key.upper()
+        if main_up == "SPACE":
+            tk_keys = ["space", "Space"]
+        elif main_up in ("DEL", "DELETE"):
+            tk_keys = ["Delete"]
+        elif main_up.startswith("F") and main_up[1:].isdigit():
+            tk_keys = [main_up]
+        elif len(main_key) == 1 and main_key.isalpha():
+            tk_keys = [main_key.lower(), main_key.upper()]
+        else:
+            tk_keys = [main_key]
+
+        res: list[str] = []
+        for k in tk_keys:
+            if tk_mods:
+                res.append(f"<{"-".join(tk_mods)}-{k}>")
+            else:
+                res.append(f"<{k}>")
+        return res
+
+    def _apply_special_hotkeys(self) -> None:
+        action_handlers = {
+            "Скасувати": self._undo,
+            "Копіювати": self._copy_track,
+            "Вставити": self._paste_track,
+            "Видалити вибрані записи": lambda: self._remove_selected_track() if not self._is_entry_focused() else None,
+            "Пошук": self._toggle_search_bar,
+            "Вихід": self._exit,
+        }
+        for act, handler in action_handlers.items():
+            hk = self.special_hotkeys_dict.get(act, "").strip()
+            if not hk:
+                continue
+            for seq in self._hotkey_to_tk_sequences(hk):
+                try:
+                    self.bind(seq, lambda _e, h=handler: h())
+                except Exception:
+                    pass
 
     def _on_rec_device_click(self, event: tk.Event) -> None:
         item = self.rec_devices_tree.identify_row(event.y)
@@ -5813,12 +5875,6 @@ class MusicPadApp(tk.Tk):
             for action, sc in self.special_hotkeys_dict.items():
                 self.special_hotkeys_tree.insert("", "end", values=(action, sc))
 
-        if hasattr(self, "auto_keys_tree") and self.auto_keys_tree.winfo_exists():
-            for item in self.auto_keys_tree.get_children():
-                self.auto_keys_tree.delete(item)
-            for k, t in self.auto_keys_list:
-                self.auto_keys_tree.insert("", "end", values=(k, t))
-
         self._update_settings_devices_view()
         self._on_minimize_tray_toggle()
 
@@ -5829,31 +5885,14 @@ class MusicPadApp(tk.Tk):
         self.special_hotkeys_dict = {
             "Зупинити відтворення": "",
             "Призупинити/продовжити відтворення": "Space",
-            "Відтворити попередній файл": "",
-            "Відтворити наступний файл": "",
-            "Відтворити вибраний файл": "",
-            "Відтворити випадковий файл": "",
-            "Відтворити випадковий файл із усіх категорій": "",
-            "Зберегти список звуків": "Ctrl+S",
             "Скасувати": "Ctrl+Z",
-            "Відновити": "Ctrl+Y",
-            "Вирізати": "Ctrl+X",
             "Копіювати": "Ctrl+C",
             "Вставити": "Ctrl+V",
             "Видалити вибрані записи": "Del",
-            "Вибрати все": "Ctrl+A",
             "Пошук": "Ctrl+F",
-            "Записування звуку": "Ctrl+R",
-            "Озвучення тексту": "Ctrl+T",
             "Вихід": "Alt+F4",
         }
-        self.numpad_alt_var.set(False)
-        self.numpad_ctrl_alt_var.set(False)
-        self.auto_keys_list.clear()
-        self.pass_hotkeys_var.set(False)
         self.auto_stop_var.set(True)
-        self.allow_lr_modifiers_var.set(False)
-        self.same_hotkeys_all_categories_var.set(False)
 
         self.lang_var.set("За замовчуванням")
         self.date_format_var.set("Мова за замовчуванням")
@@ -5978,6 +6017,7 @@ class MusicPadApp(tk.Tk):
         self.bind("<Delete>", lambda _: self._remove_selected_track() if not self._is_entry_focused() else None)
         self.bind("<Alt-F4>", lambda _: self._exit())
         self.bind("<space>", lambda _: self._toggle_pause() if not self._is_entry_focused() else None)
+        self._apply_special_hotkeys()
 
     def _open_settings(self) -> None:
         if self._settings_window is None or not self._settings_window.winfo_exists():
@@ -8799,14 +8839,27 @@ class MusicPadApp(tk.Tk):
             try:
                 active_now: set[str] = set()
 
-                for builtin_hk, action in (
-                    ("F8", self._toggle_pause),
-                    ("F9", self._stop),
+                pause_hk = self.special_hotkeys_dict.get("Призупинити/продовжити відтворення", "").strip()
+                stop_hk = self.special_hotkeys_dict.get("Зупинити відтворення", "").strip()
+
+                global_actions: list[tuple[str, Any]] = [
                     ("F10", self._toggle_mute_hotkey),
-                ):
-                    if _is_hotkey_pressed_win32(builtin_hk):
-                        active_now.add(builtin_hk)
-                        if builtin_hk not in self._pressed_hotkeys:
+                ]
+                if pause_hk:
+                    global_actions.append((pause_hk, self._toggle_pause))
+                else:
+                    global_actions.append(("F8", self._toggle_pause))
+
+                if stop_hk:
+                    global_actions.append((stop_hk, self._stop))
+                else:
+                    global_actions.append(("F9", self._stop))
+
+                for hk_str, action in global_actions:
+                    hk_upper = hk_str.upper()
+                    if _is_hotkey_pressed_win32(hk_upper):
+                        active_now.add(hk_upper)
+                        if hk_upper not in self._pressed_hotkeys:
                             self.after(0, action)
 
                 for idx, track in enumerate(list(self.local_tracks)):
@@ -8977,13 +9030,7 @@ class MusicPadApp(tk.Tk):
                     "voice_boost_enabled": self.voice_boost_enabled_var.get() if hasattr(self, "voice_boost_enabled_var") else False,
                     "voice_boost_db": self.voice_boost_db_var.get() if hasattr(self, "voice_boost_db_var") else 0.0,
                     "special_hotkeys": getattr(self, "special_hotkeys_dict", {}),
-                    "numpad_alt": self.numpad_alt_var.get(),
-                    "numpad_ctrl_alt": self.numpad_ctrl_alt_var.get(),
-                    "auto_keys": getattr(self, "auto_keys_list", []),
-                    "pass_hotkeys": self.pass_hotkeys_var.get(),
                     "auto_stop": self.auto_stop_var.get(),
-                    "allow_lr_modifiers": self.allow_lr_modifiers_var.get(),
-                    "same_hotkeys_all_categories": self.same_hotkeys_all_categories_var.get(),
                     "lang": self.lang_var.get(),
                     "date_format": self.date_format_var.get(),
                     "tb_style": self.tb_style_var.get(),
@@ -9112,15 +9159,11 @@ class MusicPadApp(tk.Tk):
                 if "voice_boost_db" in sc and hasattr(self, "voice_boost_db_var"):
                     self.voice_boost_db_var.set(float(sc["voice_boost_db"]))
                 if "special_hotkeys" in sc and isinstance(sc["special_hotkeys"], dict):
-                    self.special_hotkeys_dict.update(sc["special_hotkeys"])
-                if "numpad_alt" in sc: self.numpad_alt_var.set(bool(sc["numpad_alt"]))
-                if "numpad_ctrl_alt" in sc: self.numpad_ctrl_alt_var.set(bool(sc["numpad_ctrl_alt"]))
-                if "auto_keys" in sc and isinstance(sc["auto_keys"], list):
-                    self.auto_keys_list = [tuple(item) for item in sc["auto_keys"] if len(item) == 2]
-                if "pass_hotkeys" in sc: self.pass_hotkeys_var.set(bool(sc["pass_hotkeys"]))
+                    for k, v in sc["special_hotkeys"].items():
+                        if k in self.special_hotkeys_dict and isinstance(v, str):
+                            self.special_hotkeys_dict[k] = v
+                    self._apply_special_hotkeys()
                 if "auto_stop" in sc: self.auto_stop_var.set(bool(sc["auto_stop"]))
-                if "allow_lr_modifiers" in sc: self.allow_lr_modifiers_var.set(bool(sc["allow_lr_modifiers"]))
-                if "same_hotkeys_all_categories" in sc: self.same_hotkeys_all_categories_var.set(bool(sc["same_hotkeys_all_categories"]))
                 if "lang" in sc: self.lang_var.set(str(sc["lang"]))
                 if "date_format" in sc: self.date_format_var.set(str(sc["date_format"]))
                 if "tb_style" in sc: self.tb_style_var.set(str(sc["tb_style"]))

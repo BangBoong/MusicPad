@@ -1557,7 +1557,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # Check Tab 2: Hotkeys table
                     hk_items = app.special_hotkeys_tree.get_children()
-                    self.assertEqual(len(hk_items), 19)
+                    self.assertEqual(len(hk_items), 8)
                     first_action = app.special_hotkeys_tree.item(hk_items[0], 'values')[0]
                     self.assertEqual(first_action, 'Зупинити відтворення')
                     self.assertTrue(app.auto_stop_var.get())
@@ -1605,6 +1605,91 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # Test Cancel closes window
                     app._cancel_settings()
                     self.assertFalse(app._settings_window.winfo_viewable())
+                finally:
+                    app._exit()
+
+    def test_interactive_special_hotkeys_assignment_and_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / 'test_state_hotkeys.json'
+            with patch.object(main.MusicPadApp, '_config_path', return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app._open_settings()
+                    app.update()
+
+                    # 1. Verify 8 special hotkey items exist in tree
+                    items = app.special_hotkeys_tree.get_children()
+                    self.assertEqual(len(items), 8)
+                    actions = [app.special_hotkeys_tree.item(it, "values")[0] for it in items]
+                    self.assertEqual(
+                        actions,
+                        [
+                            "Зупинити відтворення",
+                            "Призупинити/продовжити відтворення",
+                            "Скасувати",
+                            "Копіювати",
+                            "Вставити",
+                            "Видалити вибрані записи",
+                            "Пошук",
+                            "Вихід",
+                        ],
+                    )
+
+                    # 2. Select first item ("Зупинити відтворення") and clear it
+                    app.special_hotkeys_tree.selection_set(items[0])
+                    app._clear_special_hotkey()
+                    self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "")
+                    self.assertEqual(app.special_hotkeys_tree.item(items[0], "values")[1], "")
+
+                    # 3. Simulate interactive keypress assignment (F9)
+                    with patch("tkinter.Toplevel") as mock_top:
+                        captured_callback = {}
+                        fake_dlg = MagicMock()
+                        fake_dlg.bind = lambda evt, cb: captured_callback.update({evt: cb})
+                        mock_top.return_value = fake_dlg
+
+                        app._set_special_hotkey()
+                        self.assertIn("<KeyPress>", captured_callback)
+
+                        ev_f9 = MagicMock()
+                        ev_f9.keysym = "F9"
+                        ev_f9.keycode = 0x78
+                        ev_f9.state = 0
+                        captured_callback["<KeyPress>"](ev_f9)
+
+                    self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "F9")
+                    self.assertEqual(app.special_hotkeys_tree.item(items[0], "values")[1], "F9")
+
+                    # 4. Conflict detection: Assign "F9" to "Пошук" (should prompt and clear from previous)
+                    app.special_hotkeys_tree.selection_set(items[6])
+                    with patch("tkinter.Toplevel") as mock_top, \
+                         patch("tkinter.messagebox.askyesno", return_value=True) as mock_ask:
+                        captured_callback = {}
+                        fake_dlg = MagicMock()
+                        fake_dlg.bind = lambda evt, cb: captured_callback.update({evt: cb})
+                        mock_top.return_value = fake_dlg
+
+                        app._set_special_hotkey()
+                        captured_callback["<KeyPress>"](ev_f9)
+
+                        self.assertTrue(mock_ask.called)
+                        self.assertEqual(app.special_hotkeys_dict["Пошук"], "F9")
+                        self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "")
+
+                    # 5. Verify config saving and loading ignores obsolete keys
+                    app._save_state()
+                    raw_data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertNotIn("numpad_alt", raw_data.get("settings_custom", {}))
+                    self.assertNotIn("auto_keys", raw_data.get("settings_custom", {}))
+                    self.assertIn("special_hotkeys", raw_data.get("settings_custom", {}))
+
+                    # Inject legacy deleted key and test reload ignores it
+                    raw_data["settings_custom"]["special_hotkeys"]["Відтворити випадковий файл"] = "F12"
+                    cfg_file.write_text(json.dumps(raw_data), encoding="utf-8")
+
+                    app._load_saved_state()
+                    self.assertNotIn("Відтворити випадковий файл", app.special_hotkeys_dict)
                 finally:
                     app._exit()
 
