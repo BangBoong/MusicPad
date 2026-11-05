@@ -1608,6 +1608,58 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 finally:
                     app._exit()
 
+    def test_hide_to_tray_on_close_option_and_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / 'test_state_tray.json'
+            with patch.object(main.MusicPadApp, '_config_path', return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    # 1. Default value is True
+                    self.assertTrue(app.hide_to_tray.get())
+
+                    # 2. Open settings and verify widget
+                    app._open_settings()
+                    app.update()
+                    self.assertTrue(hasattr(app, "chk_hide_to_tray"))
+                    self.assertEqual(app.chk_hide_to_tray.cget("text"), "Ховати в трей при закритті")
+                    self.assertTrue(app.hide_to_tray_var.get())
+
+                    # 3. Cancel settings reverts any unapplied toggle
+                    app.hide_to_tray_var.set(False)
+                    app._cancel_settings()
+                    self.assertTrue(app.hide_to_tray.get())
+
+                    # 4. Apply settings saves new value
+                    app._open_settings()
+                    app.hide_to_tray_var.set(False)
+                    app._apply_settings()
+                    self.assertFalse(app.hide_to_tray.get())
+                    app._close_settings_dialog()
+
+                    # 5. Check closing behavior when hide_to_tray is False -> calls _exit
+                    with patch.object(app, "_exit") as mock_exit:
+                        app._close()
+                        self.assertTrue(mock_exit.called)
+
+                    # 6. Re-enable hide_to_tray -> _close withdraws window instead of exit
+                    app.hide_to_tray.set(True)
+                    with patch.object(app, "_exit") as mock_exit, \
+                         patch.object(app, "withdraw") as mock_withdraw:
+                        app._close()
+                        self.assertFalse(mock_exit.called)
+                        self.assertTrue(mock_withdraw.called)
+
+                    # 7. Localization check in English
+                    app.lang_var.set("English")
+                    app._apply_language()
+                    if hasattr(app, "_open_settings"):
+                        app._open_settings()
+                        self.assertEqual(app.chk_hide_to_tray.cget("text"), "Hide to tray on close")
+                        app._close_settings_dialog()
+                finally:
+                    app._exit()
+
     def test_interactive_special_hotkeys_assignment_and_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg_file = Path(tmp) / 'test_state_hotkeys.json'
@@ -2321,19 +2373,24 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # 3. Ensure Playback mode group is completely removed
                     self.assertFalse(hasattr(app, "grp_playback_mode"))
 
-                    # 4. Group 3: Miscellaneous (only remember playback state)
+                    # 4. Group 3: Miscellaneous (remember playback state + hide to tray on close)
                     self.assertEqual(app.grp_misc.cget("text"), "Різне")
                     self.assertTrue(hasattr(app, "chk_remember_playback"))
                     self.assertEqual(
                         app.chk_remember_playback.cget("text"),
                         "Запам'ятовувати стан відтворення при виході з програми",
                     )
-                    # Count children in grp_misc - should only have the 1 checkbutton
+                    self.assertTrue(hasattr(app, "chk_hide_to_tray"))
+                    self.assertEqual(
+                        app.chk_hide_to_tray.cget("text"),
+                        "Ховати в трей при закритті",
+                    )
+                    # Count children in grp_misc - should have the 2 checkbuttons
                     misc_children = [
                         c for c in app.grp_misc.winfo_children()
                         if isinstance(c, main.ttk.Checkbutton)
                     ]
-                    self.assertEqual(len(misc_children), 1)
+                    self.assertEqual(len(misc_children), 2)
                 finally:
                     app._exit()
 

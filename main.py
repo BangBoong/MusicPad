@@ -312,6 +312,7 @@ I18N: dict[str, dict[str, str]] = {
         "style_light": "Світлий",
         "grp_misc": "Різне",
         "chk_remember_playback": "Запам'ятовувати стан відтворення при виході з програми",
+        "chk_hide_to_tray": "Ховати в трей при закритті",
         # Settings - Buttons
         "btn_reset": "Скинути",
         "btn_ok": "OK",
@@ -503,6 +504,7 @@ I18N: dict[str, dict[str, str]] = {
         "style_light": "Light",
         "grp_misc": "Miscellaneous",
         "chk_remember_playback": "Remember playback state on exit",
+        "chk_hide_to_tray": "Hide to tray on close",
         # Settings - Buttons
         "btn_reset": "Reset",
         "btn_ok": "OK",
@@ -4701,6 +4703,7 @@ class MusicPadApp(tk.Tk):
         self.typing_starts_search_var = tk.BooleanVar(value=True)
         self.tts_input_priority_var = tk.BooleanVar(value=False)
         self.remember_playback_state_var = tk.BooleanVar(value=True)
+        self.hide_to_tray_var = tk.BooleanVar(value=self.hide_to_tray.get() if hasattr(self, "hide_to_tray") else True)
 
         # Devices Tab
         self.check_device_config_on_launch_var = tk.BooleanVar(value=True)
@@ -5251,6 +5254,13 @@ class MusicPadApp(tk.Tk):
         )
         self.chk_remember_playback.pack(anchor="w", pady=4)
 
+        self.chk_hide_to_tray = ttk.Checkbutton(
+            self.grp_misc,
+            text=self._tr("chk_hide_to_tray"),
+            variable=self.hide_to_tray_var,
+        )
+        self.chk_hide_to_tray.pack(anchor="w", pady=4)
+
     def _get_track_sources(self) -> list[str]:
         sources = [DEFAULT_TRACK_SOURCE]
         if hasattr(self, "input_map"):
@@ -5789,7 +5799,7 @@ class MusicPadApp(tk.Tk):
             "Вставити": self._paste_track,
             "Видалити вибрані записи": lambda: self._remove_selected_track() if not self._is_entry_focused() else None,
             "Пошук": self._toggle_search_bar,
-            "Вихід": self._exit,
+            "Вихід": self._close,
         }
         for act, handler in action_handlers.items():
             hk = self.special_hotkeys_dict.get(act, "").strip()
@@ -5875,6 +5885,9 @@ class MusicPadApp(tk.Tk):
             for action, sc in self.special_hotkeys_dict.items():
                 self.special_hotkeys_tree.insert("", "end", values=(action, sc))
 
+        if hasattr(self, "hide_to_tray_var"):
+            self.hide_to_tray_var.set(self.hide_to_tray.get() if hasattr(self, "hide_to_tray") else True)
+
         self._update_settings_devices_view()
         self._on_minimize_tray_toggle()
 
@@ -5893,6 +5906,9 @@ class MusicPadApp(tk.Tk):
             "Вихід": "Alt+F4",
         }
         self.auto_stop_var.set(True)
+        self.hide_to_tray.set(True)
+        if hasattr(self, "hide_to_tray_var"):
+            self.hide_to_tray_var.set(True)
 
         self.lang_var.set("За замовчуванням")
         self.date_format_var.set("Мова за замовчуванням")
@@ -5969,6 +5985,8 @@ class MusicPadApp(tk.Tk):
             mon_name = self.monitor_var.get()
             if hasattr(self, "monitor_map") and mon_name in self.monitor_map:
                 self.engine.set_monitor_device(self.monitor_map[mon_name])
+        if hasattr(self, "hide_to_tray_var"):
+            self.hide_to_tray.set(self.hide_to_tray_var.get())
         self._on_voice_fx_changed()
         self._refresh_driver_status(notify_on_issue=False)
         self._save_state()
@@ -5979,6 +5997,8 @@ class MusicPadApp(tk.Tk):
         self._close_settings_dialog()
 
     def _cancel_settings(self) -> None:
+        if hasattr(self, "hide_to_tray_var"):
+            self.hide_to_tray_var.set(self.hide_to_tray.get())
         self._close_settings_dialog()
 
     def _close_settings_dialog(self) -> None:
@@ -6015,7 +6035,7 @@ class MusicPadApp(tk.Tk):
         self.bind("<Control-t>", lambda _: self._text_to_speech_dialog())
         self.bind("<Control-T>", lambda _: self._text_to_speech_dialog())
         self.bind("<Delete>", lambda _: self._remove_selected_track() if not self._is_entry_focused() else None)
-        self.bind("<Alt-F4>", lambda _: self._exit())
+        self.bind("<Alt-F4>", lambda _: self._close())
         self.bind("<space>", lambda _: self._toggle_pause() if not self._is_entry_focused() else None)
         self._apply_special_hotkeys()
 
