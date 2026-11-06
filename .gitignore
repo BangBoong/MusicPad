@@ -65,6 +65,7 @@ $RECYCLE.BIN/
 .coverage
 htmlcov/
 report.json
+*_report.json
 *.log
 *.tmp
 *.bak

@@ -5849,9 +5849,10 @@ class MusicPadApp(tk.Tk):
             tk_keys = [main_key]
 
         res: list[str] = []
+        mod_prefix = "-".join(tk_mods) if tk_mods else ""
         for k in tk_keys:
-            if tk_mods:
-                res.append(f"<{"-".join(tk_mods)}-{k}>")
+            if mod_prefix:
+                res.append(f"<{mod_prefix}-{k}>")
             else:
                 res.append(f"<{k}>")
         return res
