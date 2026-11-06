@@ -1,93 +1,75 @@
+[🇺🇦 Українська версія](README.ua.md) | **English**
+
 # MusicPad
 
-![MusicPad Interface](new_ui_capture_clean.png)
+![MusicPad Interface](assets/musicpad_en.png)
 
-MusicPad — Windows desktop-саундпад у стилі Soundpad, який відтворює локальні треки
-або транслює YouTube Music безпосередньо у ваш **Цільовий мікрофон** (режим
-**«Ін'єкція в мікрофон»**) або через віртуальний аудіокабель (режим **«Віртуальний кабель»**).
+**MusicPad** is a modern Windows desktop soundpad in the spirit of Soundpad. It plays local audio files and streams tracks from YouTube / YouTube Music directly into your microphone or via a virtual audio cable. Your teammates and friends in Discord, Telegram, games (CS2, Dota 2), and live streams hear clean, high-quality audio along with your voice with minimal latency.
 
-## Швидкий запуск (для користувачів)
+---
 
-1. Завантажте **`MusicPad.exe`** (або ZIP-архів) зі сторінки [**GitHub Releases**](../../releases/latest).
-2. Запустіть файл — додаток працює одразу **«з коробки»**. Жодних додаткових компонентів (включно з FFmpeg) встановлювати не потрібно, FFmpeg та системний драйвер ін'єкції уже вшиті всередину виконуваного файлу.
-3. **Два режими маршрутизації** (`Файл -> Налаштування -> Пристрої`):
-   - **Ін'єкція в мікрофон (як у Soundpad)**: натисніть кнопку **«Встановити драйвер (UAC)»** у налаштуваннях пристроїв. MusicPad встановить власний системний **Драйвер MusicPad** (`MusicPadAPO`) на обраний мікрофон. У Discord, Telegram, іграх (CS2, Dota 2 тощо) залишайте ваш звичайний фізичний мікрофон — ін'єкція треку в потік мікрофона відбувається автоматично.
-   - **Віртуальний кабель (VB-Cable)**: класичний запасний режим для програм з вимкненими аудіоефектами (`Signal Enhancements`) або WASAPI Exclusive/RAW. Обирайте `CABLE Input` у MusicPad та `CABLE Output` як мікрофон у цільовому застосунку ([VB-Audio Virtual Cable](https://vb-audio.com/Cable/)).
+## Quick Start (for Users)
 
-## Запуск із вихідного коду (для розробників)
+1. Download **`MusicPad.exe`** (or the ZIP bundle) from [**GitHub Releases**](../../releases/latest).
+2. Run the application — it is fully portable and works **out of the box**. All necessary dependencies (FFmpeg, injection driver, DSP libraries) are embedded.
+3. **Select your routing mode** (`File ➔ Settings ➔ Devices`):
+   - **Microphone Injection (Soundpad-style)**: Click **"Install Driver (UAC)"**. MusicPad registers its system audio driver (`MusicPadAPO`) onto your selected physical microphone. In Discord, games, and voice apps, keep your normal microphone selected — audio tracks are blended into your mic feed automatically.
+   - **Virtual Cable (VB-Cable)**: Fallback mode for applications without Windows audio enhancement support (WASAPI Exclusive/RAW). Select `CABLE Input` in MusicPad and `CABLE Output` as your microphone in the target voice application ([VB-Audio Virtual Cable](https://vb-audio.com/Cable/)).
 
-1. Встановіть Python 3.10+, FFmpeg (`ffmpeg.exe` у `PATH`) та компілятор C++17 (MinGW-w64 UCRT64 або MSVC) для складання системного драйвера APO та спільного DSP-ядра.
-2. Встановіть залежності та зберіть нативні модулі:
+---
+
+## Key Features
+
+### 🎙️ Microphone DSP & Audio Clarity
+- **Optional Neural Noise Suppression (DeepFilterNet)**: Intelligent real-time noise suppression powered by DeepFilterNet to eliminate fan noise, background hum, and keyboard clicks, with an adjustable Wet/Dry balance slider (0–100%).
+- **Optional White Noise Removal**: Combination of a DC offset high-pass filter (35 Hz) and a smooth downward expander (-55 dBFS) that zeroes background hiss during speech pauses.
+- **Voice Boost**: Calibrated linear microphone amplification from 0 to +24 dB with a protective soft-knee limiter (-1.0 dBFS) preventing clipping and distortion.
+- **Monitoring**: Real-time headphone monitoring for tracks and optional mic feedback without delay.
+- **"Mute for Others" Button**: Instantly mutes the track for voice chat listeners while keeping it audible in your own headphones.
+
+### 🔍 YouTube & YouTube Music
+- **Fast Search & Caching**: Search tracks by title or direct URL with immediate playback and background caching in `.cache/`.
+- **YouTube Priority (Search by Title)**: Independent toggle routing queries directly through YouTube (`ytsearch`) — ideal for finding memes, sound effects, and exact video titles without music catalog restrictions.
+- **Filtering & Album Playback**: Search filter modes ("All results", "No albums", "Albums only"), adjustable track result count slider (5 to 35), and sequential album autoplay queue.
+- **"Clear Cache" Button**: One-click cleanup of downloaded cache files in "My Sounds" to free disk space.
+
+### ⌨️ Controls & Workflow
+- **Special Hotkeys**: Streamlined table of essential actions (*Pause*, *Stop*, *Copy*, *Paste*, *Delete*, *Search*) with interactive key capture and conflict detection.
+- **Global Track Hotkeys**: Assign dedicated keys to individual sound tracks for instant triggering while in-game.
+- **Convenience**: Dark and light themes, "Hide to tray on close", and full state persistence between sessions.
+
+---
+
+## Running from Source (for Developers)
+
+1. Ensure Python 3.10+, FFmpeg in your `PATH`, and a C++17 compiler (MinGW-w64 UCRT64 or MSVC) are installed.
+2. Install dependencies and build native libraries:
    ```powershell
    python -m pip install -r requirements.txt
    powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
    ```
-3. Запустіть:
+3. Run:
    ```powershell
    python main.py
    ```
 
-### Складання власного автономного `.exe`:
-
+### Building the Standalone `.exe`:
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
 pip install pyinstaller
 pyinstaller --clean --noconfirm MusicPad.spec
 ```
 
-Підтримуються `.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.opus` та `.wma`.
-Назви й тривалість локальних треків читаються через Mutagen. Для YouTube Music
-можна ввести назву треку або URL.
+---
 
-## Примітки
+## Manual Driver Cleanup (Emergency Uninstall)
 
-- YouTube Music-режим використовує `ytmusicapi` для пошуку та `yt-dlp` для
-  отримання прямого URL, тому файл не зберігається на диску.
-- Для потокового декодування використовується FFmpeg (у готовому релізі `MusicPad.exe` він уже вшитий; при запуску безпосередньо з вихідного коду потрібен встановлений FFmpeg у системному `PATH`).
-- Доступність форматів і пристроїв залежить від установлених кодеків та
-  драйверів Windows.
-- За замовчуванням закриття вікна ховає програму в системний трей. Це можна
-  вимкнути прапорцем `Ховати в трей при закритті`. Для завершення роботи з
-  трею використовуйте меню іконки MusicPad та пункт `Вийти`.
-- **Обробка голосу та мікшування**:
-  - Обидва режими маршрутизації використовують спільне C DSP-ядро (`musicpad_dsp.dll` / `musicpad_apo.dll`) у форматі `float32` з м'яким лімітером (`soft-knee`), що запобігає цифровому кліпінгу при одночасному мовленні та відтворенні треку.
-  - Будь-який аудіотрек перед мікшуванням автоматично приводиться до нормалізованого `float32` у межах `[-1.0, 1.0]`, вирівнюється за кількістю каналів (автоматичне зведення стерео в моно при роботі з 1-канальним мікрофоном, зі збереженням чистого стерео для навушників) та частотою дискретизації (48 кГц), що гарантує відсутність шуму, шипіння або пошкодження буфера.
-  - У режимі **«Ін'єкція в мікрофон»** мікшування треку з мікрофоном, підсилення (`gain`) та вимкнення голосу (`Mute Mic`) виконує системна APO безпосередньо в аудіографі Windows (`audiodg.exe`), а застосунок відкриває мікрофон лише коли увімкнено `Слухати мікрофон у навушниках` (для **Моніторингу**).
-  - У режимі **«Віртуальний кабель»** застосунок читає мікрофон і подає змішаний сигнал у `CABLE Input` на нативній частоті дискретизації пристрою (зазвичай `48000 Hz`).
-- Змішаний сигнал або сам трек можна одночасно слухати в навушниках (**Моніторинг**): у полі
-  `Пристрій моніторингу / навушники` автоматично обираються ваші основні навушники/динаміки.
-  За замовчуванням у навушниках відтворюється тільки трек (без відлуння власного голосу), а за потреби
-  можна увімкнути прапорець `Слухати мікрофон у навушниках`. Зміна будь-якого пристрою або режиму маршрутизації
-  застосовується миттєво на льоту без потреби перезапускати трек.
-- **Функції програми та швидкий YouTube**:
-  - **Миттєве перемикання треків і перемотування (Seek)**: подвійний клік або гаряча клавіша
-    одразу перемикає трек без очікування завершення попереднього; повзунок `Позиція` дозволяє
-    перемотувати трек у будь-яке місце (спільний кільцевий буфер драйвера очищується миттєво).
-  - **Глобальні гарячі клавіші (працюють у грі та Discord)**: кожному треку у списку можна
-    призначити власну клавішу (`⌨ Клавіша`, напр. `F1`–`F7`, `Num0`–`Num9`, `Alt+1`). У вкладці налаштувань
-    «Гарячі клавіші» доступна таблиця спеціальних дій (*Пауза*, *Стоп*, *Копіювати*, *Вставити*, *Видалити*, *Пошук*)
-    з прямим інтерактивним захопленням будь-якої клавіші/комбінації та захистом від конфліктів. Також діють
-    замовчані системні клавіші: `Space` / `F8` (Пауза/Продовжити), `F9` (Стоп), `F10` (Mute Mic).
-  - **Швидкий пошук і кешування YouTube / YouTube Music**: кнопка `🔍 Пошук YT` відкриває
-    вікно швидкого пошуку, а `➕ У список` (або автоматичне фонове кешування у `.cache/youtube/`)
-    зберігає аудіо локально для миттєвого запуску (0 мс) за гарячою клавішею.
-  - **Автозбереження**: вибрана папка, додані окремі файли (`+ Файли`), YouTube-треки, гарячі
-    клавіші, режим маршрутизації та налаштування пристроїв зберігаються між запусками програми.
-
-## Аварійне видалення Драйвера MusicPad вручну
-
-Якщо ви видалили або перемістили `MusicPad.exe`, не натиснувши попередньо кнопку **«Видалити драйвер (UAC)»** у налаштуваннях, сам мікрофон продовжить працювати у штатному прозорому режимі (`passthrough`). Щоб повністю прибрати реєстрацію **Драйвера MusicPad** із системи вручну, запустіть **PowerShell від імені Адміністратора** та виконайте:
+If the application was removed before clicking **"Uninstall Driver (UAC)"** in Settings, run **PowerShell as Administrator**:
 
 ```powershell
-# Варіант 1: через вбудований CLI-ключ MusicPad
+# Method 1: Via built-in CLI
 .\MusicPad.exe --driver uninstall
 
-# або з вихідного коду:
-python main.py --driver uninstall
-```
-
-```powershell
-# Варіант 2: безпосередньо через PowerShell (навіть якщо MusicPad.exe вже видалено)
+# Method 2: Direct registry & service cleanup
 $manifest = "$env:ProgramData\MusicPad\driver_backup.json"
 if (Test-Path $manifest) {
     $cfg = Get-Content $manifest -Raw | ConvertFrom-Json

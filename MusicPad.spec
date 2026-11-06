@@ -59,7 +59,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=ffmpeg_binaries + native_binaries,
-    datas=[('musicpad.png', '.'), ('assets', 'assets')] + ytmusicapi_datas + deepfilter_datas,
+    datas=[('assets', 'assets'), ('assets/musicpad.png', '.')] + ytmusicapi_datas + deepfilter_datas,
     hiddenimports=['wave', 'queue', 'pystray._win32', 'deepfilternet_slim', 'musicpad.deepfilter_engine'],
     hookspath=[],
     hooksconfig={},
@@ -89,5 +89,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['musicpad.ico'],
+    icon=['assets/musicpad.ico'] if os.path.exists('assets/musicpad.ico') else ['musicpad.ico'],
 )

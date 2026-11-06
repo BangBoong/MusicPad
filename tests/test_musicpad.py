@@ -1947,6 +1947,43 @@ class TestMusicPadAppGUI(unittest.TestCase):
                             break
                         time.sleep(0.02)
                     self.assertEqual(nm.last_message, "Сповіщення через status_var з потоку")
+
+                    # 12. Test topmost synchronization with master window
+                    app.always_on_top_var.set(False)
+                    app._apply_settings()
+                    bubble._sync_topmost()
+                    self.assertFalse(bool(bubble.attributes("-topmost")))
+
+                    app.always_on_top_var.set(True)
+                    app._apply_settings()
+                    self.assertTrue(bool(bubble.attributes("-topmost")))
+
+                    app.always_on_top_var.set(False)
+                    app._apply_settings()
+                    self.assertFalse(bool(bubble.attributes("-topmost")))
+
+                    # 13. Test automatic hiding on master unmap and focus out
+                    app.notify_info("Тест приховування")
+                    app.update()
+                    self.assertTrue(nm.is_visible)
+
+                    # Trigger master unmap
+                    unmap_event = type("MockEvent", (), {"widget": app})()
+                    bubble._on_master_unmap(unmap_event)
+                    app.update()
+                    self.assertFalse(nm.is_visible)
+
+                    # Show bubble again and test focus out check
+                    app.notify_info("Тест фокусу")
+                    app.update()
+                    self.assertTrue(nm.is_visible)
+
+                    focus_event = type("MockEvent", (), {"widget": app})()
+                    with patch.object(app, "focus_get", return_value=None):
+                        bubble._on_master_focus_out(focus_event)
+                        time.sleep(0.2)
+                        app.update()
+                        self.assertFalse(nm.is_visible)
                 finally:
                     app._exit()
 
@@ -4362,7 +4399,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     with patch.object(main.AudioEngine, "search_youtube", return_value=[]) as mock_search:
                         app.yt_query_var.set("test query")
                         app._perform_yt_search()
-                        mock_search.assert_called_with("test query", limit=20, filter_mode="all")
+                        mock_search.assert_called_with("test query", limit=20, filter_mode="all", youtube_priority=False)
                 finally:
                     app._exit()
 
@@ -4389,6 +4426,95 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                         # Album track index advanced to 1, and _play_album_track called with track2
                         self.assertEqual(app._album_track_index, 1)
                         mock_play.assert_called_once_with(track2)
+                finally:
+                    app._exit()
+
+
+    def test_youtube_search_priority_filter_and_persistence(self) -> None:
+        # 1. Test AudioEngine.search_youtube with youtube_priority=True
+        mock_ydl_instance = MagicMock()
+        mock_ydl_instance.__enter__.return_value = mock_ydl_instance
+        mock_ydl_instance.extract_info.return_value = {
+            "entries": [
+                {
+                    "id": "abc123vid",
+                    "title": "Funny Meme Sound",
+                    "uploader": "Meme Channel",
+                    "duration": 42.0,
+                    "thumbnail": "https://img.youtube.com/vi/abc123vid/hqdefault.jpg",
+                }
+            ]
+        }
+        with patch("musicpad.audio_engine.YoutubeDL", return_value=mock_ydl_instance):
+            res = AudioEngine.search_youtube("meme sound", limit=15, filter_mode="all", youtube_priority=True)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["title"], "Funny Meme Sound")
+            self.assertEqual(res[0]["artist"], "Meme Channel")
+            self.assertEqual(res[0]["full_title"], "Funny Meme Sound — Meme Channel")
+            self.assertEqual(res[0]["source"], "youtube")
+            self.assertEqual(res[0]["result_type"], "video")
+            self.assertEqual(res[0]["item_type"], "Відео")
+            self.assertEqual(res[0]["video_id"], "abc123vid")
+            self.assertEqual(res[0]["duration"], 42.0)
+
+        # 2. Test UI state, independence from album filter, and persistence
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_yt_priority.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # Initial state
+                    self.assertFalse(app.yt_priority_var.get())
+                    self.assertEqual(app.yt_filter_var.get(), "all")
+                    self.assertEqual(app.btn_yt_filter.cget("text"), "Фільтр: Всі результати ▾")
+
+                    # Change album filter to "no_albums"
+                    app._set_yt_filter("no_albums")
+                    self.assertEqual(app.yt_filter_var.get(), "no_albums")
+                    self.assertEqual(app.btn_yt_filter.cget("text"), "Фільтр: Без альбомів ▾")
+
+                    # Enable YouTube priority: album filter should NOT change
+                    app.yt_priority_var.set(True)
+                    app._on_toggle_yt_priority()
+                    self.assertTrue(app.yt_priority_var.get())
+                    self.assertEqual(app.yt_filter_var.get(), "no_albums")
+                    self.assertEqual(app.btn_yt_filter.cget("text"), "Фільтр: YouTube (за назвою) ▾")
+
+                    # Open filter flyout and verify visual rendering
+                    app._toggle_yt_filter_flyout()
+                    self.assertTrue(app.btn_yt_filter.cget("text").endswith("▴"))
+
+                    # Close flyout
+                    app._close_yt_filter_flyout()
+                    self.assertTrue(app.btn_yt_filter.cget("text").endswith("▾"))
+
+                    # Verify _perform_yt_search passes youtube_priority=True
+                    with patch.object(main.AudioEngine, "search_youtube", return_value=[]) as mock_search:
+                        app.yt_query_var.set("minecraft sound")
+                        app._perform_yt_search()
+                        mock_search.assert_called_with("minecraft sound", limit=35, filter_mode="no_albums", youtube_priority=True)
+
+                    # Disable YouTube priority: returns to "Без альбомів"
+                    app.yt_priority_var.set(False)
+                    app._on_toggle_yt_priority()
+                    self.assertFalse(app.yt_priority_var.get())
+                    self.assertEqual(app.yt_filter_var.get(), "no_albums")
+                    self.assertEqual(app.btn_yt_filter.cget("text"), "Фільтр: Без альбомів ▾")
+
+                    # Test persistence in state.json
+                    app.yt_priority_var.set(True)
+                    app._save_state()
+
+                    raw_saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertTrue(raw_saved.get("yt_search_priority"))
+                    self.assertEqual(raw_saved.get("yt_search_filter"), "no_albums")
+
+                    # Test loading saved state
+                    app.yt_priority_var.set(False)
+                    app._load_saved_state()
+                    self.assertTrue(app.yt_priority_var.get())
+                    self.assertEqual(app.yt_filter_var.get(), "no_albums")
+                    self.assertEqual(app.btn_yt_filter.cget("text"), "Фільтр: YouTube (за назвою) ▾")
                 finally:
                     app._exit()
 

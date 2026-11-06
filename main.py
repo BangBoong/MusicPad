@@ -335,6 +335,8 @@ I18N: dict[str, dict[str, str]] = {
         "filter_all": "Всі результати",
         "filter_no_albums": "Без альбомів",
         "filter_albums_only": "Тільки альбоми",
+        "filter_yt_priority": "Пріоритет YouTube (пошук за назвою)",
+        "filter_yt_priority_short": "YouTube (за назвою)",
         "filter_track_count": "Кількість треків: {count}",
         "yt_status_found": "Знайдено результатів: {count}",
         "yt_status_searching": "Пошук на YouTube{hint}: {query}...",
@@ -527,6 +529,8 @@ I18N: dict[str, dict[str, str]] = {
         "filter_all": "All results",
         "filter_no_albums": "No albums",
         "filter_albums_only": "Albums only",
+        "filter_yt_priority": "YouTube priority (search by title)",
+        "filter_yt_priority_short": "YouTube (by title)",
         "filter_track_count": "Track count: {count}",
         "yt_status_found": "Results found: {count}",
         "yt_status_searching": "Searching on YouTube{hint}: {query}...",
@@ -922,8 +926,14 @@ class SpeechBubble(tk.Toplevel):
             self.transient(master)
         except Exception:
             pass
+        self._sync_topmost()
+
+        self._master_unmap_bind_id: Optional[str] = None
+        self._master_focus_bind_id: Optional[str] = None
         try:
-            self.attributes("-topmost", True)
+            if hasattr(self.master, "bind"):
+                self._master_unmap_bind_id = self.master.bind("<Unmap>", self._on_master_unmap, add="+")
+                self._master_focus_bind_id = self.master.bind("<FocusOut>", self._on_master_focus_out, add="+")
         except Exception:
             pass
 
@@ -1187,6 +1197,7 @@ class SpeechBubble(tk.Toplevel):
                 pass
             self._auto_close_job = None
 
+        self._sync_topmost()
         self._reposition()
         self._redraw()
 
@@ -1291,6 +1302,48 @@ class SpeechBubble(tk.Toplevel):
                 self.attributes("-alpha", 1.0)
             except Exception:
                 pass
+
+    def _sync_topmost(self) -> None:
+        """Synchronize topmost attribute with master window so bubble does not float over external apps."""
+        try:
+            master_topmost = False
+            if hasattr(self.master, "attributes"):
+                master_topmost = bool(self.master.attributes("-topmost"))
+            self.attributes("-topmost", master_topmost)
+        except Exception:
+            pass
+
+    def _on_master_unmap(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) == self.master:
+            self.hide_immediate()
+
+    def _on_master_focus_out(self, event: tk.Event) -> None:
+        if not self.winfo_exists() or not self.winfo_ismapped():
+            return
+
+        def _check_focus() -> None:
+            try:
+                if self.winfo_exists() and self.winfo_ismapped():
+                    fg = self.master.focus_get() if hasattr(self.master, "focus_get") else None
+                    if fg is None:
+                        self.hide_immediate()
+            except Exception:
+                pass
+
+        try:
+            self.after(150, _check_focus)
+        except Exception:
+            pass
+
+    def destroy(self) -> None:
+        try:
+            if getattr(self, "_master_unmap_bind_id", None) and hasattr(self.master, "unbind") and self.master.winfo_exists():
+                self.master.unbind("<Unmap>", self._master_unmap_bind_id)
+            if getattr(self, "_master_focus_bind_id", None) and hasattr(self.master, "unbind") and self.master.winfo_exists():
+                self.master.unbind("<FocusOut>", self._master_focus_bind_id)
+        except Exception:
+            pass
+        super().destroy()
 
 
 class NotificationStringVar(tk.StringVar):
@@ -2260,13 +2313,13 @@ class MusicPadApp(tk.Tk):
         if hasattr(self, "btn_yt_search") and hasattr(self.btn_yt_search, "configure"):
             self.btn_yt_search.configure(text=self._tr("yt_search_btn"))
         if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
-            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
-            self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾")
+            self._update_filter_button_label()
         if hasattr(self, "menu_yt_filter") and hasattr(self.menu_yt_filter, "entryconfigure"):
             try:
-                self.menu_yt_filter.entryconfigure(0, label=self._tr("filter_all"))
-                self.menu_yt_filter.entryconfigure(1, label=self._tr("filter_no_albums"))
-                self.menu_yt_filter.entryconfigure(2, label=self._tr("filter_albums_only"))
+                self.menu_yt_filter.entryconfigure(0, label=self._tr("filter_yt_priority"))
+                self.menu_yt_filter.entryconfigure(2, label=self._tr("filter_all"))
+                self.menu_yt_filter.entryconfigure(3, label=self._tr("filter_no_albums"))
+                self.menu_yt_filter.entryconfigure(4, label=self._tr("filter_albums_only"))
             except Exception:
                 pass
         if hasattr(self, "btn_back_to_results") and hasattr(self.btn_back_to_results, "configure"):
@@ -2547,10 +2600,20 @@ class MusicPadApp(tk.Tk):
     def _resource_path(name: str) -> Path:
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            candidate = Path(meipass) / name
-            if candidate.exists():
-                return candidate
-        return MusicPadApp._app_root_dir() / name
+            cand = Path(meipass) / name
+            if cand.exists():
+                return cand
+            cand_assets = Path(meipass) / "assets" / name
+            if cand_assets.exists():
+                return cand_assets
+        root = MusicPadApp._app_root_dir()
+        cand = root / name
+        if cand.exists():
+            return cand
+        cand_assets = root / "assets" / name
+        if cand_assets.exists():
+            return cand_assets
+        return cand
 
     @staticmethod
     def _config_path() -> Path:
@@ -2758,6 +2821,7 @@ class MusicPadApp(tk.Tk):
         self._yt_search_generation: int = 0
         self.yt_filter_var = tk.StringVar(value="all")
         self.yt_search_limit_var = tk.IntVar(value=35)
+        self.yt_priority_var = tk.BooleanVar(value=False)
         self._yt_filter_flyout: Optional[tk.Toplevel] = None
         self._init_settings_variables()
 
@@ -5966,6 +6030,8 @@ class MusicPadApp(tk.Tk):
             self._apply_language()
         if hasattr(self, "always_on_top_var"):
             self.attributes("-topmost", self.always_on_top_var.get())
+            if hasattr(self, "notification_manager") and getattr(self.notification_manager, "_bubble", None):
+                self.notification_manager._bubble._sync_topmost()
         target_guid = self._resolve_selected_mic_guid()
         if hasattr(self, "routing_mode_var") and hasattr(self, "engine"):
             if hasattr(self.engine, "set_target_endpoint_guid"):
@@ -7565,6 +7631,12 @@ class MusicPadApp(tk.Tk):
             activebackground=c["accent"],
             activeforeground="#ffffff",
         )
+        self.menu_yt_filter.add_checkbutton(
+            label=self._tr("filter_yt_priority"),
+            variable=self.yt_priority_var,
+            command=self._on_toggle_yt_priority,
+        )
+        self.menu_yt_filter.add_separator()
         self.menu_yt_filter.add_command(label=self._tr("filter_all"), command=lambda: self._set_yt_filter("all"))
         self.menu_yt_filter.add_command(label=self._tr("filter_no_albums"), command=lambda: self._set_yt_filter("no_albums"))
         self.menu_yt_filter.add_command(label=self._tr("filter_albums_only"), command=lambda: self._set_yt_filter("albums_only"))
@@ -7650,14 +7722,32 @@ class MusicPadApp(tk.Tk):
             err_pfx = "Cache clear error" if self._is_english() else "Помилка очищення кешу"
             self.notify_error(f"{err_pfx}: {exc}")
 
+    def _update_filter_button_label(self) -> None:
+        if not hasattr(self, "btn_yt_filter") or not hasattr(self.btn_yt_filter, "configure"):
+            return
+        is_open = hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack"
+        arrow = "▴" if is_open else "▾"
+        if hasattr(self, "yt_priority_var") and self.yt_priority_var.get():
+            lbl = self._tr("filter_yt_priority_short")
+        else:
+            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+            lbl = self._get_filter_display_name(cur_f)
+        self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {lbl} {arrow}")
+
     def _set_yt_filter(self, mode: str) -> None:
         if mode not in ("all", "no_albums", "albums_only"):
             mode = "all"
         self.yt_filter_var.set(mode)
-        lbl = self._get_filter_display_name(mode)
-        arrow = "▴" if (hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack") else "▾"
-        if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
-            self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {lbl} {arrow}")
+        self._update_filter_button_label()
+        if not getattr(self, "_loading_state", False):
+            self._save_state()
+            if hasattr(self, "yt_query_var") and self.yt_query_var.get().strip():
+                self._perform_yt_search()
+
+    def _on_toggle_yt_priority(self) -> None:
+        self._update_filter_button_label()
+        if hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack":
+            self._build_yt_filter_panel_content()
         if not getattr(self, "_loading_state", False):
             self._save_state()
             if hasattr(self, "yt_query_var") and self.yt_query_var.get().strip():
@@ -7669,24 +7759,18 @@ class MusicPadApp(tk.Tk):
         if self.yt_filter_panel.winfo_manager() == "pack":
             self.yt_filter_panel.pack_forget()
             self._yt_filter_flyout = None
-            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
-            if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
-                self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾")
+            self._update_filter_button_label()
         else:
             self._build_yt_filter_panel_content()
             self.yt_filter_panel.pack(before=self.yt_table_box, fill="x", padx=12, pady=(2, 6))
             self._yt_filter_flyout = self.yt_filter_panel
-            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
-            if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
-                self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▴")
+            self._update_filter_button_label()
 
     def _close_yt_filter_flyout(self) -> None:
         if hasattr(self, "yt_filter_panel") and self.yt_filter_panel.winfo_manager() == "pack":
             self.yt_filter_panel.pack_forget()
             self._yt_filter_flyout = None
-            cur_f = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
-            if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
-                self.btn_yt_filter.configure(text=f"{self._tr('filter_prefix')}: {self._get_filter_display_name(cur_f)} ▾")
+            self._update_filter_button_label()
 
     def _build_yt_filter_panel_content(self) -> None:
         if not hasattr(self, "yt_filter_panel"):
@@ -7699,7 +7783,35 @@ class MusicPadApp(tk.Tk):
         inner = tk.Frame(self.yt_filter_panel, bg=c["top_bg"], padx=10, pady=6)
         inner.pack(fill="x", expand=True)
 
-        # 1. Left: Filter modes (Radio buttons)
+        is_prio = bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False
+
+        # 1. Left: YouTube Priority independent toggle (Checkbox)
+        prio_box = tk.Frame(inner, bg=c["top_bg"], cursor="hand2")
+        prio_box.pack(side="left", padx=(0, 16))
+
+        prio_prefix = "☑ " if is_prio else "☐ "
+        lbl_prio = tk.Label(
+            prio_box,
+            text=f"{prio_prefix}{self._tr('filter_yt_priority')}",
+            bg=c["top_bg"],
+            fg=c["accent"] if is_prio else c["fg"],
+            font=("Segoe UI", 9, "bold" if is_prio else "normal"),
+            cursor="hand2",
+        )
+        lbl_prio.pack(side="left")
+
+        def toggle_prio() -> None:
+            self.yt_priority_var.set(not self.yt_priority_var.get())
+            self._on_toggle_yt_priority()
+
+        for w in (prio_box, lbl_prio):
+            w.bind("<Button-1>", lambda _: toggle_prio())
+
+        # Divider 1
+        div1 = tk.Frame(inner, width=1, bg=c["divider"])
+        div1.pack(side="left", fill="y", padx=(0, 16))
+
+        # 2. Album filter modes (Radio buttons: All / No albums / Albums only)
         modes_box = tk.Frame(inner, bg=c["top_bg"])
         modes_box.pack(side="left", padx=(0, 16))
 
@@ -7715,25 +7827,26 @@ class MusicPadApp(tk.Tk):
             self._build_yt_filter_panel_content()
 
         for m_key, m_lbl in modes:
-            row = tk.Frame(modes_box, bg=c["top_bg"], cursor="hand2")
+            row = tk.Frame(modes_box, bg=c["top_bg"], cursor="hand2" if not is_prio else "arrow")
             row.pack(side="left", padx=(0, 12))
             is_sel = (curr_mode == m_key)
             prefix = "● " if is_sel else "○ "
+            fg_color = c["muted_fg"] if is_prio else (c["accent"] if is_sel else c["fg"])
             r_lbl = tk.Label(
                 row,
                 text=f"{prefix}{m_lbl}",
                 bg=c["top_bg"],
-                fg=c["accent"] if is_sel else c["fg"],
-                font=("Segoe UI", 9, "bold" if is_sel else "normal"),
-                cursor="hand2",
+                fg=fg_color,
+                font=("Segoe UI", 9, "bold" if (is_sel and not is_prio) else "normal"),
+                cursor="hand2" if not is_prio else "arrow",
             )
             r_lbl.pack(side="left")
             for w in (row, r_lbl):
                 w.bind("<Button-1>", lambda _, m=m_key: on_pick_mode(m))
 
-        # 2. Divider
-        div = tk.Frame(inner, width=1, bg=c["divider"])
-        div.pack(side="left", fill="y", padx=(0, 16))
+        # Divider 2
+        div2 = tk.Frame(inner, width=1, bg=c["divider"])
+        div2.pack(side="left", fill="y", padx=(0, 16))
 
         # 3. Middle: Track count slider
         slider_box = tk.Frame(inner, bg=c["top_bg"])
@@ -7898,8 +8011,11 @@ class MusicPadApp(tk.Tk):
         if not q:
             return
         f_mode = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
+        is_prio = bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False
         filter_hint = ""
-        if f_mode == "no_albums":
+        if is_prio:
+            filter_hint = f" ({self._tr('filter_yt_priority_short').lower()})"
+        elif f_mode == "no_albums":
             filter_hint = f" ({self._tr('filter_no_albums').lower()})"
         elif f_mode == "albums_only":
             filter_hint = f" ({self._tr('filter_albums_only').lower()})"
@@ -7909,7 +8025,12 @@ class MusicPadApp(tk.Tk):
 
         def worker() -> None:
             try:
-                items = AudioEngine.search_youtube(q, limit=f_limit, filter_mode=f_mode)
+                items = AudioEngine.search_youtube(
+                    q,
+                    limit=f_limit,
+                    filter_mode=f_mode,
+                    youtube_priority=is_prio,
+                )
                 self._safe_ui_call(self._render_yt_results, items)
             except Exception as exc:
                 self._safe_ui_call(self._render_yt_results, [], str(exc))
@@ -8962,6 +9083,7 @@ class MusicPadApp(tk.Tk):
                 "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                 "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                 "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
+                "yt_search_priority": bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False,
                 "yt_search_limit": int(self.yt_search_limit_var.get()) if hasattr(self, "yt_search_limit_var") else 35,
                 "mute_track_to_others": self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False,
                 "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
@@ -9079,6 +9201,7 @@ class MusicPadApp(tk.Tk):
                     "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
                     "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
                     "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
+                    "yt_search_priority": bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False,
                 }
             if hasattr(self, "_current_window_geom") and self._current_window_geom:
                 data["window_geometry"] = dict(self._current_window_geom)
@@ -9122,6 +9245,12 @@ class MusicPadApp(tk.Tk):
                 saved_filter = data["settings_custom"].get("yt_search_filter")
             if saved_filter:
                 self._set_yt_filter(str(saved_filter))
+            saved_prio = data.get("yt_search_priority")
+            if saved_prio is None and isinstance(data.get("settings_custom"), dict):
+                saved_prio = data["settings_custom"].get("yt_search_priority")
+            if saved_prio is not None and hasattr(self, "yt_priority_var"):
+                self.yt_priority_var.set(bool(saved_prio))
+                self._update_filter_button_label()
             saved_limit = data.get("yt_search_limit")
             if saved_limit is not None and hasattr(self, "yt_search_limit_var"):
                 try:

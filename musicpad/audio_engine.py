@@ -2902,7 +2902,12 @@ class AudioEngine:
         return result
 
     @staticmethod
-    def search_youtube(query: str, limit: int = 25, filter_mode: str = "all") -> list[dict[str, Any]]:
+    def search_youtube(
+        query: str,
+        limit: int = 25,
+        filter_mode: str = "all",
+        youtube_priority: bool = False,
+    ) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
             return []
@@ -2912,6 +2917,64 @@ class AudioEngine:
             items: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
             seen_browse_ids: set[str] = set()
+
+            if youtube_priority:
+                if YoutubeDL is not None:
+                    try:
+                        ydl_opts = {
+                            "quiet": True,
+                            "extract_flat": True,
+                            "noplaylist": True,
+                            "no_warnings": True,
+                        }
+                        with YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                            for entry in (info.get("entries") or []) if isinstance(info, dict) else []:
+                                if not isinstance(entry, dict):
+                                    continue
+                                vid = entry.get("id")
+                                if not vid or vid in seen_ids:
+                                    continue
+                                seen_ids.add(vid)
+                                raw_title = str(entry.get("title") or query).strip()
+                                artist = ""
+                                title = raw_title
+                                if " - " in raw_title or " — " in raw_title or " – " in raw_title:
+                                    parts = re.split(r"\s+[—\-–]\s+", raw_title, maxsplit=1)
+                                    if len(parts) == 2:
+                                        artist = parts[0].strip()
+                                        title = parts[1].strip()
+                                if not artist:
+                                    artist = str(entry.get("uploader") or entry.get("channel") or "").strip()
+                                full_title = f"{title} — {artist}" if artist and artist not in title else title
+                                dur_seconds = float(entry.get("duration") or 0.0)
+                                thumb_url = str(entry.get("thumbnail") or "")
+                                if not thumb_url:
+                                    thumbs = entry.get("thumbnails") or []
+                                    if isinstance(thumbs, list) and thumbs:
+                                        thumb_url = str(thumbs[-1].get("url") or thumbs[0].get("url") or "")
+                                items.append(
+                                    {
+                                        "title": title,
+                                        "artist": artist,
+                                        "full_title": full_title,
+                                        "result_type": "video",
+                                        "item_type": "Відео",
+                                        "video_id": vid,
+                                        "url": f"https://www.youtube.com/watch?v={vid}",
+                                        "duration": dur_seconds,
+                                        "source": "youtube",
+                                        "thumbnail_url": thumb_url,
+                                    }
+                                )
+                                if len(items) >= limit:
+                                    break
+                        if items:
+                            return items
+                    except Exception:
+                        if YTMusic is None:
+                            raise
+
             if YTMusic is not None:
                 try:
                     ytmusic = YTMusic()
