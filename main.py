@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import urllib.parse
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Optional
@@ -201,6 +202,7 @@ I18N: dict[str, dict[str, str]] = {
         "edit_cut": "Вирізати",
         "edit_copy": "Копіювати",
         "edit_paste": "Вставити",
+        "edit_clear": "Очистити",
         "edit_delete": "Видалити вибрані записи",
         "edit_shuffle": "Перемішати список",
         "edit_select_all": "Вибрати все",
@@ -395,6 +397,7 @@ I18N: dict[str, dict[str, str]] = {
         "edit_cut": "Cut",
         "edit_copy": "Copy",
         "edit_paste": "Paste",
+        "edit_clear": "Clear",
         "edit_delete": "Delete selected entries",
         "edit_shuffle": "Shuffle list",
         "edit_select_all": "Select all",
@@ -4378,6 +4381,8 @@ class MusicPadApp(tk.Tk):
         self.search_bar_lbl.pack(side="left", padx=(10, 6), pady=3)
         self.search_entry = ttk.Entry(self.search_bar_frame, textvariable=self.search_var, width=35)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=4, pady=3)
+        self._setup_entry_smart_clipboard(self.search_entry)
+        self.search_entry.bind("<Return>", self._on_my_sounds_return)
         self.search_var.trace_add("write", lambda *_: self._filter_tracks())
         self.btn_close_search = tk.Button(
             self.search_bar_frame,
@@ -7295,6 +7300,9 @@ class MusicPadApp(tk.Tk):
         notify_status: bool,
     ) -> None:
         self._upsert_youtube_track(title, local_path, duration, is_url=False, match_query=original_query)
+        if hasattr(self, "yt_status_lbl") and getattr(self, "current_category", "") == "youtube":
+            if not getattr(self, "_viewing_album", False):
+                self.yt_status_lbl.configure(text=f"Відтворення: {title}")
         if notify_status:
             self.status_var.set(f"Додано в саундпад (миттєвий старт): {title}")
 
@@ -7570,6 +7578,7 @@ class MusicPadApp(tk.Tk):
         )
         self.yt_search_entry.pack(fill="x", ipady=4, padx=6)
         self.yt_search_entry.bind("<Return>", lambda _: self._perform_yt_search())
+        self._setup_entry_smart_clipboard(self.yt_search_entry)
         self.url_entry = self.yt_search_entry
 
         self.btn_yt_search = tk.Button(
@@ -7999,6 +8008,328 @@ class MusicPadApp(tk.Tk):
         info_header = f"{alb_pref}: {album_part} ({stats_part})"
         self.lbl_album_info.configure(text=info_header)
 
+    @staticmethod
+    def _is_direct_url(text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
+        if t.startswith(("http://", "https://")):
+            return True
+        low = t.lower()
+        if low.startswith((
+            "www.youtube.com",
+            "youtube.com",
+            "m.youtube.com",
+            "music.youtube.com",
+            "youtu.be",
+            "www.youtu.be",
+        )):
+            return True
+        return False
+
+    @staticmethod
+    def _normalize_url(text: str) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+        if not t.startswith(("http://", "https://")):
+            return "https://" + t
+        return t
+
+    @staticmethod
+    def _parse_playlist_url(url: str) -> tuple[bool, str]:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            low_path = parsed.path.lower()
+            if "watch" in low_path or parsed.netloc.lower() == "youtu.be" or "/shorts/" in low_path:
+                return False, ""
+            if "playlist" in low_path:
+                p_id = qs.get("list", [""])[0]
+                if p_id:
+                    return True, p_id
+            if "browse" in low_path:
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) >= 2 and parts[0].lower() == "browse":
+                    return True, parts[1]
+        except Exception:
+            pass
+        return False, ""
+
+    def _handle_direct_url_playback(self, raw_url: str) -> None:
+        url = self._normalize_url(raw_url)
+        if not url:
+            return
+
+        if getattr(self, "current_category", "") != "youtube":
+            self._select_category("youtube")
+
+        is_playlist, p_id = self._parse_playlist_url(url)
+        if is_playlist and p_id:
+            if hasattr(self, "yt_query_var"):
+                self.yt_query_var.set(url)
+            item = {
+                "title": f"Плейлист ({p_id})",
+                "artist": "",
+                "browse_id": p_id,
+                "playlist_id": p_id,
+                "result_type": "album",
+            }
+            self._open_album_view(item, autoplay_first=True)
+            return
+
+        if hasattr(self, "yt_query_var"):
+            self.yt_query_var.set(url)
+        self.url_var.set(url)
+        if hasattr(self, "yt_status_lbl"):
+            self.yt_status_lbl.configure(text=f"Відтворення за посиланням: {url}...")
+        self._active_album_queue = None
+        self._album_track_index = None
+        self._active_album_id = None
+        self._play_url()
+
+    def _paste_into_entry(self, entry: Any) -> str:
+        if entry is None:
+            return "break"
+        clip = ""
+        try:
+            clip = self.clipboard_get()
+        except Exception:
+            try:
+                clip = entry.clipboard_get()
+            except Exception:
+                clip = ""
+
+        if not clip:
+            return "break"
+
+        # 1. Direct URL detection and playback
+        if self._is_direct_url(clip):
+            clean_url = self._normalize_url(clip)
+            if entry is getattr(self, "search_entry", None):
+                self.search_var.set("")
+                self._select_category("youtube")
+                self._handle_direct_url_playback(clean_url)
+                return "break"
+            else:
+                if hasattr(self, "yt_query_var"):
+                    self.yt_query_var.set(clean_url)
+                try:
+                    entry.icursor(tk.END)
+                    entry.select_clear()
+                except Exception:
+                    pass
+                self._handle_direct_url_playback(clean_url)
+                return "break"
+
+        # 2. Regular text paste (preserves cursor / replaces active selection)
+        try:
+            if hasattr(entry, "select_present") and entry.select_present():
+                first = entry.index(tk.SEL_FIRST)
+                last = entry.index(tk.SEL_LAST)
+                entry.delete(first, last)
+            entry.insert(tk.INSERT, clip)
+        except Exception:
+            try:
+                entry.insert(tk.END, clip)
+            except Exception:
+                pass
+
+        try:
+            cur_val = entry.get()
+            if entry is getattr(self, "yt_search_entry", None):
+                self.yt_query_var.set(cur_val)
+            elif entry is getattr(self, "search_entry", None):
+                self.search_var.set(cur_val)
+        except Exception:
+            pass
+
+        return "break"
+
+    def _show_entry_context_menu(self, entry: Any, event: tk.Event) -> None:
+        if entry is None:
+            return
+        c = self._get_theme_colors()
+        menu = tk.Menu(
+            self,
+            tearoff=0,
+            bg=c["menu_bg"],
+            fg=c["menu_fg"],
+            activebackground=c["active_menu_bg"],
+            activeforeground=c["active_menu_fg"],
+            bd=1,
+            relief="solid",
+        )
+        has_sel = False
+        try:
+            has_sel = bool(entry.select_present())
+        except Exception:
+            has_sel = False
+
+        def do_cut() -> None:
+            if has_sel:
+                try:
+                    first = entry.index(tk.SEL_FIRST)
+                    last = entry.index(tk.SEL_LAST)
+                    txt = entry.get()[first:last]
+                    if txt:
+                        self.clipboard_clear()
+                        self.clipboard_append(txt)
+                    entry.delete(first, last)
+                    cur_val = entry.get()
+                    if entry is getattr(self, "yt_search_entry", None):
+                        self.yt_query_var.set(cur_val)
+                    elif entry is getattr(self, "search_entry", None):
+                        self.search_var.set(cur_val)
+                except Exception:
+                    pass
+
+        def do_copy() -> None:
+            if has_sel:
+                try:
+                    first = entry.index(tk.SEL_FIRST)
+                    last = entry.index(tk.SEL_LAST)
+                    txt = entry.get()[first:last]
+                    if txt:
+                        self.clipboard_clear()
+                        self.clipboard_append(txt)
+                except Exception:
+                    pass
+
+        def do_clear() -> None:
+            try:
+                entry.delete(0, tk.END)
+                if entry is getattr(self, "yt_search_entry", None):
+                    self.yt_query_var.set("")
+                elif entry is getattr(self, "search_entry", None):
+                    self.search_var.set("")
+            except Exception:
+                pass
+
+        def do_select_all() -> None:
+            try:
+                entry.select_range(0, tk.END)
+                entry.icursor(tk.END)
+            except Exception:
+                pass
+
+        menu.add_command(
+            label=self._tr("edit_cut") if hasattr(self, "_tr") else "Вирізати",
+            command=do_cut,
+            state="normal" if has_sel else "disabled",
+            accelerator="Ctrl+X",
+        )
+        menu.add_command(
+            label=self._tr("edit_copy") if hasattr(self, "_tr") else "Копіювати",
+            command=do_copy,
+            state="normal" if has_sel else "disabled",
+            accelerator="Ctrl+C",
+        )
+        menu.add_command(
+            label=self._tr("edit_paste") if hasattr(self, "_tr") else "Вставити",
+            command=lambda: self._paste_into_entry(entry),
+            accelerator="Ctrl+V",
+        )
+        menu.add_separator()
+        menu.add_command(
+            label=self._tr("edit_clear") if hasattr(self, "_tr") else "Очистити",
+            command=do_clear,
+        )
+        menu.add_command(
+            label=self._tr("edit_select_all") if hasattr(self, "_tr") else "Вибрати все",
+            command=do_select_all,
+            accelerator="Ctrl+A",
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _setup_entry_smart_clipboard(self, entry: Any) -> None:
+        if entry is None:
+            return
+
+        def on_key(event: tk.Event) -> Optional[str]:
+            is_ctrl = bool(event.state & 4)
+            if not is_ctrl:
+                return None
+            kc = event.keycode
+            ks = str(event.keysym).lower()
+            # V (Paste) - keycode 86 on Windows
+            if kc == 86 or ks == "v":
+                return self._paste_into_entry(entry)
+            # C (Copy) - keycode 67
+            elif kc == 67 or ks == "c":
+                try:
+                    if hasattr(entry, "select_present") and entry.select_present():
+                        first = entry.index(tk.SEL_FIRST)
+                        last = entry.index(tk.SEL_LAST)
+                        txt = entry.get()[first:last]
+                        if txt:
+                            self.clipboard_clear()
+                            self.clipboard_append(txt)
+                except Exception:
+                    pass
+                return "break"
+            # X (Cut) - keycode 88
+            elif kc == 88 or ks == "x":
+                try:
+                    if hasattr(entry, "select_present") and entry.select_present():
+                        first = entry.index(tk.SEL_FIRST)
+                        last = entry.index(tk.SEL_LAST)
+                        txt = entry.get()[first:last]
+                        if txt:
+                            self.clipboard_clear()
+                            self.clipboard_append(txt)
+                        entry.delete(first, last)
+                        cur_val = entry.get()
+                        if entry is getattr(self, "yt_search_entry", None):
+                            self.yt_query_var.set(cur_val)
+                        elif entry is getattr(self, "search_entry", None):
+                            self.search_var.set(cur_val)
+                except Exception:
+                    pass
+                return "break"
+            # A (Select All) - keycode 65
+            elif kc == 65 or ks == "a":
+                try:
+                    entry.select_range(0, tk.END)
+                    entry.icursor(tk.END)
+                except Exception:
+                    pass
+                return "break"
+            return None
+
+        entry.bind("<KeyPress>", on_key, add=True)
+        entry.bind("<Control-v>", lambda _e: self._paste_into_entry(entry))
+        entry.bind("<Control-V>", lambda _e: self._paste_into_entry(entry))
+        entry.bind("<<Paste>>", lambda _e: self._paste_into_entry(entry))
+        entry.bind("<Shift-Insert>", lambda _e: self._paste_into_entry(entry))
+        entry.bind("<Shift-Key-Insert>", lambda _e: self._paste_into_entry(entry))
+        entry.bind("<Button-3>", lambda e, ent=entry: self._show_entry_context_menu(ent, e))
+
+    def _on_yt_search_paste(self, event: Any = None) -> Optional[str]:
+        target = getattr(self, "yt_search_entry", None)
+        if target is None and event is not None and hasattr(event, "widget"):
+            target = event.widget
+        return self._paste_into_entry(target)
+
+    def _on_my_sounds_paste(self, event: Any = None) -> Optional[str]:
+        target = getattr(self, "search_entry", None)
+        if target is None and event is not None and hasattr(event, "widget"):
+            target = event.widget
+        return self._paste_into_entry(target)
+
+    def _on_my_sounds_return(self, event: Any = None) -> Optional[str]:
+        val = self.search_var.get().strip()
+        if self._is_direct_url(val):
+            clean_url = self._normalize_url(val)
+            self.search_var.set("")
+            self._select_category("youtube")
+            self._handle_direct_url_playback(clean_url)
+            return "break"
+        return None
+
     def _open_yt_search(self) -> None:
         query = self.url_var.get().strip()
         if query:
@@ -8010,6 +8341,9 @@ class MusicPadApp(tk.Tk):
     def _perform_yt_search(self) -> None:
         q = self.yt_query_var.get().strip()
         if not q:
+            return
+        if self._is_direct_url(q):
+            self._handle_direct_url_playback(q)
             return
         f_mode = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
         is_prio = bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False
@@ -8221,7 +8555,7 @@ class MusicPadApp(tk.Tk):
             if getattr(self, "_viewing_album", False):
                 self._refresh_album_view_playing_indicator()
 
-    def _open_album_view(self, item: dict[str, Any], sync: bool = False) -> None:
+    def _open_album_view(self, item: dict[str, Any], sync: bool = False, autoplay_first: bool = False) -> None:
         # Save current search results for instant return without network re-fetch
         self._cached_search_results = list(self.yt_results_data)
         self._cached_yt_status = self.yt_status_lbl.cget("text")
@@ -8249,16 +8583,16 @@ class MusicPadApp(tk.Tk):
                     "tracks": item["tracks"],
                 }
             if sync or threading.current_thread() is threading.main_thread():
-                self._render_album_view(album_data, item)
+                self._render_album_view(album_data, item, autoplay_first=autoplay_first)
             else:
-                self._safe_ui_call(self._render_album_view, album_data, item)
+                self._safe_ui_call(self._render_album_view, album_data, item, autoplay_first=autoplay_first)
 
         if sync:
             fetch_album_worker()
         else:
             threading.Thread(target=fetch_album_worker, daemon=True).start()
 
-    def _render_album_view(self, album_data: dict[str, Any], original_item: dict[str, Any]) -> None:
+    def _render_album_view(self, album_data: dict[str, Any], original_item: dict[str, Any], autoplay_first: bool = False) -> None:
         self._viewing_album = True
         self._current_album_info = original_item
 
@@ -8365,6 +8699,8 @@ class MusicPadApp(tk.Tk):
                     self.yt_tree.see(sel_target)
                 except Exception:
                     pass
+            if autoplay_first:
+                self.after(50, lambda: self._play_album_track(0))
 
         def fetch_album_thumbs_worker() -> None:
             nonlocal cached_album_photo
@@ -9558,6 +9894,9 @@ class MusicPadApp(tk.Tk):
             self._current_track_artist = artist
             cover_photo = getattr(self, "_current_track_photo", None)
             self._update_now_playing_display(display_t, artist, cover_photo)
+            if hasattr(self, "yt_status_lbl") and getattr(self, "current_category", "") == "youtube":
+                if not getattr(self, "_viewing_album", False):
+                    self.yt_status_lbl.configure(text=f"Відтворення: {title}")
             self._filter_tracks()
 
         self.after(0, update_title)

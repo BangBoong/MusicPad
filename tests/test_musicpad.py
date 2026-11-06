@@ -9,6 +9,7 @@ import os
 import tempfile
 import threading
 import time
+import tkinter as tk
 import unittest
 import wave
 from array import array
@@ -4515,6 +4516,128 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertTrue(app.yt_priority_var.get())
                     self.assertEqual(app.yt_filter_var.get(), "no_albums")
                     self.assertEqual(app.btn_yt_filter.cget("text"), "Фільтр: YouTube (за назвою) ▾")
+                finally:
+                    app._exit()
+
+    def test_direct_url_recognition_and_playlist_parsing(self) -> None:
+        # 1. URL detection
+        self.assertTrue(main.MusicPadApp._is_direct_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("http://youtu.be/dQw4w9WgXcQ"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("https://music.youtube.com/watch?v=123"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("https://www.youtube.com/shorts/sF4J0aZ8g0A"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("www.youtube.com/watch?v=123"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("youtube.com/watch?v=123"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("youtu.be/123"))
+        self.assertTrue(main.MusicPadApp._is_direct_url("https://example.com/audio.mp3"))
+
+        self.assertFalse(main.MusicPadApp._is_direct_url("metallica enter sandman"))
+        self.assertFalse(main.MusicPadApp._is_direct_url("youtube hits 2024"))
+        self.assertFalse(main.MusicPadApp._is_direct_url(""))
+        self.assertFalse(main.MusicPadApp._is_direct_url("   "))
+
+        # 2. URL normalization
+        self.assertEqual(
+            main.MusicPadApp._normalize_url("www.youtube.com/watch?v=123"),
+            "https://www.youtube.com/watch?v=123",
+        )
+        self.assertEqual(
+            main.MusicPadApp._normalize_url("https://youtu.be/123"),
+            "https://youtu.be/123",
+        )
+
+        # 3. Playlist / album detection
+        self.assertEqual(
+            main.MusicPadApp._parse_playlist_url("https://www.youtube.com/playlist?list=PL12345"),
+            (True, "PL12345"),
+        )
+        self.assertEqual(
+            main.MusicPadApp._parse_playlist_url("https://music.youtube.com/playlist?list=VL12345"),
+            (True, "VL12345"),
+        )
+        self.assertEqual(
+            main.MusicPadApp._parse_playlist_url("https://music.youtube.com/browse/MPREb_123"),
+            (True, "MPREb_123"),
+        )
+
+        # Single video with &list= should play the single video directly
+        self.assertEqual(
+            main.MusicPadApp._parse_playlist_url("https://www.youtube.com/watch?v=XYZ123&list=PL12345"),
+            (False, ""),
+        )
+        self.assertEqual(
+            main.MusicPadApp._parse_playlist_url("https://youtu.be/XYZ123?list=PL12345"),
+            (False, ""),
+        )
+        self.assertEqual(
+            main.MusicPadApp._parse_playlist_url("https://www.youtube.com/shorts/XYZ123"),
+            (False, ""),
+        )
+
+    def test_direct_url_playback_on_search_and_paste(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Direct URL search invocation intercepts search_youtube and calls _play_url
+                    with patch.object(main.AudioEngine, "search_youtube") as mock_search, \
+                         patch.object(app, "_play_url") as mock_play_url:
+                        test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                        app.yt_query_var.set(test_url)
+                        app._perform_yt_search()
+
+                        # AudioEngine.search_youtube MUST NOT be called!
+                        mock_search.assert_not_called()
+                        # Direct playback MUST be called!
+                        mock_play_url.assert_called_once()
+                        self.assertEqual(app.url_var.get(), test_url)
+                        self.assertIn("Відтворення за посиланням:", app.yt_status_lbl.cget("text"))
+
+                    # 2. Entering URL in "My Sounds" search bar switches category and triggers playback
+                    app._select_category("my_sounds")
+                    self.assertEqual(app.current_category, "my_sounds")
+                    with patch.object(app, "_play_url") as mock_play_url:
+                        test_url2 = "https://youtu.be/9bZkp7q19f0"
+                        app.search_var.set(test_url2)
+                        res = app._on_my_sounds_return()
+                        self.assertEqual(res, "break")
+                        self.assertEqual(app.search_var.get(), "")
+                        self.assertEqual(app.current_category, "youtube")
+                        self.assertEqual(app.url_var.get(), test_url2)
+                        mock_play_url.assert_called_once()
+
+                    # 3. Playlist URL triggers _open_album_view with autoplay_first=True
+                    with patch.object(app, "_open_album_view") as mock_album_view:
+                        playlist_url = "https://www.youtube.com/playlist?list=PLrAlr_123"
+                        app.yt_query_var.set(playlist_url)
+                        app._perform_yt_search()
+
+                        mock_album_view.assert_called_once()
+                        called_item = mock_album_view.call_args[0][0]
+                        called_kwargs = mock_album_view.call_args[1]
+                        self.assertEqual(called_item["browse_id"], "PLrAlr_123")
+                        self.assertTrue(called_kwargs.get("autoplay_first"))
+
+                    # 4. Smart clipboard entry paste: normal text vs direct URL
+                    with patch.object(app, "clipboard_get", return_value="Linkin Park - Numb"):
+                        app.yt_search_entry.delete(0, tk.END)
+                        ret = app._paste_into_entry(app.yt_search_entry)
+                        self.assertEqual(ret, "break")
+                        self.assertEqual(app.yt_query_var.get(), "Linkin Park - Numb")
+
+                    with patch.object(app, "clipboard_get", return_value="local search keyword"):
+                        app.search_entry.delete(0, tk.END)
+                        ret = app._paste_into_entry(app.search_entry)
+                        self.assertEqual(ret, "break")
+                        self.assertEqual(app.search_var.get(), "local search keyword")
+
+                    # 5. Right-click context menu generates successfully
+                    mock_ev = MagicMock()
+                    mock_ev.x_root = 100
+                    mock_ev.y_root = 100
+                    with patch("tkinter.Menu.tk_popup") as mock_popup:
+                        app._show_entry_context_menu(app.yt_search_entry, mock_ev)
+                        mock_popup.assert_called_once_with(100, 100)
                 finally:
                     app._exit()
 
