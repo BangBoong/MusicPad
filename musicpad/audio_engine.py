@@ -823,6 +823,7 @@ class AudioEngine:
         on_finished: Optional[Callable[[], None]] = None,
         on_track_title: Optional[Callable[[str], None]] = None,
         on_position: Optional[Callable[[float], None]] = None,
+        on_apo_warning: Optional[Callable[[str], None]] = None,
         monitor_mic: bool = True,
         blocksize: int = DEFAULT_BLOCKSIZE,
         routing_mode: str = ROUTING_MODE_VIRTUAL_CABLE,
@@ -836,6 +837,7 @@ class AudioEngine:
         self.on_finished = on_finished
         self.on_track_title = on_track_title
         self.on_position = on_position
+        self.on_apo_warning = on_apo_warning
         self.blocksize = max(MIN_BLOCKSIZE, min(MAX_BLOCKSIZE, int(blocksize)))
         self.routing_mode = (
             routing_mode
@@ -2142,7 +2144,16 @@ class AudioEngine:
             else:
                 self._ring_buffer.set_master_reader(READER_INJECTION)
 
+            track_playback_start = 0.0
+            apo_warning_emitted_for_track = False
+            last_seen_track: Optional[StreamTrack] = None
+
             while not self._stop_event.is_set():
+                if self._active_track != last_seen_track:
+                    last_seen_track = self._active_track
+                    track_playback_start = time.monotonic() if self._active_track is not None else 0.0
+                    apo_warning_emitted_for_track = False
+
                 if self._devices_dirty.is_set():
                     self._devices_dirty.clear()
                     self._close_stream_safe(monitor_stream)
@@ -2224,6 +2235,28 @@ class AudioEngine:
                         and self._route_mic
                         and not self._pause_event.is_set()
                     )
+                    if track_active_for_apo and (apo_status is None or not apo_status.is_alive):
+                        if (
+                            not apo_warning_emitted_for_track
+                            and track_playback_start > 0.0
+                            and (time.monotonic() - track_playback_start) > 1.0
+                        ):
+                            apo_warning_emitted_for_track = True
+                            warn_msg = (
+                                "Драйвер MusicPad не активний у службі audiodg.exe "
+                                "(звук грає лише в навушниках). Відкрийте мікрофон у Discord/грі "
+                                "або перевірте стан драйвера."
+                            )
+                            if self.on_apo_warning:
+                                try:
+                                    self.on_apo_warning(warn_msg)
+                                except Exception:
+                                    pass
+                            elif self.on_error:
+                                try:
+                                    self.on_error(warn_msg)
+                                except Exception:
+                                    pass
                     if shm is not None and shm.has_lease:
                         shm.update_control(
                             mic_gain=self._effective_mic_gain(),

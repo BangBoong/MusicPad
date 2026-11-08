@@ -416,8 +416,8 @@ class InjectionShm:
                 is_alive=False,
                 protocol_version=0,
                 apo_build_version=0,
-                sample_rate=48000,
-                channels=2,
+                sample_rate=0,
+                channels=0,
                 underrun_count=0,
                 processed_blocks=0,
                 apo_heartbeat_age_ms=float("inf"),
@@ -427,8 +427,8 @@ class InjectionShm:
         proto_ver = struct.unpack_from("<I", self._mmap, OFF_PROTOCOL_VERSION)[0]
         build_ver = struct.unpack_from("<I", self._mmap, OFF_APO_BUILD_VERSION)[0]
         apo_hb = struct.unpack_from("<q", self._mmap, OFF_APO_HEARTBEAT_NS)[0]
-        sr = struct.unpack_from("<I", self._mmap, OFF_APO_SAMPLE_RATE)[0] or 48000
-        ch = struct.unpack_from("<I", self._mmap, OFF_APO_CHANNELS)[0] or 2
+        sr = struct.unpack_from("<I", self._mmap, OFF_APO_SAMPLE_RATE)[0]
+        ch = struct.unpack_from("<I", self._mmap, OFF_APO_CHANNELS)[0]
         underruns = struct.unpack_from("<Q", self._mmap, OFF_UNDERRUN_COUNT)[0]
         blocks = struct.unpack_from("<Q", self._mmap, OFF_APO_PROCESSED_BLOCKS)[0]
 

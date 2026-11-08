@@ -438,6 +438,16 @@ private:
         return _wcsicmp(shmGuid, m_endpointGuid) == 0;
     }
 
+    static bool IsValidFloatFormat(const UNCOMPRESSEDAUDIOFORMAT& fmt) {
+        return IsEqualGUID(fmt.guidFormatType, SUBTYPE_IEEE_FLOAT) &&
+               fmt.dwBytesPerSampleContainer == 4 &&
+               fmt.dwValidBitsPerSample == 32 &&
+               fmt.dwSamplesPerFrame >= 1 &&
+               fmt.dwSamplesPerFrame <= 8 &&
+               fmt.fFramesPerSecond >= 8000.0f &&
+               fmt.fFramesPerSecond <= 192000.0f;
+    }
+
     static HRESULT CheckFormat(
         IAudioMediaType* pOppositeFormat,
         IAudioMediaType* pRequestedFormat,
@@ -454,28 +464,34 @@ private:
             return hr;
         }
 
-        if (!IsEqualGUID(reqFmt.guidFormatType, SUBTYPE_IEEE_FLOAT) ||
-            reqFmt.dwBytesPerSampleContainer != 4 ||
-            reqFmt.dwValidBitsPerSample != 32 ||
-            reqFmt.dwSamplesPerFrame == 0 ||
-            reqFmt.dwSamplesPerFrame > 8 ||
-            reqFmt.fFramesPerSecond < 8000.0f ||
-            reqFmt.fFramesPerSecond > 192000.0f)
-        {
+        bool reqValid = IsValidFloatFormat(reqFmt);
+
+        UNCOMPRESSEDAUDIOFORMAT oppFmt = {};
+        bool hasValidOpposite = false;
+        if (pOppositeFormat && SUCCEEDED(pOppositeFormat->GetUncompressedAudioFormat(&oppFmt))) {
+            hasValidOpposite = IsValidFloatFormat(oppFmt);
+        }
+
+        if (!reqValid) {
+            if (hasValidOpposite) {
+                *ppSupportedFormat = pOppositeFormat;
+                pOppositeFormat->AddRef();
+                return S_FALSE;
+            }
             return APOERR_FORMAT_NOT_SUPPORTED;
         }
 
         if (pOppositeFormat) {
-            UNCOMPRESSEDAUDIOFORMAT oppFmt = {};
-            if (SUCCEEDED(pOppositeFormat->GetUncompressedAudioFormat(&oppFmt))) {
-                if (!IsEqualGUID(oppFmt.guidFormatType, SUBTYPE_IEEE_FLOAT) ||
-                    oppFmt.dwBytesPerSampleContainer != 4 ||
-                    oppFmt.dwValidBitsPerSample != 32 ||
-                    oppFmt.dwSamplesPerFrame != reqFmt.dwSamplesPerFrame ||
+            if (hasValidOpposite) {
+                if (oppFmt.dwSamplesPerFrame != reqFmt.dwSamplesPerFrame ||
                     oppFmt.fFramesPerSecond != reqFmt.fFramesPerSecond)
                 {
-                    return APOERR_FORMAT_NOT_SUPPORTED;
+                    *ppSupportedFormat = pOppositeFormat;
+                    pOppositeFormat->AddRef();
+                    return S_FALSE;
                 }
+            } else {
+                return APOERR_FORMAT_NOT_SUPPORTED;
             }
         }
 

@@ -188,6 +188,9 @@ static const GUID IID_IAudioProcessingObjectConfiguration_Local = {
 static const GUID SUBTYPE_IEEE_FLOAT = {
     0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
 };
+static const GUID SUBTYPE_PCM = {
+    0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+};
 
 struct UNCOMPRESSEDAUDIOFORMAT {
     GUID   guidFormatType;
@@ -251,21 +254,28 @@ public:
 
 class MockMediaType : public IAudioMediaType {
     UNCOMPRESSEDAUDIOFORMAT m_fmt;
+    LONG m_refCount;
 public:
-    MockMediaType() {
-        m_fmt.guidFormatType = SUBTYPE_IEEE_FLOAT;
-        m_fmt.dwSamplesPerFrame = 2;
-        m_fmt.dwBytesPerSampleContainer = 4;
-        m_fmt.dwValidBitsPerSample = 32;
-        m_fmt.fFramesPerSecond = 48000.0f;
-        m_fmt.dwChannelMask = 3;
+    MockMediaType(
+        uint32_t channels = 2,
+        float rate = 48000.0f,
+        GUID formatType = SUBTYPE_IEEE_FLOAT,
+        uint32_t bytesPerSample = 4,
+        uint32_t validBits = 32
+    ) : m_refCount(1) {
+        m_fmt.guidFormatType = formatType;
+        m_fmt.dwSamplesPerFrame = channels;
+        m_fmt.dwBytesPerSampleContainer = bytesPerSample;
+        m_fmt.dwValidBitsPerSample = validBits;
+        m_fmt.fFramesPerSecond = rate;
+        m_fmt.dwChannelMask = (channels == 1) ? 4 : 3;
     }
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
-        if (IsEqualGUID(riid, IID_IUnknown)) { *ppv = this; return S_OK; }
+        if (IsEqualGUID(riid, IID_IUnknown)) { *ppv = this; AddRef(); return S_OK; }
         *ppv = NULL; return E_NOINTERFACE;
     }
-    STDMETHODIMP_(ULONG) AddRef() override { return 1; }
-    STDMETHODIMP_(ULONG) Release() override { return 1; }
+    STDMETHODIMP_(ULONG) AddRef() override { return ++m_refCount; }
+    STDMETHODIMP_(ULONG) Release() override { return --m_refCount; }
     STDMETHODIMP IsCompressedFormat(BOOL* pf) override { *pf = FALSE; return S_OK; }
     STDMETHODIMP IsEqual(IAudioMediaType*, DWORD*) override { return S_OK; }
     STDMETHODIMP_(const WAVEFORMATEX*) GetAudioFormat() override { return NULL; }
@@ -310,6 +320,38 @@ static int TestProductionApoDll(const wchar_t* dllPath) {
     CHECK(SUCCEEDED(outer.inner->QueryInterface(IID_IAudioProcessingObjectRT_Local, (void**)&pRT)) && pRT, "QI IAudioProcessingObjectRT");
 
     CHECK(SUCCEEDED(pAPO->Initialize(0, NULL)), "Initialize(0, NULL)");
+
+    // Test Format Negotiation (ADR-0018)
+    // 1. Equal formats return S_OK
+    MockMediaType fmtStereo48k(2, 48000.0f);
+    IAudioMediaType* pSupported = NULL;
+    HRESULT hrFmt = pAPO->IsInputFormatSupported(&fmtStereo48k, &fmtStereo48k, &pSupported);
+    CHECK(hrFmt == S_OK, "IsInputFormatSupported equal formats -> S_OK");
+    CHECK(pSupported == &fmtStereo48k, "Supported format is requested format");
+    if (pSupported) pSupported->Release();
+
+    // 2. Requested PCM int16 format returns S_FALSE and proposes opposite IEEE_FLOAT format
+    MockMediaType fmtPcm16(1, 44100.0f, SUBTYPE_PCM, 2, 16);
+    pSupported = NULL;
+    hrFmt = pAPO->IsInputFormatSupported(&fmtStereo48k, &fmtPcm16, &pSupported);
+    CHECK(hrFmt == S_FALSE, "IsInputFormatSupported PCM int16 -> S_FALSE format negotiation");
+    CHECK(pSupported == &fmtStereo48k, "Supported format proposed opposite float format");
+    if (pSupported) pSupported->Release();
+
+    // 3. Requested mono float format with stereo opposite returns S_FALSE and proposes opposite format
+    MockMediaType fmtMono44k(1, 44100.0f);
+    pSupported = NULL;
+    hrFmt = pAPO->IsInputFormatSupported(&fmtStereo48k, &fmtMono44k, &pSupported);
+    CHECK(hrFmt == S_FALSE, "IsInputFormatSupported mono/44k vs stereo/48k -> S_FALSE");
+    CHECK(pSupported == &fmtStereo48k, "Proposes opposite stereo format");
+    if (pSupported) pSupported->Release();
+
+    // 4. Requested float with NULL opposite returns S_OK
+    pSupported = NULL;
+    hrFmt = pAPO->IsOutputFormatSupported(NULL, &fmtStereo48k, &pSupported);
+    CHECK(hrFmt == S_OK, "IsOutputFormatSupported NULL opposite -> S_OK");
+    CHECK(pSupported == &fmtStereo48k, "Supported format is requested format");
+    if (pSupported) pSupported->Release();
 
     MockMediaType fmt;
     float inBuf[8]  = { 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f };

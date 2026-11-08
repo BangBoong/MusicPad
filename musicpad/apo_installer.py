@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -36,9 +37,18 @@ from musicpad.injection_shm import (
 MUSICPAD_APO_CLSID = "{9D4E7A12-6C8B-4F2A-B5E1-3A9C7D2E4F10}"
 LEGACY_SPIKE_CLSIDS = {
     "{8E65B49A-5B3E-4B3D-9E5D-2C1B8A4F7E21}",
-    "{3B97825E-5D34-4C2E-8A53-7BC22F9E014A}",
 }
-DEFAULT_PROCESSING_MODE = "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}"
+AUDIO_SIGNALPROCESSINGMODE_DEFAULT = "{C18E2F7E-933D-4965-B7D1-1EEF228D2AF3}"
+AUDIO_SIGNALPROCESSINGMODE_COMMUNICATIONS = "{98951333-B9CD-48B1-A0A3-FF40682D73F7}"
+AUDIO_SIGNALPROCESSINGMODE_SPEECH = "{FC1CF0A4-7506-4CD1-AF77-CC1670754D9E}"
+AUDIO_SIGNALPROCESSINGMODE_RAW = "{FC1CFC9B-B9D6-4CFA-B5E0-4BB2166878B2}"
+ALL_EFX_PROCESSING_MODES = [
+    AUDIO_SIGNALPROCESSINGMODE_DEFAULT,
+    AUDIO_SIGNALPROCESSINGMODE_COMMUNICATIONS,
+    AUDIO_SIGNALPROCESSINGMODE_SPEECH,
+    AUDIO_SIGNALPROCESSINGMODE_RAW,
+]
+DEFAULT_PROCESSING_MODE = AUDIO_SIGNALPROCESSINGMODE_DEFAULT
 NULL_GUID = "{00000000-0000-0000-0000-000000000000}"
 
 DATA_DIR = Path(r"C:\ProgramData\MusicPad")
@@ -56,6 +66,7 @@ MUSICPAD_APO_STATE_SUBKEY = r"SOFTWARE\MusicPad\APO"
 
 # Property keys inside MMDevices\Audio\Capture\<GUID>\Properties
 PKEY_ENDPOINT_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},2"
+PKEY_DEVICE_FRIENDLYNAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
 PKEY_ADAPTER_NAME = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6"
 PKEY_DISABLE_SYSFX = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5"
 PKEY_ALLOW_EXCLUSIVE = "{b3f8fa53-0004-438e-9003-51a46e139bfc},3"
@@ -85,12 +96,13 @@ class CaptureEndpoint:
     enhancements_enabled: bool
     exclusive_allowed: bool
     efx_clsid: str
+    friendly_name: str = ""
 
     @property
     def display_name(self) -> str:
         if self.endpoint_name and self.adapter_name:
             return f"{self.endpoint_name} ({self.adapter_name})"
-        return self.adapter_name or self.endpoint_name or self.guid
+        return self.friendly_name or self.adapter_name or self.endpoint_name or self.guid
 
 
 @dataclass(frozen=True)
@@ -180,6 +192,7 @@ def list_capture_endpoints(include_virtual_cables: bool = False) -> list[Capture
                     continue
 
                 endpoint_name = ""
+                friendly_name = ""
                 adapter_name = ""
                 disable_sysfx = 0
                 allow_exclusive = 1
@@ -189,6 +202,10 @@ def list_capture_endpoints(include_virtual_cables: bool = False) -> list[Capture
                     ) as prop_key:
                         try:
                             endpoint_name = str(winreg.QueryValueEx(prop_key, PKEY_ENDPOINT_NAME)[0])
+                        except OSError:
+                            pass
+                        try:
+                            friendly_name = str(winreg.QueryValueEx(prop_key, PKEY_DEVICE_FRIENDLYNAME)[0])
                         except OSError:
                             pass
                         try:
@@ -207,7 +224,7 @@ def list_capture_endpoints(include_virtual_cables: bool = False) -> list[Capture
                     pass
 
                 if not include_virtual_cables:
-                    combined_lower = f"{endpoint_name} {adapter_name}".lower()
+                    combined_lower = f"{endpoint_name} {adapter_name} {friendly_name}".lower()
                     if any(k in combined_lower for k in ("vb-audio", "cable output", "virtual cable", "voicemeeter")):
                         continue
 
@@ -237,6 +254,7 @@ def list_capture_endpoints(include_virtual_cables: bool = False) -> list[Capture
                         enhancements_enabled=(disable_sysfx == 0),
                         exclusive_allowed=(allow_exclusive != 0),
                         efx_clsid=efx_clsid,
+                        friendly_name=friendly_name,
                     )
                 )
     except OSError:
@@ -256,18 +274,86 @@ def find_endpoint_for_sounddevice(
     if not eps:
         return None
 
-    target_lower = sd_device_name.strip().lower()
+    # Strip trailing " (<digits>)" index suffix appended by sounddevice / device enumerator
+    target_clean = re.sub(r"\s*\(\d+\)$", "", sd_device_name.strip()).strip()
+    if not target_clean:
+        return None
+    target_lower = target_clean.lower()
+
+    # Pass 1: Exact matches against friendly_name, display_name
     for ep in eps:
-        disp_lower = ep.display_name.lower()
-        if disp_lower == target_lower or disp_lower.startswith(target_lower) or target_lower.startswith(disp_lower):
+        if ep.friendly_name and ep.friendly_name.lower() == target_lower:
+            return ep
+        if ep.display_name.lower() == target_lower:
             return ep
 
+    # Pass 2: Prefix / startsWith matches on friendly_name or display_name
     for ep in eps:
-        adapter_lower = ep.adapter_name.lower()
-        if adapter_lower and (adapter_lower in target_lower or target_lower in adapter_lower):
+        if ep.friendly_name:
+            fn_lower = ep.friendly_name.lower()
+            if fn_lower.startswith(target_lower) or target_lower.startswith(fn_lower):
+                return ep
+        disp_lower = ep.display_name.lower()
+        if disp_lower.startswith(target_lower) or target_lower.startswith(disp_lower):
             return ep
-        # Handle MME 31-character truncation e.g. 'Microphone (5- fifine Microphon'
-        if adapter_lower and len(adapter_lower) >= 8 and adapter_lower[:12] in target_lower:
+
+    # Pass 3: Handle USB port prefix inside parentheses and MME 31-character truncation
+    # Pattern: "<endpoint_prefix> (<usb_index>- <adapter_prefix>..."
+    m = re.match(r"^(.*?)\s*\((?:(\d+)\s*-\s*)?(.*)$", target_clean)
+    target_ep_part = m.group(1).strip().lower() if m else ""
+    target_ad_part = m.group(3).rstrip(")").strip().lower() if m else ""
+
+    best_match: Optional[CaptureEndpoint] = None
+    best_score = 0
+
+    for ep in eps:
+        score = 0
+        ep_name = ep.endpoint_name.lower()
+        ad_name = ep.adapter_name.lower()
+        disp = ep.display_name.lower()
+        fn = ep.friendly_name.lower() if ep.friendly_name else ""
+
+        if fn and (target_lower in fn or fn in target_lower):
+            score += 40
+        if target_lower in disp or disp in target_lower:
+            score += 35
+
+        if target_ep_part and ep_name:
+            if target_ep_part == ep_name:
+                score += 30
+            elif ep_name.startswith(target_ep_part) or target_ep_part.startswith(ep_name):
+                score += 20
+            elif target_ep_part in ep_name or ep_name in target_ep_part:
+                score += 10
+
+        if target_ad_part and ad_name:
+            if target_ad_part == ad_name:
+                score += 30
+            elif ad_name.startswith(target_ad_part) or target_ad_part.startswith(ad_name):
+                score += 20
+            elif target_ad_part in ad_name or ad_name in target_ad_part:
+                score += 10
+
+        if ep_name and ep_name in target_lower:
+            score += 15
+        if ad_name and ad_name in target_lower:
+            score += 15
+
+        if score > best_score:
+            best_score = score
+            best_match = ep
+
+    if best_match is not None and best_score >= 20:
+        return best_match
+
+    # Pass 4: Fallback - adapter name match, avoiding stereo mix or line in if target requested mic
+    for ep in eps:
+        ad_lower = ep.adapter_name.lower()
+        if ad_lower and (ad_lower in target_lower or target_lower in ad_lower):
+            is_mic_target = any(k in target_lower for k in ("mic", "мік", "мик"))
+            is_stereo_mix = any(k in ep.endpoint_name.lower() for k in ("stereo mix", "стерео мікшер", "стерео микшер", "line in", "лінійний"))
+            if is_mic_target and is_stereo_mix:
+                continue
             return ep
 
     return None
@@ -376,8 +462,29 @@ def get_driver_status(
     except OSError:
         pass
 
-    # Verify endpoint Properties (enhancements enabled) and FxProperties (EFX slot points to MusicPadAPO)
+    # Verify that endpoint exists and is active (DeviceState == 1)
     ep_subkey = f"{MMDEVICES_CAPTURE_SUBKEY}\\{check_guid}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, ep_subkey, 0, winreg.KEY_READ) as ep_key:
+            dev_state, _ = winreg.QueryValueEx(ep_key, "DeviceState")
+            if int(dev_state) != 1:
+                return DriverStatus(
+                    state="inactive",
+                    installed_endpoint_guid=installed_guid,
+                    target_endpoint_guid=check_guid,
+                    reason="Цільовий мікрофон не знайдено або вимкнено в системі",
+                    original_apo_clsid=original_apo,
+                )
+    except OSError:
+        return DriverStatus(
+            state="inactive",
+            installed_endpoint_guid=installed_guid,
+            target_endpoint_guid=check_guid,
+            reason="Цільовий мікрофон не знайдено в системі",
+            original_apo_clsid=original_apo,
+        )
+
+    # Verify endpoint Properties (enhancements enabled) and FxProperties (EFX slot points to MusicPadAPO)
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{ep_subkey}\\Properties", 0, winreg.KEY_READ) as prop_key:
             try:
@@ -723,6 +830,7 @@ def _restore_single_endpoint_from_backup(endpoint_guid: str, ep_backup: dict[str
                         pass
             for prop_to_clear in (
                 PKEY_FX_ASSOC,
+                PKEY_FX_LFX_LEGACY,
                 PKEY_FX_SFX_SINGLE,
                 PKEY_FX_MFX_SINGLE,
                 PKEY_FX_EFX_SINGLE,
@@ -867,10 +975,26 @@ def install_driver(endpoint_guid: Optional[str] = None) -> None:
 
     norm_guid = normalize_guid(endpoint_guid)
     if not norm_guid:
-        # Check if an endpoint was previously configured, or fall back to first active physical mic
+        # Check if an endpoint was previously configured
         st = get_driver_status()
-        norm_guid = st.installed_endpoint_guid
-    if not norm_guid:
+        if st.installed_endpoint_guid:
+            norm_guid = st.installed_endpoint_guid
+
+    # Verify that norm_guid exists and is active (DeviceState == 1) before touching registry
+    is_valid_guid = False
+    if norm_guid:
+        ep_subkey = f"{MMDEVICES_CAPTURE_SUBKEY}\\{norm_guid}"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, ep_subkey, 0, winreg.KEY_READ) as ep_key:
+                dev_state, _ = winreg.QueryValueEx(ep_key, "DeviceState")
+                if int(dev_state) == 1:
+                    is_valid_guid = True
+        except OSError:
+            is_valid_guid = False
+
+    if not is_valid_guid:
+        if endpoint_guid:
+            raise ValueError(f"Цільовий мікрофон {norm_guid} не знайдено або неактивний у системі.")
         eps = list_capture_endpoints(include_virtual_cables=False)
         if not eps:
             raise RuntimeError("Не знайдено жодного активного мікрофона для встановлення драйвера.")
@@ -938,6 +1062,18 @@ def install_driver(endpoint_guid: Optional[str] = None) -> None:
                 capture_output=True,
                 check=False,
             )
+
+        # Copy VC runtime libraries for audiodg.exe deepfilter dependencies if present
+        for vc_name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+            vc_src = _find_built_dll(vc_name)
+            if vc_src is None:
+                sys_candidate = Path(r"C:\Windows\System32") / vc_name
+                if sys_candidate.is_file():
+                    vc_src = sys_candidate
+            if vc_src is not None and vc_src.is_file():
+                target_prog_vc = INSTALL_DIR / vc_name
+                if vc_src.resolve() != target_prog_vc.resolve():
+                    shutil.copy2(vc_src, target_prog_vc)
 
         # Clean up any leftover Stage 0 spike DLL/CLSIDs
         if SYSTEM32_SPIKE_DLL.is_file():
@@ -1029,10 +1165,24 @@ def install_driver(endpoint_guid: Optional[str] = None) -> None:
                         winreg.DeleteValue(h_fx, name)
                     except OSError:
                         pass
+            # Suspend vendor downstream SFX/MFX/LFX effects to avoid filtering injected audio (ADR-0018)
+            for vendor_prop in (
+                PKEY_FX_LFX_LEGACY,
+                PKEY_FX_SFX_SINGLE,
+                PKEY_FX_MFX_SINGLE,
+                PKEY_FX_SFX_MULTI,
+                PKEY_FX_MFX_MULTI,
+                PKEY_MODE_SFX,
+                PKEY_MODE_MFX,
+            ):
+                try:
+                    winreg.DeleteValue(h_fx, vendor_prop)
+                except OSError:
+                    pass
             winreg.SetValueEx(h_fx, PKEY_FX_ASSOC, 0, winreg.REG_SZ, NULL_GUID)
             winreg.SetValueEx(h_fx, PKEY_FX_EFX_SINGLE, 0, winreg.REG_SZ, MUSICPAD_APO_CLSID)
             winreg.SetValueEx(h_fx, PKEY_FX_EFX_MULTI, 0, winreg.REG_MULTI_SZ, [MUSICPAD_APO_CLSID])
-            winreg.SetValueEx(h_fx, PKEY_MODE_EFX, 0, winreg.REG_MULTI_SZ, [DEFAULT_PROCESSING_MODE])
+            winreg.SetValueEx(h_fx, PKEY_MODE_EFX, 0, winreg.REG_MULTI_SZ, ALL_EFX_PROCESSING_MODES)
         finally:
             winreg.CloseKey(h_fx)
 

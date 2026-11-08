@@ -5,3 +5,4 @@ ytmusicapi>=1.10.2
 pystray>=0.19.5
 numpy>=2.0.0
 PyAudio>=0.2.14
+deepfilternet-slim>=0.1.0

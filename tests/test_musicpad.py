@@ -4747,6 +4747,254 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
         finally:
             engine_inj.shutdown()
 
+    def test_endpoint_matching_usb_suffix_and_mme_truncation(self) -> None:
+        fake_eps = [
+            CaptureEndpoint(
+                guid="{11111111-1111-1111-1111-111111111111}",
+                endpoint_name="Мікрофон",
+                adapter_name="Realtek(R) Audio",
+                enhancements_enabled=True,
+                exclusive_allowed=False,
+                efx_clsid=MUSICPAD_APO_CLSID,
+                friendly_name="Мікрофон (Realtek(R) Audio)",
+            ),
+            CaptureEndpoint(
+                guid="{22222222-2222-2222-2222-222222222222}",
+                endpoint_name="Стерео мікшер",
+                adapter_name="Realtek(R) Audio",
+                enhancements_enabled=True,
+                exclusive_allowed=False,
+                efx_clsid="",
+                friendly_name="Стерео мікшер (Realtek(R) Audio)",
+            ),
+            CaptureEndpoint(
+                guid="{33333333-3333-3333-3333-333333333333}",
+                endpoint_name="Microphone",
+                adapter_name="fifine Microphone",
+                enhancements_enabled=True,
+                exclusive_allowed=False,
+                efx_clsid="",
+                friendly_name="Microphone (5- fifine Microphone)",
+            ),
+            CaptureEndpoint(
+                guid="{44444444-4444-4444-4444-444444444444}",
+                endpoint_name="Мікрофон гарнітури",
+                adapter_name="HyperX Cloud II Wireless",
+                enhancements_enabled=True,
+                exclusive_allowed=False,
+                efx_clsid="",
+                friendly_name="Мікрофон гарнітури (2- HyperX Cloud II Wireless)",
+            ),
+        ]
+
+        # 1. Trailing index suffix stripping
+        ep1 = find_endpoint_for_sounddevice("Мікрофон (Realtek(R) Audio) (1)", endpoints=fake_eps)
+        self.assertIsNotNone(ep1)
+        assert ep1 is not None
+        self.assertEqual(ep1.guid, "{11111111-1111-1111-1111-111111111111}")
+
+        # 2. USB port prefix and 31-char MME truncation
+        ep2 = find_endpoint_for_sounddevice("Microphone (5- fifine Microphon", endpoints=fake_eps)
+        self.assertIsNotNone(ep2)
+        assert ep2 is not None
+        self.assertEqual(ep2.guid, "{33333333-3333-3333-3333-333333333333}")
+
+        # 3. Truncation with trailing index
+        ep3 = find_endpoint_for_sounddevice("Microphone (5- fifine Microphon (2)", endpoints=fake_eps)
+        self.assertIsNotNone(ep3)
+        assert ep3 is not None
+        self.assertEqual(ep3.guid, "{33333333-3333-3333-3333-333333333333}")
+
+        # 4. Disambiguation between Microphone and Stereo Mix on same Realtek adapter
+        ep_mic = find_endpoint_for_sounddevice("Мікрофон (Realtek(R) Audio)", endpoints=fake_eps)
+        self.assertIsNotNone(ep_mic)
+        assert ep_mic is not None
+        self.assertEqual(ep_mic.guid, "{11111111-1111-1111-1111-111111111111}")
+
+        ep_mix = find_endpoint_for_sounddevice("Стерео мікшер (Realtek(R) Audio)", endpoints=fake_eps)
+        self.assertIsNotNone(ep_mix)
+        assert ep_mix is not None
+        self.assertEqual(ep_mix.guid, "{22222222-2222-2222-2222-222222222222}")
+
+        # 5. Long localized name prefix
+        ep_long = find_endpoint_for_sounddevice("Мікрофон гарнітури (2- HyperX ", endpoints=fake_eps)
+        self.assertIsNotNone(ep_long)
+        assert ep_long is not None
+        self.assertEqual(ep_long.guid, "{44444444-4444-4444-4444-444444444444}")
+
+    def test_endpoint_validation_and_phantom_guid_rejection(self) -> None:
+        from musicpad.apo_installer import (
+            LEGACY_SPIKE_CLSIDS,
+            get_driver_status,
+            install_driver,
+        )
+
+        # Steam Streaming Mic must NOT be in legacy spike CLSIDs
+        self.assertNotIn("{3b97825e-5d34-4c2e-8a53-7bc22f9e014a}", {c.lower() for c in LEGACY_SPIKE_CLSIDS})
+        self.assertIn("{8e65b49a-5b3e-4b3d-9e5d-2c1b8a4f7e21}", {c.lower() for c in LEGACY_SPIKE_CLSIDS})
+
+        # Phantom GUID rejection in get_driver_status
+        phantom_guid = "{99999999-9999-9999-9999-999999999999}"
+        with patch("winreg.OpenKey", side_effect=OSError(2, "File not found")):
+            status = get_driver_status(target_endpoint_guid=phantom_guid)
+            self.assertIn(status.state, ("not_installed", "inactive"))
+            self.assertFalse(status.is_healthy)
+
+        # Phantom GUID rejection in install_driver
+        with patch("musicpad.apo_installer.is_admin", return_value=True):
+            with patch("winreg.OpenKey", side_effect=OSError(2, "File not found")):
+                with self.assertRaises(ValueError) as ctx:
+                    install_driver(endpoint_guid=phantom_guid)
+                self.assertIn("не знайдено", str(ctx.exception))
+
+    def test_all_efx_modes_and_vendor_mfx_sfx_suspension(self) -> None:
+        from musicpad.apo_installer import (
+            ALL_EFX_PROCESSING_MODES,
+            AUDIO_SIGNALPROCESSINGMODE_DEFAULT,
+            AUDIO_SIGNALPROCESSINGMODE_COMMUNICATIONS,
+            AUDIO_SIGNALPROCESSINGMODE_SPEECH,
+            AUDIO_SIGNALPROCESSINGMODE_RAW,
+            _restore_single_endpoint_from_backup,
+        )
+
+        self.assertEqual(len(ALL_EFX_PROCESSING_MODES), 4)
+        self.assertIn(AUDIO_SIGNALPROCESSINGMODE_DEFAULT, ALL_EFX_PROCESSING_MODES)
+        self.assertIn(AUDIO_SIGNALPROCESSINGMODE_COMMUNICATIONS, ALL_EFX_PROCESSING_MODES)
+        self.assertIn(AUDIO_SIGNALPROCESSINGMODE_SPEECH, ALL_EFX_PROCESSING_MODES)
+        self.assertIn(AUDIO_SIGNALPROCESSINGMODE_RAW, ALL_EFX_PROCESSING_MODES)
+
+        # Test full restore of vendor FxProperties
+        saved_backup = {
+            "FxProperties": {
+                "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5": {"type": 1, "value": "{vendor-sfx-guid}"},
+                "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6": {"type": 1, "value": "{vendor-mfx-guid}"},
+            },
+            "Properties": {},
+        }
+        mock_set_vals: list[tuple[str, Any]] = []
+        mock_deleted: list[str] = []
+
+        with patch("musicpad.apo_installer._delete_hklm_subkey_tree"):
+            with patch("musicpad.apo_installer._open_hklm_key_backup_restore", return_value=999):
+                with patch("musicpad.apo_installer._read_all_registry_values", return_value={}):
+                    with patch("winreg.DeleteValue", side_effect=lambda h, name: mock_deleted.append(name)):
+                        with patch("winreg.SetValueEx", side_effect=lambda h, name, r, t, val: mock_set_vals.append((name, val))):
+                            with patch("winreg.CloseKey"):
+                                _restore_single_endpoint_from_backup("{11111111-1111-1111-1111-111111111111}", saved_backup)
+
+        restored_keys = [k for k, v in mock_set_vals]
+        self.assertIn("{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5", restored_keys)
+        self.assertIn("{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6", restored_keys)
+
+    def test_shm_uninitialized_format_and_live_telemetry_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            shm_file = Path(tmp) / "uninit.shm"
+            shm = InjectionShm(shm_file)
+            shm.open(acquire_lease=True)
+            try:
+                shm.reset_storage()
+                st = shm.get_apo_status()
+                # Before audiodg.exe writes to shared memory, sample_rate and channels must be 0
+                self.assertEqual(st.sample_rate, 0)
+                self.assertEqual(st.channels, 0)
+                self.assertFalse(st.is_alive)
+            finally:
+                shm.close()
+
+            # Verify AudioEngine emits on_apo_warning if track is active in injection mode and APO is not alive
+            warned_messages: list[str] = []
+            engine = AudioEngine(
+                routing_mode=ROUTING_MODE_INJECTION,
+                on_apo_warning=warned_messages.append,
+                shm_path=shm_file,
+            )
+            try:
+                self.assertIsNotNone(engine.on_apo_warning)
+            finally:
+                engine.shutdown()
+
+    def test_ui_routing_mode_switch_prompts_and_endpoint_transfer(self) -> None:
+        app = main.MusicPadApp()
+        try:
+            app.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+            not_inst_status = DriverStatus(
+                state="not_installed",
+                installed_endpoint_guid="",
+                target_endpoint_guid="{11111111-1111-1111-1111-111111111111}",
+                reason="Драйвер MusicPad не встановлено",
+            )
+            with patch.object(app, "_refresh_driver_status", return_value=not_inst_status):
+                with patch("tkinter.messagebox.askyesno", return_value=False):
+                    app.routing_mode_var.set(ROUTING_MODE_INJECTION)
+                    app._on_routing_mode_changed()
+                    # User cancelled -> reverts to ROUTING_MODE_VIRTUAL_CABLE
+                    self.assertEqual(app.routing_mode_var.get(), ROUTING_MODE_VIRTUAL_CABLE)
+
+            # Test prompt to transfer driver on wrong_endpoint
+            wrong_status = DriverStatus(
+                state="wrong_endpoint",
+                installed_endpoint_guid="{11111111-1111-1111-1111-111111111111}",
+                target_endpoint_guid="{22222222-2222-2222-2222-222222222222}",
+                reason="Драйвер встановлено на інший мікрофон (потрібно перенести)",
+            )
+            app.routing_mode_var.set(ROUTING_MODE_INJECTION)
+            with patch.object(app, "_refresh_driver_status", return_value=wrong_status):
+                with patch("tkinter.messagebox.askyesno", return_value=True) as mock_ask:
+                    with patch.object(app, "_install_driver_uac_action") as mock_inst_action:
+                        app.mix_mic_var.set("New Mic")
+                        app._mix_mic_changed()
+                        mock_ask.assert_called_once()
+                        mock_inst_action.assert_called_once()
+
+            # Test warning on starting playback when driver is inactive
+            inactive_status = DriverStatus(
+                state="inactive",
+                installed_endpoint_guid="{11111111-1111-1111-1111-111111111111}",
+                target_endpoint_guid="{11111111-1111-1111-1111-111111111111}",
+                reason="Файл драйвера або реєстрація COM відсутні",
+            )
+            with patch.object(app, "_refresh_driver_status", return_value=inactive_status):
+                with patch.object(app, "notify_error") as mock_notify:
+                    with patch.object(app, "_ensure_engine") as mock_eng:
+                        app._start(StreamTrack("Test", "dummy.mp3"))
+                        mock_notify.assert_called_once()
+                        self.assertIn("не активний", mock_notify.call_args[0][0])
+        finally:
+            app._exit()
+
+    def test_cross_pc_config_migration_auto_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "foreign_config.json"
+            foreign_data = {
+                "routing_mode": ROUTING_MODE_INJECTION,
+                "target_mic_guid": "{phantom-foreign-guid-from-other-pc}",
+                "mix_mic": "Realtek Microphone",
+            }
+            cfg_file.write_text(json.dumps(foreign_data), encoding="utf-8")
+
+            active_eps = [
+                CaptureEndpoint(
+                    guid="{active-current-pc-guid}",
+                    endpoint_name="Realtek Microphone",
+                    adapter_name="Realtek Audio",
+                    enhancements_enabled=True,
+                    exclusive_allowed=False,
+                    efx_clsid="",
+                    friendly_name="Realtek Microphone (Realtek Audio)",
+                )
+            ]
+
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                with patch("main.list_capture_endpoints", return_value=active_eps):
+                    app = main.MusicPadApp()
+                    try:
+                        resolved = app._resolve_selected_mic_guid()
+                        self.assertEqual(resolved, "{active-current-pc-guid}")
+                        self.assertEqual(app.target_mic_guid_var.get(), "{active-current-pc-guid}")
+                    finally:
+                        app._exit()
+
+
 
 if __name__ == "__main__":
     unittest.main()

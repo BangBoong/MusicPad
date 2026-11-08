@@ -2240,7 +2240,8 @@ class MusicPadApp(tk.Tk):
             self._ensure_engine()
         except Exception:
             pass
-        self.status_var.set("")
+        if not (hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION and self.status_var.get()):
+            self.status_var.set("")
         self._setup_windows_dark_mode()
         self._apply_dark_title_bar(self)
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -5538,12 +5539,13 @@ class MusicPadApp(tk.Tk):
             endpoints = list_capture_endpoints()
         except Exception:
             endpoints = []
+        active_guids = {ep.guid.lower() for ep in endpoints}
         ep = find_endpoint_for_sounddevice(mic_label, endpoints)
         if ep is not None:
             self.target_mic_guid_var.set(ep.guid)
             return ep.guid
         cur_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
-        if cur_guid:
+        if cur_guid and cur_guid.lower() in active_guids:
             return cur_guid
         if endpoints:
             self.target_mic_guid_var.set(endpoints[0].guid)
@@ -5586,7 +5588,39 @@ class MusicPadApp(tk.Tk):
             else ROUTING_MODE_VIRTUAL_CABLE
         )
         target_guid = self._resolve_selected_mic_guid()
-        status = self._refresh_driver_status(notify_on_issue=(mode == ROUTING_MODE_INJECTION))
+        status = self._refresh_driver_status(notify_on_issue=False)
+        is_loading = getattr(self, "_loading_state", False)
+
+        if mode == ROUTING_MODE_INJECTION and not is_loading and status.state != "active":
+            if status.state in ("not_installed", "wrong_endpoint"):
+                prompt = (
+                    "Для роботи режиму «Ін'єкція в мікрофон» необхідно встановити Драйвер MusicPad на вибраний мікрофон (UAC).\n\n"
+                    "Встановити драйвер зараз?"
+                    if status.state == "not_installed"
+                    else "Драйвер MusicPad встановлено на інший мікрофон. Перенести драйвер на вибраний мікрофон зараз?"
+                )
+                confirm = messagebox.askyesno(
+                    "Драйвер MusicPad (UAC)",
+                    prompt,
+                    parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+                )
+                if confirm:
+                    self._install_driver_uac_action()
+                    status = self._refresh_driver_status(notify_on_issue=False)
+                else:
+                    if status.state == "not_installed":
+                        self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+                        mode = ROUTING_MODE_VIRTUAL_CABLE
+            elif status.state in ("inactive", "outdated"):
+                confirm = messagebox.askyesno(
+                    "Ремонт Драйвера MusicPad (UAC)",
+                    f"Драйвер MusicPad потребує відновлення ({status.message}).\n\nВідновити зараз через UAC?",
+                    parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+                )
+                if confirm:
+                    self._repair_driver_uac_action()
+                    status = self._refresh_driver_status(notify_on_issue=False)
+
         if hasattr(self, "engine"):
             if hasattr(self.engine, "set_target_endpoint_guid"):
                 self.engine.set_target_endpoint_guid(target_guid)
@@ -6951,6 +6985,7 @@ class MusicPadApp(tk.Tk):
                 self._on_track_title,
                 routing_mode=routing_mode,
                 target_endpoint_guid=target_guid,
+                on_apo_warning=self._show_error,
             )
             self.engine.on_position = self._on_position
         else:
@@ -8872,6 +8907,11 @@ class MusicPadApp(tk.Tk):
 
     def _start(self, track: StreamTrack) -> None:
         try:
+            is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
+            if is_inj:
+                st = self._refresh_driver_status(notify_on_issue=False)
+                if st.state != "active":
+                    self.notify_error(f"Драйвер MusicPad не активний ({st.message}). Трек грає лише в навушниках.")
             engine = self._ensure_engine()
             route_mic = not self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else True
             engine.play(track, mic=route_mic)
@@ -9193,9 +9233,19 @@ class MusicPadApp(tk.Tk):
             self.engine.set_target_endpoint_guid(ep_guid)
             if self.mic_enabled.get():
                 self.engine.set_input_device(self.input_map.get(chosen))
-        self._refresh_driver_status(notify_on_issue=False)
+        status = self._refresh_driver_status(notify_on_issue=False)
         self.status_var.set(f"Мікрофон змінено: {chosen}")
         self._save_state()
+        is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
+        if is_inj and not getattr(self, "_loading_state", False) and status.state == "wrong_endpoint":
+            confirm = messagebox.askyesno(
+                "Перенесення Драйвера MusicPad (UAC)",
+                f"Драйвер MusicPad наразі встановлено на інший мікрофон.\n\n"
+                f"Перенести драйвер на щойно вибраний мікрофон ({chosen})?",
+                parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+            )
+            if confirm:
+                self._install_driver_uac_action()
 
     def _mix_mic_changed(self, _event: Optional[tk.Event] = None) -> None:
         chosen = self.mix_mic_var.get()
@@ -9207,8 +9257,18 @@ class MusicPadApp(tk.Tk):
             if self.mic_enabled.get():
                 self.engine.set_input_device(self.input_map.get(chosen))
                 self.status_var.set("Мікрофон змінено та застосовано.")
-        self._refresh_driver_status(notify_on_issue=False)
+        status = self._refresh_driver_status(notify_on_issue=False)
         self._save_state()
+        is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
+        if is_inj and not getattr(self, "_loading_state", False) and status.state == "wrong_endpoint":
+            confirm = messagebox.askyesno(
+                "Перенесення Драйвера MusicPad (UAC)",
+                f"Драйвер MusicPad наразі встановлено на інший мікрофон.\n\n"
+                f"Перенести драйвер на щойно вибраний мікрофон ({chosen})?",
+                parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+            )
+            if confirm:
+                self._install_driver_uac_action()
 
     def _monitor_changed(self, _event: Optional[tk.Event] = None) -> None:
         if hasattr(self, "engine"):
@@ -9630,8 +9690,14 @@ class MusicPadApp(tk.Tk):
                 self.routing_mode_var.set(str(saved_routing))
             elif hasattr(self, "routing_mode_var"):
                 self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+            try:
+                active_eps = {ep.guid.lower() for ep in list_capture_endpoints()}
+            except Exception:
+                active_eps = set()
             if "target_mic_guid" in data and hasattr(self, "target_mic_guid_var") and data["target_mic_guid"]:
-                self.target_mic_guid_var.set(str(data["target_mic_guid"]))
+                saved_t_guid = str(data["target_mic_guid"]).strip().lower()
+                if not active_eps or saved_t_guid in active_eps:
+                    self.target_mic_guid_var.set(str(data["target_mic_guid"]))
             if "track_source" in data and hasattr(self, "track_source_var"):
                 self.track_source_var.set(str(data["track_source"]))
             if "volume" in data:
@@ -9703,7 +9769,9 @@ class MusicPadApp(tk.Tk):
                 if "routing_mode" in sc and sc["routing_mode"] in (ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION) and hasattr(self, "routing_mode_var"):
                     self.routing_mode_var.set(str(sc["routing_mode"]))
                 if "target_mic_guid" in sc and sc["target_mic_guid"] and hasattr(self, "target_mic_guid_var"):
-                    self.target_mic_guid_var.set(str(sc["target_mic_guid"]))
+                    sc_t_guid = str(sc["target_mic_guid"]).strip().lower()
+                    if not active_eps or sc_t_guid in active_eps:
+                        self.target_mic_guid_var.set(str(sc["target_mic_guid"]))
                 self._on_voice_fx_changed()
             folder = data.get("folder")
             folder_valid = bool(folder and folder != "Папку не вибрано" and Path(folder).is_dir())
@@ -9991,6 +10059,14 @@ def _run_self_test(report_path: str) -> int:
         mon_idx = AudioEngine.find_default_monitor(exclude_device=cable_idx)
         devs = AudioEngine.list_devices()
 
+        from musicpad.apo_installer import _find_built_dll
+        apo_dll = _find_built_dll("musicpad_apo.dll")
+        dsp_dll = _find_built_dll("musicpad_dsp.dll")
+        if apo_dll is None:
+            errors.append("musicpad_apo.dll not found")
+        if dsp_dll is None:
+            errors.append("musicpad_dsp.dll not found")
+
         with tempfile.TemporaryDirectory() as tmp:
             wav_path = Path(tmp) / "tone.wav"
             rate = 44100
@@ -10052,10 +10128,14 @@ def _run_self_test(report_path: str) -> int:
                 and finished_48k
                 and not errors
                 and elapsed >= 0.12
+                and apo_dll is not None
+                and dsp_dll is not None
             ),
             "frozen": bool(getattr(sys, "frozen", False)),
             "window_title": win_title,
             "window_exists": win_exists,
+            "has_apo_dll": apo_dll is not None,
+            "has_dsp_dll": dsp_dll is not None,
             "sd_module": getattr(ae_mod.sd, "__name__", type(ae_mod.sd).__name__),
             "has_numpy": ae_mod.np is not None,
             "has_wave": ae_mod.wave is not None,

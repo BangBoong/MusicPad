@@ -28,9 +28,15 @@ if ffprobe_path:
 native_binaries = []
 for dll_name in ("musicpad_apo.dll", "musicpad_dsp.dll"):
     dll_path = Path("native") / "bin" / dll_name
-    if dll_path.is_file():
-        native_binaries.append((str(dll_path.resolve()), '.'))
-        native_binaries.append((str(dll_path.resolve()), 'native/bin'))
+    if not dll_path.is_file():
+        raise FileNotFoundError(f"Missing mandatory native library: {dll_path}. Run native/build.ps1 first.")
+    native_binaries.append((str(dll_path.resolve()), '.'))
+    native_binaries.append((str(dll_path.resolve()), 'native/bin'))
+
+for vc_name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+    sys_vc = Path(r"C:\Windows\System32") / vc_name
+    if sys_vc.is_file():
+        native_binaries.append((str(sys_vc.resolve()), '.'))
 
 deepfilter_datas = []
 try:
