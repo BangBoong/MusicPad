@@ -2562,16 +2562,21 @@ class MusicPadApp(tk.Tk):
                     pass
             self.notification_manager.dismiss()
 
-    def _safe_ui_call(self, func: Any, *args: Any) -> None:
+    def _safe_ui_call(self, func: Any, *args: Any, **kwargs: Any) -> None:
         """Thread-safe dispatch from background worker threads to main Tkinter UI thread."""
         if hasattr(self, "_ui_queue"):
-            self._ui_queue.put((func, args))
+            self._ui_queue.put((func, args, kwargs))
 
     def _drain_ui_queue(self) -> None:
         while hasattr(self, "_ui_queue") and not self._ui_queue.empty():
             try:
-                func, args = self._ui_queue.get_nowait()
-                func(*args)
+                item = self._ui_queue.get_nowait()
+                if len(item) == 3:
+                    func, args, kwargs = item
+                    func(*args, **kwargs)
+                else:
+                    func, args = item
+                    func(*args)
             except Exception:
                 pass
 
@@ -8569,23 +8574,32 @@ class MusicPadApp(tk.Tk):
 
         def fetch_album_worker() -> None:
             try:
-                album_data = AudioEngine.get_album(browse_id) if browse_id else {}
-            except Exception:
-                album_data = {}
-            if not album_data and item.get("tracks"):
-                album_data = {
-                    "title": album_title,
-                    "artist": album_artist,
-                    "track_count": len(item["tracks"]),
-                    "duration": item.get("duration", 0.0),
-                    "duration_text": item.get("duration_text", ""),
-                    "thumbnail_url": item.get("thumbnail_url", ""),
-                    "tracks": item["tracks"],
-                }
-            if sync or threading.current_thread() is threading.main_thread():
-                self._render_album_view(album_data, item, autoplay_first=autoplay_first)
-            else:
-                self._safe_ui_call(self._render_album_view, album_data, item, autoplay_first=autoplay_first)
+                try:
+                    album_data = AudioEngine.get_album(browse_id) if browse_id else {}
+                except Exception:
+                    album_data = {}
+                if not album_data and item.get("tracks"):
+                    album_data = {
+                        "title": album_title,
+                        "artist": album_artist,
+                        "track_count": len(item["tracks"]),
+                        "duration": item.get("duration", 0.0),
+                        "duration_text": item.get("duration_text", ""),
+                        "thumbnail_url": item.get("thumbnail_url", ""),
+                        "tracks": item["tracks"],
+                    }
+                if sync or threading.current_thread() is threading.main_thread():
+                    self._render_album_view(album_data, item, autoplay_first=autoplay_first)
+                else:
+                    self._safe_ui_call(self._render_album_view, album_data, item, autoplay_first=autoplay_first)
+            except Exception as exc:
+                def on_error_ui() -> None:
+                    if hasattr(self, "yt_status_lbl"):
+                        self.yt_status_lbl.configure(text=f"Помилка завантаження альбому: {album_title}")
+                if sync or threading.current_thread() is threading.main_thread():
+                    on_error_ui()
+                else:
+                    self._safe_ui_call(on_error_ui)
 
         if sync:
             fetch_album_worker()
@@ -8699,8 +8713,17 @@ class MusicPadApp(tk.Tk):
                     self.yt_tree.see(sel_target)
                 except Exception:
                     pass
-            if autoplay_first:
-                self.after(50, lambda: self._play_album_track(0))
+            if autoplay_first and tracks:
+                self._active_album_queue = list(tracks)
+                self._album_track_index = 0
+                curr_info = getattr(self, "_current_album_info", {}) or {}
+                self._active_album_id = (
+                    curr_info.get("browse_id")
+                    or curr_info.get("playlist_id")
+                    or curr_info.get("title")
+                    or str(id(tracks))
+                )
+                self.after(50, lambda: self._play_album_track(tracks[0]))
 
         def fetch_album_thumbs_worker() -> None:
             nonlocal cached_album_photo

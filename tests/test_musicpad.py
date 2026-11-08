@@ -4641,6 +4641,112 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                 finally:
                     app._exit()
 
+    def test_safe_ui_call_kwargs_and_async_album_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. _safe_ui_call handles kwargs and _drain_ui_queue executes properly
+                    called_kwargs = {}
+                    def sample_fn(a: int, b: str, flag: bool = False) -> None:
+                        called_kwargs.update({"a": a, "b": b, "flag": flag})
+
+                    app._safe_ui_call(sample_fn, 42, "hello", flag=True)
+                    self.assertEqual(len(called_kwargs), 0)
+                    app._drain_ui_queue()
+                    self.assertEqual(called_kwargs, {"a": 42, "b": "hello", "flag": True})
+
+                    # 2. _open_album_view with sync=False and autoplay_first=True dispatches via background thread
+                    mock_tracks = [
+                        {"title": "Track 1", "artist": "Artist", "duration": 180.0, "url": "https://youtu.be/1"},
+                        {"title": "Track 2", "artist": "Artist", "duration": 200.0, "url": "https://youtu.be/2"},
+                    ]
+                    album_item = {
+                        "title": "Test Album",
+                        "artist": "Artist",
+                        "browse_id": "MPREb_test",
+                        "result_type": "album",
+                    }
+                    with patch.object(main.AudioEngine, "get_album", return_value={"title": "Test Album", "artist": "Artist", "tracks": mock_tracks}),                          patch.object(app, "_play_album_track") as mock_play_track:
+                        app._open_album_view(album_item, sync=False, autoplay_first=True)
+                        time.sleep(0.15)
+                        app._drain_ui_queue()
+
+                        self.assertTrue(app._viewing_album)
+                        self.assertEqual(len(app._current_album_tracks), 2)
+                        self.assertEqual(app._active_album_queue, mock_tracks)
+                        self.assertEqual(app._album_track_index, 0)
+                        time.sleep(0.08)
+                        app.update()
+                        mock_play_track.assert_called_once_with(mock_tracks[0])
+
+                    # 3. Graceful handling of fetch errors and exceptions in fetch_album_worker
+                    with patch.object(main.AudioEngine, "get_album", side_effect=RuntimeError("Network explosion")):
+                        err_item = {"title": "Crashing Album", "browse_id": "MPREb_crash"}
+                        app._open_album_view(err_item, sync=False)
+                        time.sleep(0.15)
+                        app._drain_ui_queue()
+                        self.assertTrue(
+                            "помилка" in app.yt_status_lbl.cget("text").lower()
+                            or "не знайдено" in app.yt_status_lbl.cget("text").lower()
+                        )
+
+                    # Unexpected error during worker preparation triggers on_error_ui without blocking on network
+                    with patch.object(main.AudioEngine, "get_album", return_value={}):
+                        bad_item = {"title": "Exploding Item", "browse_id": "MPREb_err", "tracks": 12345}
+                        app._open_album_view(bad_item, sync=False)
+                        time.sleep(0.1)
+                        app._drain_ui_queue()
+                        self.assertIn("Помилка завантаження альбому: Exploding Item", app.yt_status_lbl.cget("text"))
+                finally:
+                    app._exit()
+
+    def test_ring_buffer_and_virtual_cable_master_reader(self) -> None:
+        from musicpad.audio_engine import Float32RingBuffer, READER_INJECTION, READER_MONITOR, ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION
+        import numpy as np
+
+        # 1. Float32RingBuffer pacing with master READER_INJECTION
+        rb = Float32RingBuffer(capacity_frames=1024, channels=2)
+        rb.register_reader(READER_MONITOR)
+        rb.set_master_reader(READER_INJECTION)
+
+        chunk = np.zeros((512, 2), dtype=np.float32)
+        w1 = rb.write(chunk)
+        w2 = rb.write(chunk)
+        self.assertEqual(w1 + w2, 1024)
+
+        # Buffer is full (0 frames space). When master READER_INJECTION reads 512 frames, space is freed immediately
+        rb.read(512, reader_id=READER_INJECTION)
+        space = rb.write_space()
+        self.assertEqual(space, 512)
+        w3 = rb.write(chunk)
+        self.assertEqual(w3, 512)
+
+        # 2. AudioEngine in Virtual Cable mode sets master reader to READER_INJECTION even with monitor active
+        engine = main.AudioEngine(
+            output_device=None,
+            input_device=None,
+            monitor_device=1,
+            routing_mode=ROUTING_MODE_VIRTUAL_CABLE,
+        )
+        try:
+            self.assertEqual(engine.routing_mode, ROUTING_MODE_VIRTUAL_CABLE)
+            self.assertEqual(engine._ring_buffer._master_reader_id, READER_INJECTION)
+        finally:
+            engine.shutdown()
+
+        engine_inj = main.AudioEngine(
+            output_device=None,
+            input_device=None,
+            monitor_device=1,
+            routing_mode=ROUTING_MODE_INJECTION,
+        )
+        try:
+            self.assertEqual(engine_inj.routing_mode, ROUTING_MODE_INJECTION)
+        finally:
+            engine_inj.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,9 @@ class Float32RingBuffer:
     def write_space(self) -> int:
         with self._lock:
             master_read = self._read_counts.get(self._master_reader_id, self._write_count)
+            min_allowed = self._write_count - self.capacity
+            if master_read < min_allowed:
+                master_read = min_allowed
             used = self._write_count - master_read
             return max(0, self.capacity - used)
 
@@ -167,6 +170,9 @@ class Float32RingBuffer:
         n = data.shape[0]
         with self._lock:
             master_read = self._read_counts.get(self._master_reader_id, self._write_count)
+            min_allowed = self._write_count - self.capacity
+            if master_read < min_allowed:
+                master_read = min_allowed
             used = self._write_count - master_read
             space = self.capacity - used
             to_write = min(n, space)
@@ -180,12 +186,11 @@ class Float32RingBuffer:
                 self._buffer[:part2] = data[part1:to_write]
             self._write_count += to_write
 
-            # If any secondary reader falls behind by more than capacity, fast-forward it
+            # If any reader falls behind by more than capacity, fast-forward it
             min_allowed = self._write_count - self.capacity
-            for rid in self._read_counts:
-                if rid != self._master_reader_id:
-                    if self._read_counts[rid] < min_allowed:
-                        self._read_counts[rid] = min_allowed
+            for rid in list(self._read_counts.keys()):
+                if self._read_counts[rid] < min_allowed:
+                    self._read_counts[rid] = min_allowed
             return to_write
 
     def read(self, frames: int, reader_id: int = 0) -> tuple[np.ndarray, int]:
@@ -2129,10 +2134,13 @@ class AudioEngine:
             )
             self._decode_thread.start()
 
-            self._ring_buffer.register_reader(READER_MONITOR)
-            self._ring_buffer.set_master_reader(
-                READER_MONITOR if monitor_stream is not None else READER_INJECTION
-            )
+            if self.routing_mode == ROUTING_MODE_INJECTION:
+                self._ring_buffer.register_reader(READER_MONITOR)
+                self._ring_buffer.set_master_reader(
+                    READER_MONITOR if monitor_stream is not None else READER_INJECTION
+                )
+            else:
+                self._ring_buffer.set_master_reader(READER_INJECTION)
 
             while not self._stop_event.is_set():
                 if self._devices_dirty.is_set():
@@ -2143,9 +2151,12 @@ class AudioEngine:
                     stream, monitor_stream, monitor_rate, mic_stream, mic_channels = (
                         self._open_audio_streams()
                     )
-                    self._ring_buffer.set_master_reader(
-                        READER_MONITOR if monitor_stream is not None else READER_INJECTION
-                    )
+                    if self.routing_mode == ROUTING_MODE_INJECTION:
+                        self._ring_buffer.set_master_reader(
+                            READER_MONITOR if monitor_stream is not None else READER_INJECTION
+                        )
+                    else:
+                        self._ring_buffer.set_master_reader(READER_INJECTION)
 
                 frames = self.blocksize
                 is_mock_stream = hasattr(stream, "_mock_name") or hasattr(stream, "assert_called")
