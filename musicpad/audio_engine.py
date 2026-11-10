@@ -2952,7 +2952,7 @@ class AudioEngine:
             return []
         try:
             ytmusic = YTMusic()
-            raw = ytmusic.get_search_suggestions(q) or []
+            raw = ytmusic.get_search_suggestions(q, detailed_runs=False) or []
             results: list[str] = []
             for item in raw:
                 if isinstance(item, str):

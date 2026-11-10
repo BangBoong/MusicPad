@@ -5064,7 +5064,7 @@ class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
         with patch("musicpad.audio_engine.YTMusic", return_value=mock_ytm):
             res = AudioEngine.get_search_suggestions("silent")
             self.assertEqual(res, ["silent hill 2 ost", "silent hill 3 ost", "silent hill"])
-            mock_ytm.get_search_suggestions.assert_called_once_with("silent")
+            mock_ytm.get_search_suggestions.assert_called_once_with("silent", detailed_runs=False)
 
         # 3. Network error or exception gracefully returns []
         mock_ytm_err = MagicMock()
@@ -5140,11 +5140,16 @@ class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
                         self.assertEqual(app._yt_suggest_selected_idx, -1)
                         self.assertEqual(app.yt_query_var.get(), "silent")
 
-                        # Escape restores typed text and hides overlay
+                        # Escape restores typed text, increments generation token, and hides overlay
                         app._on_yt_entry_down()
                         self.assertEqual(app.yt_query_var.get(), "silent hill 3 ost")
+                        gen_before_esc = app._yt_suggest_generation
                         app._on_yt_entry_escape()
                         self.assertEqual(app.yt_query_var.get(), "silent")
+                        self.assertEqual(app.yt_suggestions_frame.winfo_manager(), "")
+                        self.assertGreater(app._yt_suggest_generation, gen_before_esc)
+                        # In-flight response arriving after Escape is ignored and does not re-open overlay
+                        app._on_yt_suggestions_loaded(gen_before_esc, "silent", ["silent hill 3 ost"])
                         self.assertEqual(app.yt_suggestions_frame.winfo_manager(), "")
 
                         # 6. Direct URL suppresses suggestions
