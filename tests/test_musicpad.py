@@ -2012,7 +2012,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # YouTube panel in dark theme
                     self.assertEqual(app.yt_search_frame.cget("bg"), c_dark["table_bg"])
                     self.assertEqual(app.yt_top.cget("bg"), c_dark["table_bg"])
-                    self.assertEqual(app.btn_yt_search.cget("bg"), c_dark["top_bg"])
+                    self.assertIsNone(app.btn_yt_search)
+                    self.assertEqual(app.yt_entry_inner.cget("bg"), c_dark["entry_bg"])
 
                     # Recursive menus in dark theme
                     for child in app.menubar.winfo_children():
@@ -2038,7 +2039,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # YouTube panel completely light
                     self.assertEqual(app.yt_search_frame.cget("bg"), "#ffffff")
                     self.assertEqual(app.yt_top.cget("bg"), "#ffffff")
-                    self.assertEqual(app.btn_yt_search.cget("bg"), "#eaedf1")
+                    self.assertEqual(app.yt_entry_inner.cget("bg"), "#ffffff")
 
                     # Recursive menus completely light
                     for child in app.menubar.winfo_children():
@@ -2068,7 +2069,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.seek_scale.theme, "dark")
                     self.assertEqual(app.volume_scale.theme, "dark")
                     self.assertEqual(app.yt_search_frame.cget("bg"), "#1e1e1e")
-                    self.assertEqual(app.btn_yt_search.cget("bg"), "#212121")
+                    self.assertEqual(app.yt_entry_inner.cget("bg"), "#262626")
 
                     # Popdown listbox dynamically reverted to dark
                     self.assertEqual(app.tk.eval(f"{lb} cget -background"), "#262626")
@@ -4328,7 +4329,8 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(app.lbl_stats_plays.cget("text"), "Лічильник відтворень: ")
                     self.assertEqual(app.lbl_stats_sel.cget("text"), "Вибрано: ")
                     self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Очистити кеш")
-                    self.assertEqual(app.btn_yt_search.cget("text"), "🔍 Знайти")
+                    self.assertIsNone(app.btn_yt_search)
+                    self.assertEqual(app.yt_status_lbl.cget("text"), "Введіть запит і натисніть Enter")
                     self.assertTrue(app.btn_yt_filter.cget("text").startswith("Фільтр:"))
 
                     # Switch to English
@@ -4342,7 +4344,8 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(app.lbl_stats_plays.cget("text"), "Playback count: ")
                     self.assertEqual(app.lbl_stats_sel.cget("text"), "Selected: ")
                     self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Clear cache")
-                    self.assertEqual(app.btn_yt_search.cget("text"), "🔍 Search")
+                    self.assertIsNone(app.btn_yt_search)
+                    self.assertEqual(app.yt_status_lbl.cget("text"), "Enter query and press Enter")
                     self.assertTrue(app.btn_yt_filter.cget("text").startswith("Filter:"))
                     self.assertEqual(app.btn_back_to_results.cget("text"), "← Back to results")
                     # Photo 1 verification: top playback bar nothing playing display
@@ -4362,7 +4365,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(app.cat_hdr_lbl1.cget("text"), "Категорія")
                     self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
                     self.assertEqual(app.btn_clear_cache.cget("text"), "🗑 Очистити кеш")
-                    self.assertEqual(app.btn_yt_search.cget("text"), "🔍 Знайти")
+                    self.assertIsNone(app.btn_yt_search)
                 finally:
                     app._exit()
 
@@ -4994,6 +4997,260 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     finally:
                         app._exit()
 
+
+class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
+    def test_full_width_yt_search_bar_and_clear_button(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_yt_bar.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    # 1. Right-side search button is removed; search bar spans full width with left magnifying glass
+                    self.assertIsNone(app.btn_yt_search)
+                    self.assertIsNone(app.btn_search)
+                    self.assertTrue(hasattr(app, "yt_search_icon_lbl"))
+                    self.assertTrue(app.yt_search_icon_lbl.winfo_exists())
+                    self.assertTrue(hasattr(app, "btn_yt_clear"))
+                    self.assertTrue(app.btn_yt_clear.winfo_exists())
+
+                    # 2. Clear button ('✕') is hidden when query is empty
+                    self.assertEqual(app.yt_query_var.get(), "")
+                    self.assertEqual(app.btn_yt_clear.winfo_manager(), "")
+
+                    # 3. Typing text shows the Clear button ('✕')
+                    app.yt_query_var.set("silent")
+                    app.update()
+                    self.assertEqual(app.btn_yt_clear.winfo_manager(), "pack")
+
+                    # 4. Clicking Clear button clears text, hides Clear button, preserves existing results
+                    app._render_yt_results([{"title": "Silent Hill 2 OST", "artist": "Akira Yamaoka", "duration": 180.0}])
+                    self.assertEqual(len(app.yt_tree.get_children()), 1)
+                    app._clear_yt_search()
+                    app.update()
+                    self.assertEqual(app.yt_query_var.get(), "")
+                    self.assertEqual(app.yt_search_entry.get(), "")
+                    self.assertEqual(app.btn_yt_clear.winfo_manager(), "")
+                    self.assertEqual(len(app.yt_tree.get_children()), 1)
+
+                    # 5. Pressing Enter triggers search
+                    app._select_category("youtube")
+                    app.update()
+                    app.yt_search_entry.focus_force()
+                    with patch.object(main.AudioEngine, "search_youtube", return_value=[]) as mock_search:
+                        app.yt_query_var.set("silent hill")
+                        app.yt_search_entry.event_generate("<Return>")
+                        app.update()
+                        time.sleep(0.05)
+                        mock_search.assert_called_once()
+                finally:
+                    app._exit()
+
+    def test_audio_engine_get_search_suggestions(self) -> None:
+        # 1. Empty or whitespace query short-circuits without network call
+        with patch("musicpad.audio_engine.YTMusic") as mock_ytm_cls:
+            self.assertEqual(AudioEngine.get_search_suggestions(""), [])
+            self.assertEqual(AudioEngine.get_search_suggestions("   "), [])
+            mock_ytm_cls.assert_not_called()
+
+        # 2. Normal query returns cleaned list of strings
+        mock_ytm = MagicMock()
+        mock_ytm.get_search_suggestions.return_value = [
+            "silent hill 2 ost",
+            "silent hill 3 ost",
+            {"text": "silent hill"},
+            "",
+            "   ",
+        ]
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_ytm):
+            res = AudioEngine.get_search_suggestions("silent")
+            self.assertEqual(res, ["silent hill 2 ost", "silent hill 3 ost", "silent hill"])
+            mock_ytm.get_search_suggestions.assert_called_once_with("silent")
+
+        # 3. Network error or exception gracefully returns []
+        mock_ytm_err = MagicMock()
+        mock_ytm_err.get_search_suggestions.side_effect = RuntimeError("Network timeout")
+        with patch("musicpad.audio_engine.YTMusic", return_value=mock_ytm_err):
+            self.assertEqual(AudioEngine.get_search_suggestions("silent"), [])
+
+    def test_debounced_live_suggestions_mixed_formatting_and_keyboard_nav(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_yt_suggest.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app._select_category("youtube")
+                    app.update()
+
+                    live_list = [
+                        "silent hill 3 ost",
+                        "silent hill",
+                        "silent roads remix monkey beats",
+                        "silent flirt we are jazz",
+                        "silent hill ost",
+                        "silent hill 2 promise",
+                        "silent hill 4 room of angel",
+                        "silent hill extra 8th item",
+                    ]
+
+                    with patch.object(main.AudioEngine, "get_search_suggestions", return_value=live_list) as mock_sugg:
+                        # 1. Typing schedules a 300ms debounce timer without immediate network call
+                        app.yt_query_var.set("silent")
+                        self.assertIsNotNone(app._yt_suggest_after_id)
+                        self.assertEqual(app._yt_typed_query, "silent")
+                        mock_sugg.assert_not_called()
+
+                        # 2. Fire the debounced worker and drain UI queue
+                        app._fire_yt_suggestions_debounce()
+                        time.sleep(0.08)
+                        app._drain_ui_queue()
+                        app.update()
+
+                        mock_sugg.assert_called_once_with("silent")
+                        self.assertEqual(app.yt_suggestions_frame.winfo_manager(), "place")
+
+                        # 3. Capped at 7 rows max, each splitting bold query + normal completion on the same row
+                        self.assertEqual(len(app._yt_suggestion_rows), 7)
+                        first_row = app._yt_suggestion_rows[0]
+                        self.assertEqual(first_row["text"], "silent hill 3 ost")
+                        self.assertEqual(first_row["bold_text"], "silent")
+                        self.assertEqual(first_row["normal_text"], " hill 3 ost")
+                        self.assertFalse(first_row["is_history"])
+
+                        # 4. Stale generation response is ignored
+                        stale_gen = app._yt_suggest_generation - 1
+                        app._on_yt_suggestions_loaded(stale_gen, "old", ["old suggestion"])
+                        self.assertEqual(len(app._yt_suggestion_rows), 7)
+                        self.assertEqual(app._yt_suggestion_rows[0]["text"], "silent hill 3 ost")
+
+                        # 5. Arrow Down / Up previews suggestion in search bar without re-triggering debounce
+                        app._on_yt_entry_down()
+                        self.assertEqual(app._yt_suggest_selected_idx, 0)
+                        self.assertEqual(app.yt_query_var.get(), "silent hill 3 ost")
+                        self.assertEqual(app._yt_typed_query, "silent")
+                        self.assertIsNone(app._yt_suggest_after_id)
+
+                        app._on_yt_entry_down()
+                        self.assertEqual(app._yt_suggest_selected_idx, 1)
+                        self.assertEqual(app.yt_query_var.get(), "silent hill")
+
+                        # Moving Up twice returns to index -1 and restores original typed text
+                        app._on_yt_entry_up()
+                        self.assertEqual(app._yt_suggest_selected_idx, 0)
+                        app._on_yt_entry_up()
+                        self.assertEqual(app._yt_suggest_selected_idx, -1)
+                        self.assertEqual(app.yt_query_var.get(), "silent")
+
+                        # Escape restores typed text and hides overlay
+                        app._on_yt_entry_down()
+                        self.assertEqual(app.yt_query_var.get(), "silent hill 3 ost")
+                        app._on_yt_entry_escape()
+                        self.assertEqual(app.yt_query_var.get(), "silent")
+                        self.assertEqual(app.yt_suggestions_frame.winfo_manager(), "")
+
+                        # 6. Direct URL suppresses suggestions
+                        mock_sugg.reset_mock()
+                        app.yt_query_var.set("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+                        self.assertIsNone(app._yt_suggest_after_id)
+                        self.assertEqual(app.yt_suggestions_frame.winfo_manager(), "")
+                        mock_sugg.assert_not_called()
+                finally:
+                    app._exit()
+
+    def test_local_search_history_persistence_cap_and_trash_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_yt_history.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app._select_category("youtube")
+                    app.update()
+
+                    with patch.object(main.AudioEngine, "search_youtube", return_value=[]):
+                        # 1. Execute searches -> added to top of yt_search_history, deduplicated case-insensitively
+                        for q in [
+                            "silent hill 1 ost",
+                            "silent hill 2 ost",
+                            "silent hill 3 ost",
+                            "silent hill 4 ost",
+                            "Silent Hill 2 OST",  # duplicate of 2 -> moves to index 0
+                        ]:
+                            app.yt_query_var.set(q)
+                            app._perform_yt_search()
+
+                        self.assertEqual(
+                            app.yt_search_history[:4],
+                            [
+                                "Silent Hill 2 OST",
+                                "silent hill 4 ost",
+                                "silent hill 3 ost",
+                                "silent hill 1 ost",
+                            ],
+                        )
+
+                        # Direct URLs are NOT added to search history
+                        with patch.object(app, "_play_url"):
+                            app.yt_query_var.set("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+                            app._perform_yt_search()
+                        self.assertNotIn("https://www.youtube.com/watch?v=dQw4w9WgXcQ", app.yt_search_history)
+
+                    # 2. Verify persisted in state file and reloaded
+                    saved_json = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertEqual(
+                        saved_json.get("yt_search_history"),
+                        [
+                            "Silent Hill 2 OST",
+                            "silent hill 4 ost",
+                            "silent hill 3 ost",
+                            "silent hill 1 ost",
+                        ],
+                    )
+                    app.yt_search_history = []
+                    app._load_saved_state()
+                    self.assertEqual(len(app.yt_search_history), 4)
+
+                    # 3. Combine up to 3 local history rows + live suggestions up to 7 total (deduplicated)
+                    live_list = [
+                        "silent hill 2 ost",  # duplicate of history item -> skipped
+                        "silent hill",
+                        "silent roads remix monkey beats",
+                        "silent flirt we are jazz",
+                        "silent hill ost",
+                        "silent hill promise",
+                    ]
+                    with patch.object(main.AudioEngine, "get_search_suggestions", return_value=live_list):
+                        app.yt_query_var.set("silent")
+                        app._fire_yt_suggestions_debounce()
+                        time.sleep(0.08)
+                        app._drain_ui_queue()
+                        app.update()
+
+                        # 7 rows total: first 3 from history, next 4 from live suggestions
+                        self.assertEqual(len(app._yt_suggestion_rows), 7)
+                        hist_rows = [r for r in app._yt_suggestion_rows if r["is_history"]]
+                        live_rows = [r for r in app._yt_suggestion_rows if not r["is_history"]]
+                        self.assertEqual(len(hist_rows), 3)
+                        self.assertEqual(len(live_rows), 4)
+                        self.assertEqual(
+                            [r["text"] for r in hist_rows],
+                            ["Silent Hill 2 OST", "silent hill 4 ost", "silent hill 3 ost"],
+                        )
+                        for hr in hist_rows:
+                            self.assertIsNotNone(hr["btn_trash"])
+                            self.assertEqual(hr["bold_text"].lower(), "silent")
+
+                        # 4. Clicking trash button removes item from history, saves state, updates dropdown
+                        app._remove_yt_search_history_item("Silent Hill 2 OST")
+                        app.update()
+                        self.assertNotIn("Silent Hill 2 OST", app.yt_search_history)
+                        self.assertEqual(len(app._yt_suggestion_rows), 7)
+                        self.assertEqual(
+                            [r["text"] for r in app._yt_suggestion_rows if r["is_history"]],
+                            ["silent hill 4 ost", "silent hill 3 ost", "silent hill 1 ost"],
+                        )
+                        saved_after_del = json.loads(cfg_file.read_text(encoding="utf-8"))
+                        self.assertNotIn("Silent Hill 2 OST", saved_after_del.get("yt_search_history", []))
+                finally:
+                    app._exit()
 
 
 if __name__ == "__main__":

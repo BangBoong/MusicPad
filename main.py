@@ -331,7 +331,7 @@ I18N: dict[str, dict[str, str]] = {
         # Cache button
         "btn_clear_cache": "🗑 Очистити кеш",
         # YouTube Search UI
-        "yt_search_placeholder": "Введіть запит і натисніть Знайти",
+        "yt_search_placeholder": "Введіть запит і натисніть Enter",
         "yt_search_btn": "🔍 Знайти",
         "filter_prefix": "Фільтр",
         "filter_all": "Всі результати",
@@ -526,7 +526,7 @@ I18N: dict[str, dict[str, str]] = {
         # Cache button
         "btn_clear_cache": "🗑 Clear cache",
         # YouTube Search UI
-        "yt_search_placeholder": "Enter query and click Search",
+        "yt_search_placeholder": "Enter query and press Enter",
         "yt_search_btn": "🔍 Search",
         "filter_prefix": "Filter",
         "filter_all": "All results",
@@ -2314,7 +2314,7 @@ class MusicPadApp(tk.Tk):
                 pass
 
         # 3e. YouTube search controls & table
-        if hasattr(self, "btn_yt_search") and hasattr(self.btn_yt_search, "configure"):
+        if getattr(self, "btn_yt_search", None) and hasattr(self.btn_yt_search, "configure"):
             self.btn_yt_search.configure(text=self._tr("yt_search_btn"))
         if hasattr(self, "btn_yt_filter") and hasattr(self.btn_yt_filter, "configure"):
             self._update_filter_button_label()
@@ -2339,7 +2339,12 @@ class MusicPadApp(tk.Tk):
 
         if hasattr(self, "yt_status_lbl") and hasattr(self.yt_status_lbl, "cget"):
             curr_st = self.yt_status_lbl.cget("text")
-            if not curr_st or curr_st in ("Введіть запит і натисніть Знайти", "Enter query and click Search"):
+            if not curr_st or curr_st in (
+                "Введіть запит і натисніть Enter",
+                "Enter query and press Enter",
+                "Введіть запит і натисніть Знайти",
+                "Enter query and click Search",
+            ):
                 self.yt_status_lbl.configure(text=self._tr("yt_search_placeholder"))
             elif hasattr(self, "yt_results_data") and self.yt_results_data and not getattr(self, "_viewing_album", False):
                 self.yt_status_lbl.configure(text=self._tr("yt_status_found", count=len(self.yt_results_data)))
@@ -2828,6 +2833,14 @@ class MusicPadApp(tk.Tk):
         self._clipboard_tracks: list[LocalTrack] = []
         self._yt_thumb_cache: dict[str, Any] = {}
         self._yt_search_generation: int = 0
+        self._yt_suggest_after_id: Optional[str] = None
+        self._yt_suggest_generation: int = 0
+        self._yt_typed_query: str = ""
+        self._yt_suppress_suggest_trace: bool = False
+        self._yt_suggestion_rows: list[dict[str, Any]] = []
+        self._yt_suggest_selected_idx: int = -1
+        self._yt_live_suggestions: list[str] = []
+        self.yt_search_history: list[str] = []
         self.yt_filter_var = tk.StringVar(value="all")
         self.yt_search_limit_var = tk.IntVar(value=35)
         self.yt_priority_var = tk.BooleanVar(value=False)
@@ -3082,6 +3095,50 @@ class MusicPadApp(tk.Tk):
             d_thumb.rectangle([(54, 18), (57, 46)], fill=blue)
             d_thumb.line([(37, 24), (56, 18)], fill=blue, width=4)
             self._icons["thumb_placeholder"] = ImageTk.PhotoImage(img_thumb.resize((40, 40), Image.Resampling.LANCZOS))
+
+            # Search bar icons (magnifying glass & clear '✕') for dark and light themes
+            for suffix, col in (("dark", "#b8b8b8"), ("light", "#5a6270")):
+                # Magnifying glass (16x16)
+                img_mag = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                d_mag = ImageDraw.Draw(img_mag)
+                d_mag.ellipse([(10, 10), (42, 42)], outline=col, width=5)
+                d_mag.line([(38, 38), (54, 54)], fill=col, width=6)
+                self._icons[f"search_mag_{suffix}"] = ImageTk.PhotoImage(
+                    img_mag.resize((16, 16), Image.Resampling.LANCZOS)
+                )
+
+                # Clear '✕' icon (14x14)
+                img_clr = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                d_clr = ImageDraw.Draw(img_clr)
+                d_clr.line([(14, 14), (50, 50)], fill=col, width=5)
+                d_clr.line([(50, 14), (14, 50)], fill=col, width=5)
+                self._icons[f"search_clear_{suffix}"] = ImageTk.PhotoImage(
+                    img_clr.resize((14, 14), Image.Resampling.LANCZOS)
+                )
+
+                # History clock icon (16x16)
+                img_hist = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                d_hist = ImageDraw.Draw(img_hist)
+                d_hist.arc([(8, 8), (56, 56)], start=210, end=155, fill=col, width=5)
+                d_hist.polygon([(6, 20), (22, 16), (14, 30)], fill=col)
+                d_hist.line([(32, 18), (32, 34)], fill=col, width=5)
+                d_hist.line([(32, 34), (44, 40)], fill=col, width=5)
+                self._icons[f"search_history_{suffix}"] = ImageTk.PhotoImage(
+                    img_hist.resize((16, 16), Image.Resampling.LANCZOS)
+                )
+
+                # Trash bin icon (15x15)
+                img_tr = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                d_tr = ImageDraw.Draw(img_tr)
+                d_tr.line([(12, 16), (52, 16)], fill=col, width=4)
+                d_tr.rectangle([(24, 10), (40, 16)], outline=col, width=3)
+                d_tr.rectangle([(16, 18), (48, 54)], outline=col, width=4)
+                d_tr.line([(26, 25), (26, 46)], fill=col, width=3)
+                d_tr.line([(32, 25), (32, 46)], fill=col, width=3)
+                d_tr.line([(38, 25), (38, 46)], fill=col, width=3)
+                self._icons[f"search_trash_{suffix}"] = ImageTk.PhotoImage(
+                    img_tr.resize((15, 15), Image.Resampling.LANCZOS)
+                )
 
         except Exception:
             self._icons = {}
@@ -6791,19 +6848,47 @@ class MusicPadApp(tk.Tk):
                 self.yt_top.configure(bg=c["table_bg"])
             if hasattr(self, "yt_entry_border") and self.yt_entry_border.winfo_exists():
                 self.yt_entry_border.configure(bg=c["divider"])
+            if hasattr(self, "yt_entry_inner") and self.yt_entry_inner.winfo_exists():
+                self.yt_entry_inner.configure(bg=c["entry_bg"])
+            if hasattr(self, "yt_search_icon_lbl") and self.yt_search_icon_lbl.winfo_exists():
+                mag_key = "search_mag_dark" if getattr(self, "theme", "dark") == "dark" else "search_mag_light"
+                mag_img = self._icons.get(mag_key) if hasattr(self, "_icons") else None
+                self.yt_search_icon_lbl.configure(
+                    bg=c["entry_bg"],
+                    fg=c["muted_fg"],
+                    image=mag_img if mag_img else "",
+                    text="" if mag_img else "🔍",
+                )
             if hasattr(self, "yt_search_entry") and self.yt_search_entry.winfo_exists():
                 self.yt_search_entry.configure(
                     bg=c["entry_bg"],
                     fg=c["entry_fg"],
                     insertbackground=c["accent"],
                 )
-            if hasattr(self, "btn_yt_search") and self.btn_yt_search.winfo_exists():
+            if hasattr(self, "btn_yt_clear") and self.btn_yt_clear.winfo_exists():
+                clr_key = "search_clear_dark" if getattr(self, "theme", "dark") == "dark" else "search_clear_light"
+                clr_img = self._icons.get(clr_key) if hasattr(self, "_icons") else None
+                self.btn_yt_clear.configure(
+                    bg=c["entry_bg"],
+                    fg=c["muted_fg"],
+                    activebackground=c["entry_bg"],
+                    activeforeground=c["fg"],
+                    image=clr_img if clr_img else "",
+                    text="" if clr_img else "✕",
+                )
+            if getattr(self, "btn_yt_search", None) and self.btn_yt_search.winfo_exists():
                 self.btn_yt_search.configure(
                     bg=c["top_bg"],
                     fg=c["fg"],
                     activebackground=c["active_menu_bg"],
                     activeforeground=c["active_menu_fg"],
                 )
+            if hasattr(self, "yt_suggestions_frame") and self.yt_suggestions_frame.winfo_exists():
+                self.yt_suggestions_frame.configure(bg=c["divider"])
+                if hasattr(self, "yt_suggestions_inner") and self.yt_suggestions_inner.winfo_exists():
+                    self.yt_suggestions_inner.configure(bg=c["entry_bg"])
+                if self.yt_suggestions_frame.winfo_manager() == "place":
+                    self._rebuild_and_show_yt_suggestions()
             if hasattr(self, "yt_status_lbl") and self.yt_status_lbl.winfo_exists():
                 self.yt_status_lbl.configure(bg=c["table_bg"], fg=c["muted_fg"])
             if hasattr(self, "yt_status_bar") and self.yt_status_bar.winfo_exists():
@@ -7598,46 +7683,82 @@ class MusicPadApp(tk.Tk):
         self.btn_yt_close_x = None
         self.btn_close_x = None
 
-        # 1. Search Bar Area (at the top)
+        # 1. Search Bar Area (at the top, full available width)
         self.yt_top = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
         self.yt_top.pack(fill="x", padx=12, pady=(10, 4))
 
         self.yt_query_var = tk.StringVar(value="")
         self.yt_entry_border = tk.Frame(self.yt_top, bg=c["divider"], bd=1)
-        self.yt_entry_border.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.yt_entry_border.pack(side="left", fill="x", expand=True, padx=0)
+
+        self.yt_entry_inner = tk.Frame(self.yt_entry_border, bg=c["entry_bg"])
+        self.yt_entry_inner.pack(fill="x", expand=True)
+
+        mag_key = "search_mag_dark" if getattr(self, "theme", "dark") == "dark" else "search_mag_light"
+        mag_img = self._icons.get(mag_key) if hasattr(self, "_icons") else None
+        self.yt_search_icon_lbl = tk.Label(
+            self.yt_entry_inner,
+            image=mag_img if mag_img else "",
+            text="" if mag_img else "🔍",
+            bg=c["entry_bg"],
+            fg=c["muted_fg"],
+            font=("Segoe UI", 10),
+            padx=6,
+            cursor="xterm",
+        )
+        self.yt_search_icon_lbl.pack(side="left", padx=(6, 2), pady=4)
 
         self.yt_search_entry = tk.Entry(
-            self.yt_entry_border,
+            self.yt_entry_inner,
             textvariable=self.yt_query_var,
             bg=c["entry_bg"],
             fg=c["entry_fg"],
             insertbackground=c["accent"],
             bd=0,
             relief="flat",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10),
         )
-        self.yt_search_entry.pack(fill="x", ipady=4, padx=6)
-        self.yt_search_entry.bind("<Return>", lambda _: self._perform_yt_search())
+        self.yt_search_entry.pack(side="left", fill="x", expand=True, ipady=5, padx=(2, 4))
+        self.yt_search_icon_lbl.bind("<Button-1>", lambda _: self.yt_search_entry.focus_set())
+        self.yt_search_entry.bind("<Return>", self._on_yt_search_return)
+        self.yt_search_entry.bind("<KP_Enter>", self._on_yt_search_return)
+        self.yt_search_entry.bind("<Down>", self._on_yt_entry_down)
+        self.yt_search_entry.bind("<Up>", self._on_yt_entry_up)
+        self.yt_search_entry.bind("<Escape>", self._on_yt_entry_escape)
         self._setup_entry_smart_clipboard(self.yt_search_entry)
         self.url_entry = self.yt_search_entry
 
-        self.btn_yt_search = tk.Button(
-            self.yt_top,
-            text=self._tr("yt_search_btn"),
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
+        clr_key = "search_clear_dark" if getattr(self, "theme", "dark") == "dark" else "search_clear_light"
+        clr_img = self._icons.get(clr_key) if hasattr(self, "_icons") else None
+        self.btn_yt_clear = tk.Button(
+            self.yt_entry_inner,
+            image=clr_img if clr_img else "",
+            text="" if clr_img else "✕",
+            bg=c["entry_bg"],
+            fg=c["muted_fg"],
+            activebackground=c["entry_bg"],
+            activeforeground=c["fg"],
+            bd=0,
+            relief="flat",
+            highlightthickness=0,
             cursor="hand2",
-            font=("Segoe UI", 9),
-            padx=12,
+            font=("Segoe UI", 10),
+            padx=6,
             pady=2,
-            command=self._perform_yt_search,
+            command=self._clear_yt_search,
         )
-        self.btn_yt_search.pack(side="right")
-        self.btn_search = self.btn_yt_search
+
+        # Search button removed per design; search runs on Enter or suggestion click
+        self.btn_yt_search = None
+        self.btn_search = None
+
+        # Floating overlay container for search suggestions (placed directly below yt_top)
+        self.yt_suggestions_frame = tk.Frame(self.yt_search_frame, bg=c["divider"], bd=1, relief="solid")
+        self.yt_suggestions_inner = tk.Frame(self.yt_suggestions_frame, bg=c["entry_bg"])
+        self.yt_suggestions_inner.pack(fill="both", expand=True)
+
+        self.yt_query_var.trace_add("write", self._on_yt_query_changed)
+        self.bind("<Button-1>", self._on_global_click_close_yt_suggestions, add=True)
 
         # 2. Status and Filter bar
         self.yt_status_bar = tk.Frame(self.yt_search_frame, bg=c["table_bg"])
@@ -8370,6 +8491,429 @@ class MusicPadApp(tk.Tk):
             return "break"
         return None
 
+    def _on_yt_query_changed(self, *args: Any) -> None:
+        raw_val = self.yt_query_var.get() if hasattr(self, "yt_query_var") else ""
+        if hasattr(self, "btn_yt_clear") and self.btn_yt_clear.winfo_exists():
+            if raw_val:
+                if self.btn_yt_clear.winfo_manager() != "pack":
+                    self.btn_yt_clear.pack(side="right", padx=(2, 6), pady=2)
+            else:
+                if self.btn_yt_clear.winfo_manager() == "pack":
+                    self.btn_yt_clear.pack_forget()
+
+        if getattr(self, "_yt_suppress_suggest_trace", False):
+            return
+
+        if getattr(self, "_yt_suggest_after_id", None) is not None:
+            try:
+                self.after_cancel(self._yt_suggest_after_id)
+            except Exception:
+                pass
+            self._yt_suggest_after_id = None
+
+        q = raw_val.strip()
+        if not q or self._is_direct_url(q):
+            self._yt_typed_query = ""
+            self._yt_live_suggestions = []
+            self._yt_suggest_generation = getattr(self, "_yt_suggest_generation", 0) + 1
+            self._hide_yt_suggestions()
+            return
+
+        self._yt_typed_query = q
+        self._yt_suggest_selected_idx = -1
+        self._yt_suggest_after_id = self.after(300, self._fire_yt_suggestions_debounce)
+
+    def _fire_yt_suggestions_debounce(self) -> None:
+        self._yt_suggest_after_id = None
+        q = getattr(self, "_yt_typed_query", "").strip()
+        if not q or self._is_direct_url(q):
+            self._hide_yt_suggestions()
+            return
+        self._yt_suggest_generation = getattr(self, "_yt_suggest_generation", 0) + 1
+        gen = self._yt_suggest_generation
+
+        def worker() -> None:
+            suggestions = AudioEngine.get_search_suggestions(q)
+            self._safe_ui_call(self._on_yt_suggestions_loaded, gen, q, suggestions)
+
+        threading.Thread(target=worker, name="yt-search-suggestions", daemon=True).start()
+
+    def _on_yt_suggestions_loaded(self, gen: int, query: str, live_suggestions: list[str]) -> None:
+        if gen != getattr(self, "_yt_suggest_generation", 0):
+            return
+        cur_typed = getattr(self, "_yt_typed_query", "").strip()
+        if not cur_typed or self._is_direct_url(cur_typed):
+            self._hide_yt_suggestions()
+            return
+        self._yt_live_suggestions = [str(s).strip() for s in (live_suggestions or []) if str(s).strip()]
+        self._rebuild_and_show_yt_suggestions()
+
+    @staticmethod
+    def _split_suggestion_text(suggestion: str, typed_query: str) -> tuple[str, str, str]:
+        """Return (prefix_normal, bold_text, suffix_normal) for single-row rendering."""
+        s = str(suggestion or "")
+        q = str(typed_query or "").strip()
+        if not q or not s:
+            return ("", "", s)
+        s_low = s.lower()
+        q_low = q.lower()
+        if s_low.startswith(q_low):
+            return ("", s[: len(q)], s[len(q) :])
+        idx = s_low.find(q_low)
+        if idx >= 0:
+            return (s[:idx], s[idx : idx + len(q)], s[idx + len(q) :])
+        return ("", "", s)
+
+    def _collect_combined_yt_suggestions(self, typed_query: str) -> list[tuple[str, bool]]:
+        """Combine up to 3 local history matches + live suggestions up to 7 total rows."""
+        q = str(typed_query or "").strip()
+        if not q:
+            return []
+        q_low = q.lower()
+        combined: list[tuple[str, bool]] = []
+        seen_lower: set[str] = set()
+
+        history_list = getattr(self, "yt_search_history", []) or []
+        prefix_matches: list[str] = []
+        substr_matches: list[str] = []
+        for h in history_list:
+            h_str = str(h).strip()
+            if not h_str:
+                continue
+            h_low = h_str.lower()
+            if h_low.startswith(q_low):
+                prefix_matches.append(h_str)
+            elif q_low in h_low:
+                substr_matches.append(h_str)
+
+        for h_item in (prefix_matches + substr_matches):
+            h_low = h_item.lower()
+            if h_low not in seen_lower:
+                seen_lower.add(h_low)
+                combined.append((h_item, True))
+                if len(combined) >= 3:
+                    break
+
+        for s_item in getattr(self, "_yt_live_suggestions", []) or []:
+            if len(combined) >= 7:
+                break
+            s_str = str(s_item).strip()
+            if not s_str:
+                continue
+            s_low = s_str.lower()
+            if s_low not in seen_lower:
+                seen_lower.add(s_low)
+                combined.append((s_str, False))
+
+        return combined
+
+    def _rebuild_and_show_yt_suggestions(self) -> None:
+        if not hasattr(self, "yt_suggestions_frame") or not self.yt_suggestions_frame.winfo_exists():
+            return
+        typed_q = getattr(self, "_yt_typed_query", "").strip()
+        if not typed_q or self._is_direct_url(typed_q):
+            self._hide_yt_suggestions()
+            return
+
+        combined = self._collect_combined_yt_suggestions(typed_q)
+        if not combined:
+            self._hide_yt_suggestions()
+            return
+
+        c = self._get_theme_colors()
+        is_dark = getattr(self, "theme", "dark") == "dark"
+        row_bg = c["entry_bg"]
+        hover_bg = c["cat_hover_bg"] if "cat_hover_bg" in c else c["sel_bg"]
+        bold_fg = c["entry_fg"]
+        norm_fg = c["fg"] if is_dark else "#4a5568"
+
+        self.yt_suggestions_frame.configure(bg=c["divider"])
+        self.yt_suggestions_inner.configure(bg=row_bg)
+        for child in self.yt_suggestions_inner.winfo_children():
+            child.destroy()
+
+        self._yt_suggestion_rows = []
+        if self._yt_suggest_selected_idx >= len(combined):
+            self._yt_suggest_selected_idx = -1
+
+        mag_img = self._icons.get("search_mag_dark" if is_dark else "search_mag_light") if hasattr(self, "_icons") else None
+        hist_img = self._icons.get("search_history_dark" if is_dark else "search_history_light") if hasattr(self, "_icons") else None
+        trash_img = self._icons.get("search_trash_dark" if is_dark else "search_trash_light") if hasattr(self, "_icons") else None
+
+        row_h = 36
+        for idx, (s_text, is_hist) in enumerate(combined):
+            prefix_part, bold_part, normal_part = self._split_suggestion_text(s_text, typed_q)
+            is_sel = (idx == self._yt_suggest_selected_idx)
+            cur_bg = hover_bg if is_sel else row_bg
+
+            row_frame = tk.Frame(self.yt_suggestions_inner, bg=cur_bg, height=row_h, cursor="hand2")
+            row_frame.pack(fill="x", expand=True)
+            row_frame.pack_propagate(False)
+
+            canvas = tk.Canvas(
+                row_frame,
+                bg=cur_bg,
+                height=row_h,
+                bd=0,
+                highlightthickness=0,
+                cursor="hand2",
+            )
+            canvas.pack(side="left", fill="both", expand=True)
+
+            mid_y = row_h // 2
+            icon_img = hist_img if is_hist else mag_img
+            if icon_img:
+                canvas.create_image(20, mid_y, image=icon_img, anchor="center")
+            else:
+                canvas.create_text(
+                    20,
+                    mid_y,
+                    text="🕒" if is_hist else "🔍",
+                    fill=c["muted_fg"],
+                    font=("Segoe UI", 10),
+                    anchor="center",
+                )
+
+            tx = 44
+            if prefix_part:
+                p_id = canvas.create_text(
+                    tx,
+                    mid_y,
+                    text=prefix_part,
+                    fill=norm_fg,
+                    font=("Segoe UI", 10, "normal"),
+                    anchor="w",
+                )
+                bbox = canvas.bbox(p_id)
+                if bbox:
+                    tx = bbox[2]
+            if bold_part:
+                b_id = canvas.create_text(
+                    tx,
+                    mid_y,
+                    text=bold_part,
+                    fill=bold_fg,
+                    font=("Segoe UI", 10, "bold"),
+                    anchor="w",
+                )
+                bbox = canvas.bbox(b_id)
+                if bbox:
+                    tx = bbox[2]
+            if normal_part:
+                canvas.create_text(
+                    tx,
+                    mid_y,
+                    text=normal_part,
+                    fill=norm_fg,
+                    font=("Segoe UI", 10, "normal"),
+                    anchor="w",
+                )
+
+            btn_trash = None
+            if is_hist:
+                btn_trash = tk.Button(
+                    row_frame,
+                    image=trash_img if trash_img else "",
+                    text="" if trash_img else "🗑",
+                    bg=cur_bg,
+                    fg=c["muted_fg"],
+                    activebackground=hover_bg,
+                    activeforeground=c["fg"],
+                    bd=0,
+                    relief="flat",
+                    highlightthickness=0,
+                    cursor="hand2",
+                    font=("Segoe UI", 9),
+                    padx=8,
+                    command=lambda val=s_text: self._remove_yt_search_history_item(val),
+                )
+                btn_trash.pack(side="right", padx=(4, 8), pady=2)
+
+            row_info: dict[str, Any] = {
+                "index": idx,
+                "text": s_text,
+                "prefix_text": prefix_part,
+                "bold_text": bold_part,
+                "normal_text": normal_part,
+                "is_history": is_hist,
+                "frame": row_frame,
+                "canvas": canvas,
+                "btn_trash": btn_trash,
+            }
+            self._yt_suggestion_rows.append(row_info)
+
+            def on_enter(_e: Any, r_idx: int = idx) -> None:
+                self._highlight_yt_suggestion_row(r_idx)
+
+            def on_leave(_e: Any) -> None:
+                self._highlight_yt_suggestion_row(self._yt_suggest_selected_idx)
+
+            def on_click(_e: Any, val: str = s_text) -> None:
+                self._on_yt_suggestion_clicked(val)
+
+            for w in (row_frame, canvas):
+                w.bind("<Enter>", on_enter)
+                w.bind("<Leave>", on_leave)
+                w.bind("<Button-1>", on_click)
+
+        self._show_yt_suggestions()
+
+    def _highlight_yt_suggestion_row(self, active_idx: int) -> None:
+        c = self._get_theme_colors()
+        row_bg = c["entry_bg"]
+        hover_bg = c["cat_hover_bg"] if "cat_hover_bg" in c else c["sel_bg"]
+        for r in getattr(self, "_yt_suggestion_rows", []):
+            bg = hover_bg if r["index"] == active_idx else row_bg
+            try:
+                if r["frame"].winfo_exists():
+                    r["frame"].configure(bg=bg)
+                if r["canvas"].winfo_exists():
+                    r["canvas"].configure(bg=bg)
+                if r.get("btn_trash") and r["btn_trash"].winfo_exists():
+                    r["btn_trash"].configure(bg=bg)
+            except Exception:
+                pass
+
+    def _show_yt_suggestions(self) -> None:
+        if not hasattr(self, "yt_suggestions_frame") or not self.yt_suggestions_frame.winfo_exists():
+            return
+        y_pos = 40
+        try:
+            if hasattr(self, "yt_top") and self.yt_top.winfo_exists():
+                ty = self.yt_top.winfo_y()
+                th = self.yt_top.winfo_height()
+                if th > 10:
+                    y_pos = ty + th - 4
+        except Exception:
+            pass
+        self.yt_suggestions_frame.place(x=12, y=y_pos, relwidth=1.0, width=-24)
+        self.yt_suggestions_frame.lift()
+
+    def _hide_yt_suggestions(self) -> None:
+        if getattr(self, "_yt_suggest_after_id", None) is not None:
+            try:
+                self.after_cancel(self._yt_suggest_after_id)
+            except Exception:
+                pass
+            self._yt_suggest_after_id = None
+        self._yt_suggest_selected_idx = -1
+        self._yt_suggestion_rows = []
+        if hasattr(self, "yt_suggestions_frame") and self.yt_suggestions_frame.winfo_exists():
+            if self.yt_suggestions_frame.winfo_manager() == "place":
+                self.yt_suggestions_frame.place_forget()
+
+    def _set_yt_query_without_suggest(self, text: str) -> None:
+        self._yt_suppress_suggest_trace = True
+        try:
+            self.yt_query_var.set(text)
+            if hasattr(self, "yt_search_entry") and self.yt_search_entry.winfo_exists():
+                self.yt_search_entry.icursor(tk.END)
+        finally:
+            self._yt_suppress_suggest_trace = False
+
+    def _apply_yt_suggestion_selection_preview(self) -> None:
+        idx = self._yt_suggest_selected_idx
+        rows = getattr(self, "_yt_suggestion_rows", [])
+        self._highlight_yt_suggestion_row(idx)
+        if 0 <= idx < len(rows):
+            self._set_yt_query_without_suggest(rows[idx]["text"])
+        else:
+            self._set_yt_query_without_suggest(self._yt_typed_query)
+
+    def _on_yt_entry_down(self, event: Any = None) -> Optional[str]:
+        if not hasattr(self, "yt_suggestions_frame") or self.yt_suggestions_frame.winfo_manager() != "place":
+            return None
+        rows = getattr(self, "_yt_suggestion_rows", [])
+        if not rows:
+            return None
+        if self._yt_suggest_selected_idx < len(rows) - 1:
+            self._yt_suggest_selected_idx += 1
+        else:
+            self._yt_suggest_selected_idx = -1
+        self._apply_yt_suggestion_selection_preview()
+        return "break"
+
+    def _on_yt_entry_up(self, event: Any = None) -> Optional[str]:
+        if not hasattr(self, "yt_suggestions_frame") or self.yt_suggestions_frame.winfo_manager() != "place":
+            return None
+        rows = getattr(self, "_yt_suggestion_rows", [])
+        if not rows:
+            return None
+        if self._yt_suggest_selected_idx >= 0:
+            self._yt_suggest_selected_idx -= 1
+        else:
+            self._yt_suggest_selected_idx = len(rows) - 1
+        self._apply_yt_suggestion_selection_preview()
+        return "break"
+
+    def _on_yt_entry_escape(self, event: Any = None) -> Optional[str]:
+        if hasattr(self, "yt_suggestions_frame") and self.yt_suggestions_frame.winfo_manager() == "place":
+            if self._yt_suggest_selected_idx != -1 and self._yt_typed_query:
+                self._set_yt_query_without_suggest(self._yt_typed_query)
+            self._hide_yt_suggestions()
+            return "break"
+        return None
+
+    def _on_yt_suggestion_clicked(self, text: str) -> None:
+        self._set_yt_query_without_suggest(text)
+        self._yt_typed_query = text
+        self._hide_yt_suggestions()
+        self._perform_yt_search()
+
+    def _remove_yt_search_history_item(self, query_text: str) -> None:
+        target_low = str(query_text or "").strip().lower()
+        if not target_low:
+            return
+        self.yt_search_history = [
+            h for h in getattr(self, "yt_search_history", []) if str(h).strip().lower() != target_low
+        ]
+        if not getattr(self, "_loading_state", False):
+            self._save_state()
+        self._rebuild_and_show_yt_suggestions()
+        if hasattr(self, "yt_search_entry") and self.yt_search_entry.winfo_exists():
+            try:
+                self.yt_search_entry.focus_set()
+            except Exception:
+                pass
+
+    def _on_global_click_close_yt_suggestions(self, event: tk.Event) -> None:
+        if not hasattr(self, "yt_suggestions_frame") or self.yt_suggestions_frame.winfo_manager() != "place":
+            return
+        w = getattr(event, "widget", None)
+        if w is None:
+            return
+        try:
+            w_path = str(w)
+            if hasattr(self, "yt_suggestions_frame") and w_path.startswith(str(self.yt_suggestions_frame)):
+                return
+            if hasattr(self, "yt_entry_border") and w_path.startswith(str(self.yt_entry_border)):
+                return
+        except Exception:
+            pass
+        self._hide_yt_suggestions()
+
+    def _on_yt_search_return(self, event: Any = None) -> str:
+        if hasattr(self, "_hide_yt_suggestions"):
+            self._hide_yt_suggestions()
+        self._perform_yt_search()
+        return "break"
+
+    def _clear_yt_search(self) -> None:
+        if hasattr(self, "yt_search_entry") and self.yt_search_entry.winfo_exists():
+            try:
+                self.yt_search_entry.delete(0, tk.END)
+            except Exception:
+                pass
+        if hasattr(self, "yt_query_var"):
+            self.yt_query_var.set("")
+        if hasattr(self, "_hide_yt_suggestions"):
+            self._hide_yt_suggestions()
+        if hasattr(self, "yt_search_entry") and self.yt_search_entry.winfo_exists():
+            try:
+                self.yt_search_entry.focus_set()
+            except Exception:
+                pass
+
     def _open_yt_search(self) -> None:
         query = self.url_var.get().strip()
         if query:
@@ -8378,13 +8922,30 @@ class MusicPadApp(tk.Tk):
         if query:
             self._perform_yt_search()
 
+    def _record_yt_search_history(self, query: str) -> None:
+        q = str(query or "").strip()
+        if not q or self._is_direct_url(q):
+            return
+        q_low = q.lower()
+        existing = [
+            str(h).strip()
+            for h in getattr(self, "yt_search_history", [])
+            if str(h).strip() and str(h).strip().lower() != q_low
+        ]
+        self.yt_search_history = [q] + existing[:49]
+        if not getattr(self, "_loading_state", False):
+            self._save_state()
+
     def _perform_yt_search(self) -> None:
+        if hasattr(self, "_hide_yt_suggestions"):
+            self._hide_yt_suggestions()
         q = self.yt_query_var.get().strip()
         if not q:
             return
         if self._is_direct_url(q):
             self._handle_direct_url_playback(q)
             return
+        self._record_yt_search_history(q)
         f_mode = self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all"
         is_prio = bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False
         filter_hint = ""
@@ -9505,6 +10066,7 @@ class MusicPadApp(tk.Tk):
                 "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
                 "yt_search_priority": bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False,
                 "yt_search_limit": int(self.yt_search_limit_var.get()) if hasattr(self, "yt_search_limit_var") else 35,
+                "yt_search_history": list(getattr(self, "yt_search_history", [])[:50]),
                 "mute_track_to_others": self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False,
                 "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
                 "volume": self.volume_var.get(),
@@ -9677,6 +10239,18 @@ class MusicPadApp(tk.Tk):
                     self.yt_search_limit_var.set(max(5, min(35, int(saved_limit))))
                 except (ValueError, TypeError):
                     pass
+            saved_hist = data.get("yt_search_history")
+            if isinstance(saved_hist, list):
+                cleaned_hist: list[str] = []
+                seen_h: set[str] = set()
+                for item in saved_hist:
+                    s_h = str(item or "").strip()
+                    if s_h and not self._is_direct_url(s_h) and s_h.lower() not in seen_h:
+                        seen_h.add(s_h.lower())
+                        cleaned_hist.append(s_h)
+                        if len(cleaned_hist) >= 50:
+                            break
+                self.yt_search_history = cleaned_hist
             if data.get("output") in self.output_map:
                 self.output_var.set(data["output"])
             saved_mic = data.get("mix_mic", "")

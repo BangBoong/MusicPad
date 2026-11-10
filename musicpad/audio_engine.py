@@ -2946,6 +2946,28 @@ class AudioEngine:
         return result
 
     @staticmethod
+    def get_search_suggestions(query: str) -> list[str]:
+        q = str(query or "").strip()
+        if not q or YTMusic is None:
+            return []
+        try:
+            ytmusic = YTMusic()
+            raw = ytmusic.get_search_suggestions(q) or []
+            results: list[str] = []
+            for item in raw:
+                if isinstance(item, str):
+                    txt = item.strip()
+                elif isinstance(item, dict):
+                    txt = str(item.get("text", "")).strip()
+                else:
+                    txt = ""
+                if txt:
+                    results.append(txt)
+            return results
+        except Exception:
+            return []
+
+    @staticmethod
     def search_youtube(
         query: str,
         limit: int = 25,
