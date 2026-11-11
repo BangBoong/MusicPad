@@ -3627,6 +3627,47 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                         AudioEngine.set_youtube_ready_for_test(ready=True)
                         app._exit()
 
+    def test_now_playing_centering_and_icons_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_icons.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.wait_for_audio_ready(timeout=5.0)
+                    app.update()
+
+                    # 1. Verify icons exist in _icons
+                    for icon_name in ("play", "pause", "stop", "prev", "next", "btn_h", "btn_a", "ff", "chat", "note_cover_40"):
+                        self.assertIn(icon_name, app._icons, f"Icon {icon_name} must exist in app._icons")
+                        self.assertIsNotNone(app._icons[icon_name])
+
+                    # 2. Verify toolbar and bottom bar buttons have image configured
+                    self.assertTrue(bool(app.btn_tb_stop.cget("image")), "Stop button must have an icon image")
+                    self.assertTrue(bool(app.btn_tb_prev.cget("image")), "Prev button must have an icon image")
+                    self.assertTrue(bool(app.btn_tb_next.cget("image")), "Next button must have an icon image")
+                    self.assertTrue(bool(app.btn_b_h.cget("image")), "H button must have an icon image")
+                    self.assertTrue(bool(app.btn_b_a.cget("image")), "A button must have an icon image")
+                    self.assertTrue(bool(app.btn_b_ff.cget("image")), "FF button must have an icon image")
+                    self.assertTrue(bool(app.btn_b_msg.cget("image")), "Chat button must have an icon image")
+                    self.assertTrue(bool(app.btn_b_play.cget("image")), "Play button must have an icon image")
+
+                    # 3. Check idle now playing display: cover is hidden so title is centered
+                    self.assertIn(app.lbl_np_title.cget("text"), (app._tr("nothing_playing"), "Нічого не відтворюється", "Nothing is playing"))
+                    self.assertFalse(bool(app.lbl_np_cover.winfo_ismapped()), "Cover art must not be mapped when idle")
+
+                    # 4. Check active now playing display: cover is mapped and title updated
+                    app._update_now_playing_display("Test Song", "Test Artist")
+                    app.update()
+                    self.assertEqual(app.lbl_np_title.cget("text"), "Test Song")
+                    self.assertTrue(bool(app.lbl_np_cover.winfo_ismapped()), "Cover art must be mapped during playback")
+
+                    # 5. Check return to idle: cover is unmapped again
+                    app._update_now_playing_display("", "")
+                    app.update()
+                    self.assertFalse(bool(app.lbl_np_cover.winfo_ismapped()), "Cover art must be hidden when stopped")
+                finally:
+                    app._exit()
+
     def test_window_geometry_dynamic_size_and_centering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg_file = Path(tmp) / "state_geom.json"

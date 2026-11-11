@@ -24,9 +24,13 @@ from typing import Any, Optional
 
 _APP_START_TIME = time.perf_counter()
 
-Image = None  # type: ignore[assignment]
-ImageDraw = None  # type: ignore[assignment]
-ImageTk = None  # type: ignore[assignment]
+try:
+    from PIL import Image, ImageDraw, ImageTk
+except ModuleNotFoundError:
+    Image = None  # type: ignore[assignment]
+    ImageDraw = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
+
 pystray = None  # type: ignore[assignment]
 
 from musicpad.app_paths import check_unextracted_archive_guard, get_app_root_dir
@@ -2260,7 +2264,7 @@ class MusicPadApp(tk.Tk):
         self._start_hotkey_listener()
         self._poll_ui_queue()
         self._heavy_modules_loaded_before_window = any(
-            m in sys.modules for m in ("yt_dlp", "ytmusicapi", "PIL", "PIL.Image")
+            m in sys.modules for m in ("yt_dlp", "ytmusicapi")
         )
         self._window_shown_ms = round((time.perf_counter() - _APP_START_TIME) * 1000.0, 2)
         self.after(0, self._perform_deferred_audio_init)
@@ -3180,23 +3184,27 @@ class MusicPadApp(tk.Tk):
             if cur_img is not None:
                 self.pause_button.configure(image=cur_img)
         if hasattr(self, "btn_tb_stop") and self.btn_tb_stop.winfo_exists() and self._icons.get("stop"):
-            self.btn_tb_stop.configure(image=self._icons["stop"])
+            self.btn_tb_stop.configure(image=self._icons["stop"], text="")
         if hasattr(self, "btn_tb_prev") and self.btn_tb_prev.winfo_exists() and self._icons.get("prev"):
-            self.btn_tb_prev.configure(image=self._icons["prev"])
+            self.btn_tb_prev.configure(image=self._icons["prev"], text="")
         if hasattr(self, "btn_tb_next") and self.btn_tb_next.winfo_exists() and self._icons.get("next"):
-            self.btn_tb_next.configure(image=self._icons["next"])
-        if hasattr(self, "btn_mute") and self.btn_mute.winfo_exists():
-            is_muted = getattr(self, "is_muted", False)
-            ico = self._icons.get("headphones_mute") if is_muted else self._icons.get("headphones")
-            if ico:
-                self.btn_mute.configure(image=ico)
-        if hasattr(self, "btn_mic_mute") and self.btn_mic_mute.winfo_exists():
-            is_mic_muted = self.mic_muted.get() if hasattr(self, "mic_muted") else False
-            ico = self._icons.get("mic_mute") if is_mic_muted else self._icons.get("mic")
-            if ico:
-                self.btn_mic_mute.configure(image=ico)
-        if hasattr(self, "btn_loop") and self.btn_loop.winfo_exists() and self._icons.get("loop"):
-            self.btn_loop.configure(image=self._icons["loop"])
+            self.btn_tb_next.configure(image=self._icons["next"], text="")
+        if hasattr(self, "btn_tb_mute") and self.btn_tb_mute.winfo_exists():
+            self._update_mute_icon()
+        if hasattr(self, "btn_tb_mic_mute") and self.btn_tb_mic_mute.winfo_exists():
+            self._update_mic_mute_icon()
+        if hasattr(self, "btn_tb_loop") and self.btn_tb_loop.winfo_exists() and self._icons.get("loop"):
+            self.btn_tb_loop.configure(image=self._icons["loop"], text="")
+        if hasattr(self, "btn_b_play") and self.btn_b_play.winfo_exists() and self._icons.get("play_sm"):
+            self.btn_b_play.configure(image=self._icons["play_sm"], text="")
+        if hasattr(self, "btn_b_h") and self.btn_b_h.winfo_exists() and self._icons.get("btn_h"):
+            self.btn_b_h.configure(image=self._icons["btn_h"], text="")
+        if hasattr(self, "btn_b_a") and self.btn_b_a.winfo_exists() and self._icons.get("btn_a"):
+            self.btn_b_a.configure(image=self._icons["btn_a"], text="")
+        if hasattr(self, "btn_b_ff") and self.btn_b_ff.winfo_exists() and self._icons.get("ff"):
+            self.btn_b_ff.configure(image=self._icons["ff"], text="")
+        if hasattr(self, "btn_b_msg") and self.btn_b_msg.winfo_exists() and self._icons.get("chat"):
+            self.btn_b_msg.configure(image=self._icons["chat"], text="")
         if hasattr(self, "btn_cat_sounds") and self.btn_cat_sounds.winfo_exists() and self._icons.get("house_sm"):
             self.btn_cat_sounds.configure(image=self._icons["house_sm"])
         if hasattr(self, "btn_cat_youtube") and self.btn_cat_youtube.winfo_exists() and self._icons.get("yt_icon"):
@@ -3263,27 +3271,17 @@ class MusicPadApp(tk.Tk):
             return
         self._warmup_started = True
 
-        def _warmup_worker() -> None:
-            global Image, ImageDraw, ImageTk
-            try:
-                from PIL import Image as _Img, ImageDraw as _IDraw, ImageTk as _ITk
-                Image = _Img
-                ImageDraw = _IDraw
-                ImageTk = _ITk
-                self._safe_ui_call(self._on_pil_warmup_complete)
-            except Exception:
-                pass
-
-            AudioEngine.start_youtube_warmup(
-                on_ready=lambda: self._safe_ui_call(self._on_youtube_warmup_complete)
-            )
-
-        threading.Thread(target=_warmup_worker, daemon=True, name="BackgroundWarmup").start()
+        AudioEngine.start_youtube_warmup(
+            on_ready=lambda: self._safe_ui_call(self._on_youtube_warmup_complete)
+        )
 
     def _on_pil_warmup_complete(self) -> None:
         if not getattr(self, "_icons", None) or not any(self._icons.values()):
             self._create_icons()
             self._refresh_icon_buttons()
+        self._filter_tracks()
+        if hasattr(self, "track_list") and hasattr(self.track_list, "_redraw"):
+            self.track_list._redraw()
         self._filter_tracks()
         if hasattr(self, "track_list") and hasattr(self.track_list, "_redraw"):
             self.track_list._redraw()
@@ -4429,30 +4427,33 @@ class MusicPadApp(tk.Tk):
         self.pause_button.grid(row=0, column=0, rowspan=2, padx=(8, 2), pady=4, sticky="ns")
 
         # 5. Stop
+        stop_icon = self._icons.get("stop")
         self.btn_tb_stop = tk.Button(
             self.top_bar,
-            image=self._icons.get("stop"),
-            text="⏹",
+            image=stop_icon,
+            text="" if stop_icon else "⏹",
             command=self._stop,
             **btn_kw,
         )
         self.btn_tb_stop.grid(row=0, column=1, rowspan=2, padx=2, pady=4, sticky="ns")
 
         # 6. Prev
+        prev_icon = self._icons.get("prev")
         self.btn_tb_prev = tk.Button(
             self.top_bar,
-            image=self._icons.get("prev"),
-            text="|◀",
+            image=prev_icon,
+            text="" if prev_icon else "|◀",
             command=self._previous,
             **btn_kw,
         )
         self.btn_tb_prev.grid(row=0, column=2, rowspan=2, padx=2, pady=4, sticky="ns")
 
         # 7. Next
+        next_icon = self._icons.get("next")
         self.btn_tb_next = tk.Button(
             self.top_bar,
-            image=self._icons.get("next"),
-            text="▶|",
+            image=next_icon,
+            text="" if next_icon else "▶|",
             command=self._next,
             **btn_kw,
         )
@@ -4501,7 +4502,7 @@ class MusicPadApp(tk.Tk):
         self.btn_tb_mute = tk.Button(
             self.top_bar,
             image=init_icon,
-            text="",
+            text="" if init_icon else ("♪✕" if float(self.volume_var.get()) <= 0.001 else "♪"),
             command=self._toggle_mute,
             **btn_kw,
         )
@@ -4547,19 +4548,15 @@ class MusicPadApp(tk.Tk):
             bg=c["top_bg"],
             anchor="center",
         )
-        self.lbl_np_artist.pack(side="left")
 
-        # Cover art 40x40 px to the right of artist
+        # Cover art 40x40 px to the right of artist (only packed during playback)
         default_cov = self._icons.get("note_cover_40") or self._icons.get("note")
         self.lbl_np_cover = tk.Label(
             self.np_center_box,
-            image=default_cov,
-            width=40,
-            height=40,
+            image=default_cov if default_cov else "",
             bg=c["top_bg"],
             anchor="center",
         )
-        self.lbl_np_cover.pack(side="left", padx=(10, 0))
 
         # Under btn_tb_mute (Col 8, Row 1): Mic mute button (mutes to others, keeps monitor)
         is_mic_muted = getattr(getattr(self, "mute_track_to_others_var", None), "get", lambda: False)()
@@ -4567,17 +4564,18 @@ class MusicPadApp(tk.Tk):
         self.btn_tb_mic_mute = tk.Button(
             self.top_bar,
             image=mic_icon,
-            text="",
+            text="" if mic_icon else ("🎙❌" if is_mic_muted else "🎙"),
             command=self._toggle_mute_track_to_others,
             **btn_kw,
         )
         self.btn_tb_mic_mute.grid(row=1, column=8, padx=2, pady=(0, 4))
 
         # Under volume_scale (Col 9, Row 1): Loop button (🔁)
+        loop_icon = self._icons.get("loop")
         self.btn_tb_loop = tk.Button(
             self.top_bar,
-            image=self._icons.get("loop"),
-            text="🔁",
+            image=loop_icon,
+            text="" if loop_icon else "🔁",
             command=self._toggle_loop,
             **btn_kw,
         )
@@ -4866,10 +4864,11 @@ class MusicPadApp(tk.Tk):
         self.bottom_bar_seps: list[tk.Frame] = []
 
         # 1. Play button (small)
+        play_sm_icon = self._icons.get("play_sm")
         self.btn_b_play = tk.Button(
             self.bottom_bar,
-            image=self._icons.get("play_sm"),
-            text="▶",
+            image=play_sm_icon,
+            text="" if play_sm_icon else "▶",
             command=self._play_selected,
             **btn_kw,
         )
@@ -4881,20 +4880,22 @@ class MusicPadApp(tk.Tk):
         self.bottom_bar_seps.append(sep1)
 
         # 3. H button (Hotkeys toggle)
+        h_icon = self._icons.get("btn_h")
         self.btn_b_h = tk.Button(
             self.bottom_bar,
-            image=self._icons.get("btn_h"),
-            text="H",
+            image=h_icon,
+            text="" if h_icon else "H",
             command=self._toggle_hotkeys_active,
             **btn_kw,
         )
         self.btn_b_h.pack(side="left", padx=2, pady=4)
 
         # 4. A button (Auto-keys toggle)
+        a_icon = self._icons.get("btn_a")
         self.btn_b_a = tk.Button(
             self.bottom_bar,
-            image=self._icons.get("btn_a"),
-            text="A",
+            image=a_icon,
+            text="" if a_icon else "A",
             command=self._toggle_auto_keys,
             **btn_kw,
         )
@@ -4911,10 +4912,11 @@ class MusicPadApp(tk.Tk):
 
         # 7. Right side controls
         # Notification speech bubble toggle button
+        chat_icon = self._icons.get("chat")
         self.btn_b_msg = tk.Button(
             self.bottom_bar,
-            image=self._icons.get("chat"),
-            text="💬",
+            image=chat_icon,
+            text="" if chat_icon else "💬",
             command=self._toggle_notification_bubble,
             **btn_kw,
         )
@@ -4928,10 +4930,11 @@ class MusicPadApp(tk.Tk):
         self.bottom_bar_seps.append(sep3)
 
         # Fast forward (▶▶)
+        ff_icon = self._icons.get("ff")
         self.btn_b_ff = tk.Button(
             self.bottom_bar,
-            image=self._icons.get("ff"),
-            text="▶▶",
+            image=ff_icon,
+            text="" if ff_icon else "▶▶",
             command=self._seek_forward,
             **btn_kw,
         )
@@ -6870,7 +6873,8 @@ class MusicPadApp(tk.Tk):
         if hasattr(self, "np_text_frame") and hasattr(self.np_text_frame, "configure"):
             self.np_text_frame.configure(bg=c["top_bg"])
         if hasattr(self, "lbl_np_title") and hasattr(self.lbl_np_title, "configure"):
-            self.lbl_np_title.configure(bg=c["top_bg"], fg=c["fg"])
+            is_active = getattr(self, "is_playing", False) or getattr(self, "is_paused", False)
+            self.lbl_np_title.configure(bg=c["top_bg"], fg=c["fg"] if is_active else c["muted_fg"])
         if hasattr(self, "lbl_np_artist") and hasattr(self.lbl_np_artist, "configure"):
             self.lbl_np_artist.configure(bg=c["top_bg"], fg=c["muted_fg"])
         if hasattr(self, "lbl_np_cover") and hasattr(self.lbl_np_cover, "configure"):
@@ -9824,9 +9828,9 @@ class MusicPadApp(tk.Tk):
         is_muted = self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False
         img = self._icons.get("mic_mute") if is_muted else self._icons.get("mic")
         if img:
-            self.btn_tb_mic_mute.configure(image=img)
+            self.btn_tb_mic_mute.configure(image=img, text="")
         else:
-            self.btn_tb_mic_mute.configure(text="🎙❌" if is_muted else "🎙")
+            self.btn_tb_mic_mute.configure(image="", text="🎙❌" if is_muted else "🎙")
 
     def _update_now_playing_display(self, title: str = "", artist: str = "", photo: Optional[Any] = None) -> None:
         if not hasattr(self, "lbl_np_title"):
@@ -9834,26 +9838,34 @@ class MusicPadApp(tk.Tk):
         c = self._get_theme_colors()
         if not title:
             self.lbl_np_title.configure(text=self._tr("nothing_playing") if hasattr(self, "_tr") else "Нічого не відтворюється", fg=c["muted_fg"])
-            self.lbl_np_artist.configure(text="")
-            default_cov = self._icons.get("note_cover_40") or self._icons.get("note") or ""
-            self.lbl_np_cover.configure(image=default_cov)
+            self.lbl_np_title.pack(side="left")
+            if hasattr(self, "lbl_np_artist"):
+                self.lbl_np_artist.configure(text="")
+                self.lbl_np_artist.pack_forget()
+            if hasattr(self, "lbl_np_cover"):
+                self.lbl_np_cover.pack_forget()
             return
 
+        self.lbl_np_title.pack(side="left")
         self.lbl_np_title.configure(text=title, fg=c["fg"])
         if artist:
             self.lbl_np_artist.configure(text=f"  •  {artist}", fg=c["muted_fg"])
+            self.lbl_np_artist.pack(side="left")
         else:
-            self.lbl_np_artist.configure(text="")
+            if hasattr(self, "lbl_np_artist"):
+                self.lbl_np_artist.configure(text="")
+                self.lbl_np_artist.pack_forget()
 
-        if photo is not None:
-            try:
-                self.lbl_np_cover.configure(image=photo)
-                self._current_track_photo = photo
-            except Exception:
-                pass
-        else:
+        if hasattr(self, "lbl_np_cover"):
             default_cov = self._icons.get("note_cover_40") or self._icons.get("note") or ""
-            self.lbl_np_cover.configure(image=default_cov)
+            cov_img = photo if photo is not None else default_cov
+            if cov_img:
+                self.lbl_np_cover.configure(image=cov_img)
+                self.lbl_np_cover.pack(side="left", padx=(10, 0))
+                if photo is not None:
+                    self._current_track_photo = photo
+            else:
+                self.lbl_np_cover.pack_forget()
 
     def _toggle_mute(self) -> None:
         curr = float(self.volume_var.get())
