@@ -27,6 +27,8 @@ build/
 dist/
 *.manifest
 *.spec.bak
+*.zip
+*.7z
 
 # MusicPad local runtime cache and downloaded audio
 .cache/
