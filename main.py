@@ -22,18 +22,14 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Optional
 
-try:
-    from PIL import Image, ImageDraw, ImageTk
-except ModuleNotFoundError:
-    Image = None  # type: ignore[assignment]
-    ImageDraw = None  # type: ignore[assignment]
-    ImageTk = None  # type: ignore[assignment]
+_APP_START_TIME = time.perf_counter()
 
-try:
-    import pystray
-except ModuleNotFoundError:
-    pystray = None  # type: ignore[assignment]
+Image = None  # type: ignore[assignment]
+ImageDraw = None  # type: ignore[assignment]
+ImageTk = None  # type: ignore[assignment]
+pystray = None  # type: ignore[assignment]
 
+from musicpad.app_paths import check_unextracted_archive_guard, get_app_root_dir
 from musicpad.apo_installer import (
     DriverStatus,
     find_endpoint_for_sounddevice,
@@ -284,6 +280,7 @@ I18N: dict[str, dict[str, str]] = {
         "grp_deepfilter": "DeepFilterNet (нейромережеве шумозаглушення)",
         "lbl_deepfilter_desc": "Нейромережеве пригнічення шуму мікрофона: видаляє навколишній шум, стукіт клавіатури та вентилятори.",
         "chk_deepfilter_enable": "Увімкнути DeepFilterNet",
+        "err_deepfilter_load": "Не вдалося завантажити модель DeepFilterNet: {err}",
         "lbl_deepfilter_wet": "Баланс шумозаглушення (Wet/Dry): ",
         "lbl_deepfilter_hint": "0% — оригінальний мікрофон (Bypass), 100% — повне нейромережеве очищення.",
         "grp_white_noise": "Усунення білого шуму",
@@ -342,6 +339,7 @@ I18N: dict[str, dict[str, str]] = {
         "filter_track_count": "Кількість треків: {count}",
         "yt_status_found": "Знайдено результатів: {count}",
         "yt_status_searching": "Пошук на YouTube{hint}: {query}...",
+        "yt_status_loading": "Завантаження модулів YouTube...",
         "yt_status_error": "Помилка пошуку: {err}",
         "yt_status_loading_album": "Завантаження альбому: {title}...",
         "yt_status_no_album_tracks": "Треки альбому не знайдено або сталася помилка завантаження.",
@@ -479,6 +477,7 @@ I18N: dict[str, dict[str, str]] = {
         "grp_deepfilter": "DeepFilterNet (Neural Noise Suppression)",
         "lbl_deepfilter_desc": "Neural microphone noise suppression: eliminates background noise, keyboard clicks, and fans.",
         "chk_deepfilter_enable": "Enable DeepFilterNet",
+        "err_deepfilter_load": "Failed to load DeepFilterNet model: {err}",
         "lbl_deepfilter_wet": "Noise Suppression Balance (Wet/Dry): ",
         "lbl_deepfilter_hint": "0% — original mic (Bypass), 100% — full neural filtering.",
         "grp_white_noise": "White Noise Removal",
@@ -537,6 +536,7 @@ I18N: dict[str, dict[str, str]] = {
         "filter_track_count": "Track count: {count}",
         "yt_status_found": "Results found: {count}",
         "yt_status_searching": "Searching on YouTube{hint}: {query}...",
+        "yt_status_loading": "Loading YouTube modules...",
         "yt_status_error": "Search error: {err}",
         "yt_status_loading_album": "Loading album: {title}...",
         "yt_status_no_album_tracks": "No album tracks found or loading error.",
@@ -2232,9 +2232,19 @@ class MusicPadApp(tk.Tk):
         self._hover_monitor_thread: Optional[threading.Thread] = None
         self._menu_winevent_hook: Any = None
 
+        self._audio_ready: bool = False
+        self._audio_ready_event: threading.Event = threading.Event()
+        self._audio_init_gate: Optional[threading.Event] = None
+        self._audio_ready_ms: Optional[float] = None
+        self._queued_playback_action: Optional[Callable[[], None]] = None
+        self._deferred_audio_init_started: bool = False
+        self._deferred_deepfilter_pending: bool = False
+        self._saved_output_name: Optional[str] = None
+        self._saved_mic_name: Optional[str] = None
+        self._saved_monitor_name: Optional[str] = None
+
         self._build_variables()
         self._build_ui()
-        self._load_devices()
         self._load_saved_state()
         try:
             self._ensure_engine()
@@ -2247,9 +2257,14 @@ class MusicPadApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Configure>", self._on_configure, add="+")
         self.bind_all("<Button-1>", self._on_global_click, add="+")
-        self._start_tray()
         self._start_hotkey_listener()
         self._poll_ui_queue()
+        self._heavy_modules_loaded_before_window = any(
+            m in sys.modules for m in ("yt_dlp", "ytmusicapi", "PIL", "PIL.Image")
+        )
+        self._window_shown_ms = round((time.perf_counter() - _APP_START_TIME) * 1000.0, 2)
+        self.after(0, self._perform_deferred_audio_init)
+        self.after(20, self._start_background_warmup)
 
     def _is_english(self) -> bool:
         if not hasattr(self, "lang_var"):
@@ -2601,12 +2616,7 @@ class MusicPadApp(tk.Tk):
 
     @staticmethod
     def _app_root_dir() -> Path:
-        if getattr(sys, "frozen", False):
-            exe_dir = Path(sys.executable).resolve().parent
-            if exe_dir.name.lower() == "dist":
-                return exe_dir.parent
-            return exe_dir
-        return Path(__file__).resolve().parent
+        return get_app_root_dir()
 
     @staticmethod
     def _resource_path(name: str) -> Path:
@@ -2779,6 +2789,19 @@ class MusicPadApp(tk.Tk):
                 pass
 
     def _start_tray(self) -> None:
+        global pystray, Image
+        if pystray is None:
+            try:
+                import pystray as _pystray
+                pystray = _pystray
+            except Exception:
+                pystray = None
+        if Image is None:
+            try:
+                from PIL import Image as _Img
+                Image = _Img
+            except Exception:
+                Image = None
         if pystray is None or Image is None:
             return
         icon_path = self._resource_path("musicpad.png")
@@ -2846,6 +2869,8 @@ class MusicPadApp(tk.Tk):
         self._init_settings_variables()
 
     def _create_icons(self) -> None:
+        if getattr(self, "_icons", None) and any(self._icons.values()):
+            return
         self._icons = {}
         if Image is None or ImageDraw is None or ImageTk is None:
             return
@@ -3140,6 +3165,140 @@ class MusicPadApp(tk.Tk):
 
         except Exception:
             self._icons = {}
+
+    def _refresh_icon_buttons(self) -> None:
+        if not hasattr(self, "_icons") or not self._icons:
+            return
+        if hasattr(self, "pause_button"):
+            self.pause_button.icon_play = self._icons.get("play")
+            self.pause_button.icon_pause = self._icons.get("pause")
+            cur_img = (
+                self.pause_button.icon_pause
+                if getattr(self, "is_playing", False) and not getattr(self, "is_paused", False)
+                else self.pause_button.icon_play
+            )
+            if cur_img is not None:
+                self.pause_button.configure(image=cur_img)
+        if hasattr(self, "btn_tb_stop") and self.btn_tb_stop.winfo_exists() and self._icons.get("stop"):
+            self.btn_tb_stop.configure(image=self._icons["stop"])
+        if hasattr(self, "btn_tb_prev") and self.btn_tb_prev.winfo_exists() and self._icons.get("prev"):
+            self.btn_tb_prev.configure(image=self._icons["prev"])
+        if hasattr(self, "btn_tb_next") and self.btn_tb_next.winfo_exists() and self._icons.get("next"):
+            self.btn_tb_next.configure(image=self._icons["next"])
+        if hasattr(self, "btn_mute") and self.btn_mute.winfo_exists():
+            is_muted = getattr(self, "is_muted", False)
+            ico = self._icons.get("headphones_mute") if is_muted else self._icons.get("headphones")
+            if ico:
+                self.btn_mute.configure(image=ico)
+        if hasattr(self, "btn_mic_mute") and self.btn_mic_mute.winfo_exists():
+            is_mic_muted = self.mic_muted.get() if hasattr(self, "mic_muted") else False
+            ico = self._icons.get("mic_mute") if is_mic_muted else self._icons.get("mic")
+            if ico:
+                self.btn_mic_mute.configure(image=ico)
+        if hasattr(self, "btn_loop") and self.btn_loop.winfo_exists() and self._icons.get("loop"):
+            self.btn_loop.configure(image=self._icons["loop"])
+        if hasattr(self, "btn_cat_sounds") and self.btn_cat_sounds.winfo_exists() and self._icons.get("house_sm"):
+            self.btn_cat_sounds.configure(image=self._icons["house_sm"])
+        if hasattr(self, "btn_cat_youtube") and self.btn_cat_youtube.winfo_exists() and self._icons.get("yt_icon"):
+            self.btn_cat_youtube.configure(image=self._icons["yt_icon"])
+        if hasattr(self, "btn_cat_sounds_lg") and self.btn_cat_sounds_lg.winfo_exists() and self._icons.get("house_lg"):
+            self.btn_cat_sounds_lg.configure(image=self._icons["house_lg"])
+        if hasattr(self, "btn_open_settings") and self.btn_open_settings.winfo_exists() and self._icons.get("wrench"):
+            self.btn_open_settings.configure(image=self._icons["wrench"])
+
+    @property
+    def is_audio_ready(self) -> bool:
+        return self._audio_ready
+
+    def wait_for_audio_ready(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._audio_ready_event.wait(timeout=0.05):
+                return True
+            try:
+                self.update()
+            except Exception:
+                pass
+        return self._audio_ready_event.is_set()
+
+    def set_audio_init_gate_for_test(self, gate: Optional[threading.Event]) -> None:
+        """Test seam: hold deferred audio init until the given event is set."""
+        self._audio_init_gate = gate
+
+    def _perform_deferred_audio_init(self) -> None:
+        if getattr(self, "_audio_ready", False):
+            return
+        if self._audio_init_gate is not None and not self._audio_init_gate.is_set():
+            self.after(20, self._perform_deferred_audio_init)
+            return
+
+        try:
+            self._load_devices()
+            self._ensure_engine()
+        except Exception:
+            pass
+
+        self._audio_ready = True
+        self._audio_ready_event.set()
+        self._audio_ready_ms = round((time.perf_counter() - _APP_START_TIME) * 1000.0, 2)
+
+        # If DeepFilterNet was enabled in saved settings, start background loading now
+        if getattr(self, "_deferred_deepfilter_pending", False) or (
+            hasattr(self, "deepfilter_enabled_var") and self.deepfilter_enabled_var.get()
+        ):
+            self._deferred_deepfilter_pending = False
+            self._on_voice_fx_changed()
+
+        # Execute queued playback action (only latest action)
+        action = self._queued_playback_action
+        self._queued_playback_action = None
+        if action is not None:
+            try:
+                action()
+            except Exception:
+                pass
+
+    def _start_background_warmup(self) -> None:
+        if getattr(self, "_warmup_started", False):
+            return
+        self._warmup_started = True
+
+        def _warmup_worker() -> None:
+            global Image, ImageDraw, ImageTk
+            try:
+                from PIL import Image as _Img, ImageDraw as _IDraw, ImageTk as _ITk
+                Image = _Img
+                ImageDraw = _IDraw
+                ImageTk = _ITk
+                self._safe_ui_call(self._on_pil_warmup_complete)
+            except Exception:
+                pass
+
+            AudioEngine.start_youtube_warmup(
+                on_ready=lambda: self._safe_ui_call(self._on_youtube_warmup_complete)
+            )
+
+        threading.Thread(target=_warmup_worker, daemon=True, name="BackgroundWarmup").start()
+
+    def _on_pil_warmup_complete(self) -> None:
+        if not getattr(self, "_icons", None) or not any(self._icons.values()):
+            self._create_icons()
+            self._refresh_icon_buttons()
+        self._filter_tracks()
+        if hasattr(self, "track_list") and hasattr(self.track_list, "_redraw"):
+            self.track_list._redraw()
+
+    def _on_youtube_warmup_complete(self) -> None:
+        if hasattr(self, "yt_status_lbl") and self.yt_status_lbl.winfo_exists():
+            txt = self.yt_status_lbl.cget("text")
+            if txt == self._tr("yt_status_loading"):
+                q = self.yt_query_var.get().strip() if hasattr(self, "yt_query_var") else ""
+                if q:
+                    self.yt_status_lbl.configure(text=self._tr("yt_status_searching", hint="", query=q))
+        if hasattr(self, "yt_query_var"):
+            q = self.yt_query_var.get().strip()
+            if q and not self._is_direct_url(q):
+                self._fire_yt_suggestions_debounce()
 
     def _build_ui(self) -> None:
         self.style = ttk.Style(self)
@@ -5064,9 +5223,34 @@ class MusicPadApp(tk.Tk):
             return
 
         df_enabled = self.deepfilter_enabled_var.get() if hasattr(self, "deepfilter_enabled_var") else False
+        if not getattr(self, "_audio_ready", True) and getattr(self, "_deferred_deepfilter_pending", False):
+            df_enabled = False
         df_wet = (self.deepfilter_wet_var.get() / 100.0) if hasattr(self, "deepfilter_wet_var") else 1.0
         if hasattr(self.engine, "set_deepfilter_state"):
-            self.engine.set_deepfilter_state(df_enabled, df_wet)
+            def _on_df_complete(success: bool, err: Optional[str]) -> None:
+                if not success and err:
+                    def _show_ui_err() -> None:
+                        if hasattr(self, "deepfilter_enabled_var"):
+                            self.deepfilter_enabled_var.set(False)
+                        msg_template = self._tr("err_deepfilter_load") if hasattr(self, "_tr") else "Не вдалося завантажити модель DeepFilterNet: {err}"
+                        msg = msg_template.format(err=err) if "{err}" in msg_template else f"{msg_template}: {err}"
+                        try:
+                            parent = getattr(self, "_settings_window", None)
+                            if parent and parent.winfo_exists():
+                                messagebox.showwarning("DeepFilterNet", msg, parent=parent)
+                            else:
+                                messagebox.showwarning("DeepFilterNet", msg)
+                        except Exception:
+                            pass
+                    try:
+                        if hasattr(self, "_safe_ui_call"):
+                            self._safe_ui_call(_show_ui_err)
+                        else:
+                            self.after(0, _show_ui_err)
+                    except Exception:
+                        pass
+
+            self.engine.set_deepfilter_state(df_enabled, df_wet, on_complete=_on_df_complete)
 
         wn_enabled = self.white_noise_removal_var.get() if hasattr(self, "white_noise_removal_var") else False
         if hasattr(self.engine, "set_white_noise_removal"):
@@ -7001,10 +7185,17 @@ class MusicPadApp(tk.Tk):
                 (name for name, index in self.output_map.items() if index == cable),
                 next(iter(self.output_map), ""),
             )
-            if self.output_var.get() not in self.output_map:
+            saved_out = getattr(self, "_saved_output_name", None)
+            if saved_out and saved_out in self.output_map:
+                self.output_var.set(saved_out)
+            elif self.output_var.get() not in self.output_map:
                 self.output_var.set(selected_out)
 
-            if self.input_map:
+            saved_mic = getattr(self, "_saved_mic_name", None)
+            if saved_mic and saved_mic in self.input_map and "cable output" not in saved_mic.lower():
+                self.mix_mic_var.set(saved_mic)
+                self.input_var.set(saved_mic)
+            elif self.input_map:
                 phys_mic = AudioEngine.find_physical_mic()
                 best_input = next(
                     (name for name, index in self.input_map.items() if index == phys_mic),
@@ -7015,7 +7206,10 @@ class MusicPadApp(tk.Tk):
                 if self.mix_mic_var.get() not in self.input_map:
                     self.mix_mic_var.set(best_input)
 
-            if self.monitor_var.get() not in self.monitor_map:
+            saved_mon = getattr(self, "_saved_monitor_name", None)
+            if saved_mon and saved_mon in self.monitor_map:
+                self.monitor_var.set(saved_mon)
+            elif self.monitor_var.get() not in self.monitor_map:
                 default_mon = AudioEngine.find_default_monitor(exclude_device=cable)
                 headphone = next(
                     (name for name, index in self.output_map.items() if index == default_mon),
@@ -7031,11 +7225,12 @@ class MusicPadApp(tk.Tk):
                 self.monitor_var.set(headphone)
             self._resolve_selected_mic_guid()
             self._refresh_driver_status(notify_on_issue=False)
-            self.status_var.set(
-                "VB-Cable знайдено."
-                if cable is not None
-                else "VB-Cable не знайдено: можна вибрати інший пристрій."
-            )
+            if not self.status_var.get():
+                self.status_var.set(
+                    "VB-Cable знайдено."
+                    if cable is not None
+                    else "VB-Cable не знайдено: можна вибрати інший пристрій."
+                )
         except AudioEngineError as exc:
             self.status_var.set(str(exc))
 
@@ -7138,9 +7333,13 @@ class MusicPadApp(tk.Tk):
         self._save_state()
 
     def _get_track_thumbnail_photo(self, track: LocalTrack, index: int) -> Any:
+        global Image, ImageTk
         default_cover = self._icons.get("thumb_placeholder") if hasattr(self, "_icons") else None
         if not hasattr(self, "_track_photo_cache"):
             self._track_photo_cache = {}
+
+        if Image is None or ImageTk is None:
+            return default_cover
 
         thumb_path = getattr(track, "thumbnail_path", "")
         if thumb_path and Path(thumb_path).is_file():
@@ -8521,6 +8720,8 @@ class MusicPadApp(tk.Tk):
 
     def _fire_yt_suggestions_debounce(self) -> None:
         self._yt_suggest_after_id = None
+        if not AudioEngine.is_youtube_ready():
+            return
         q = getattr(self, "_yt_typed_query", "").strip()
         if not q or self._is_direct_url(q):
             self._hide_yt_suggestions()
@@ -8949,12 +9150,17 @@ class MusicPadApp(tk.Tk):
             filter_hint = f" ({self._tr('filter_no_albums').lower()})"
         elif f_mode == "albums_only":
             filter_hint = f" ({self._tr('filter_albums_only').lower()})"
-        self.yt_status_lbl.configure(text=self._tr("yt_status_searching", hint=filter_hint, query=q))
+        if not AudioEngine.is_youtube_ready():
+            self.yt_status_lbl.configure(text=self._tr("yt_status_loading"))
+        else:
+            self.yt_status_lbl.configure(text=self._tr("yt_status_searching", hint=filter_hint, query=q))
 
         f_limit = int(self.yt_search_limit_var.get()) if hasattr(self, "yt_search_limit_var") else 35
 
         def worker() -> None:
             try:
+                if not AudioEngine.is_youtube_ready():
+                    AudioEngine.wait_for_youtube_ready()
                 items = AudioEngine.search_youtube(
                     q,
                     limit=f_limit,
@@ -9461,6 +9667,15 @@ class MusicPadApp(tk.Tk):
         entry.bind("<Return>", lambda _: on_play())
 
     def _start(self, track: StreamTrack) -> None:
+        if not getattr(self, "_audio_ready", True):
+            self._queued_playback_action = lambda: self._start(track)
+            self.now_playing_var.set(self._tr("now_playing", track.title) if hasattr(self, "_tr") else track.title)
+            self.is_playing = True
+            self.is_paused = False
+            if hasattr(self, "pause_button"):
+                self.pause_button.configure(text=self._tr("btn_pause") if hasattr(self, "_tr") else "Пауза")
+            return
+
         try:
             is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
             if is_inj:
@@ -10245,14 +10460,20 @@ class MusicPadApp(tk.Tk):
                         if len(cleaned_hist) >= 50:
                             break
                 self.yt_search_history = cleaned_hist
-            if data.get("output") in self.output_map:
-                self.output_var.set(data["output"])
+            if data.get("output"):
+                self._saved_output_name = str(data["output"])
+                if self.output_map and self._saved_output_name in self.output_map:
+                    self.output_var.set(self._saved_output_name)
             saved_mic = data.get("mix_mic", "")
-            if saved_mic in self.input_map and "cable output" not in saved_mic.lower():
-                self.mix_mic_var.set(saved_mic)
-                self.input_var.set(saved_mic)
-            if data.get("monitor") in self.monitor_map:
-                self.monitor_var.set(data["monitor"])
+            if saved_mic:
+                self._saved_mic_name = str(saved_mic)
+                if self.input_map and saved_mic in self.input_map and "cable output" not in saved_mic.lower():
+                    self.mix_mic_var.set(saved_mic)
+                    self.input_var.set(saved_mic)
+            if data.get("monitor"):
+                self._saved_monitor_name = str(data["monitor"])
+                if self.monitor_map and self._saved_monitor_name in self.monitor_map:
+                    self.monitor_var.set(self._saved_monitor_name)
             saved_routing = data.get("routing_mode")
             if saved_routing in (ROUTING_MODE_VIRTUAL_CABLE, ROUTING_MODE_INJECTION) and hasattr(self, "routing_mode_var"):
                 self.routing_mode_var.set(str(saved_routing))
@@ -10292,7 +10513,10 @@ class MusicPadApp(tk.Tk):
                 if "norm_volume" in sc: self.norm_volume_val.set(sc["norm_volume"])
                 if "norm_mode" in sc: self.norm_mode_var.set(sc["norm_mode"])
                 if "deepfilter_enabled" in sc and hasattr(self, "deepfilter_enabled_var"):
-                    self.deepfilter_enabled_var.set(bool(sc["deepfilter_enabled"]))
+                    val = bool(sc["deepfilter_enabled"])
+                    self.deepfilter_enabled_var.set(val)
+                    if val:
+                        self._deferred_deepfilter_pending = True
                 if "deepfilter_wet" in sc and hasattr(self, "deepfilter_wet_var"):
                     self.deepfilter_wet_var.set(float(sc["deepfilter_wet"]))
                 if "white_noise_removal" in sc and hasattr(self, "white_noise_removal_var"):
@@ -10567,6 +10791,8 @@ class MusicPadApp(tk.Tk):
         if not self.hide_to_tray.get():
             self._exit()
             return
+        if self._tray_icon is None:
+            self._start_tray()
         self.withdraw()
         if self._tray_icon is not None and hasattr(self._tray_icon, "notify"):
             try:
@@ -10620,7 +10846,14 @@ def _run_self_test(report_path: str) -> int:
         cfg_path = str(app._config_path())
         cache_dir = str(AudioEngine._cache_dir())
         tracks_after_prune = [t.title for t in app.local_tracks]
+        heavy_before = bool(getattr(app, "_heavy_modules_loaded_before_window", False))
+        window_ms = float(getattr(app, "_window_shown_ms", 0.0))
+        app.wait_for_audio_ready(timeout=5.0)
+        audio_ready_ms = float(getattr(app, "_audio_ready_ms", window_ms))
+        audio_delta_ms = round(audio_ready_ms - window_ms, 2)
         app._exit()
+
+        AudioEngine.wait_for_youtube_ready(timeout=10.0)
 
         cable_idx = AudioEngine.find_cable_output()
         mic_idx = AudioEngine.find_physical_mic()
@@ -10688,6 +10921,10 @@ def _run_self_test(report_path: str) -> int:
             finally:
                 AudioEngine._device_samplerate = orig_rate_fn  # type: ignore[assignment]
 
+        is_frozen = bool(getattr(sys, "frozen", False))
+        exe_dir = Path(sys.executable).resolve().parent if is_frozen else None
+        is_onedir = bool(is_frozen and exe_dir is not None and (exe_dir / "_internal").is_dir())
+
         result = {
             "ok": bool(
                 win_title == "MusicPad"
@@ -10698,8 +10935,16 @@ def _run_self_test(report_path: str) -> int:
                 and elapsed >= 0.12
                 and apo_dll is not None
                 and dsp_dll is not None
+                and (not is_frozen or is_onedir)
+                and not heavy_before
+                and (audio_ready_ms - window_ms <= 1000.0)
             ),
-            "frozen": bool(getattr(sys, "frozen", False)),
+            "frozen": is_frozen,
+            "onedir": is_onedir,
+            "window_shown_ms": window_ms,
+            "audio_ready_ms": audio_ready_ms,
+            "audio_ready_delta_ms": audio_delta_ms,
+            "heavy_modules_loaded_before_window": heavy_before,
             "window_title": win_title,
             "window_exists": win_exists,
             "has_apo_dll": apo_dll is not None,
@@ -10744,6 +10989,7 @@ def _parse_and_run_driver_cli(argv: list[str]) -> Optional[int]:
 
 
 if __name__ == "__main__":
+    check_unextracted_archive_guard()
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
         import os
 

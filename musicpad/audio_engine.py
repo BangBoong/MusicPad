@@ -34,17 +34,16 @@ try:
 except ModuleNotFoundError:
     sd = None  # type: ignore[assignment]
 
-try:
-    from yt_dlp import YoutubeDL
-except ModuleNotFoundError:
-    YoutubeDL = None  # type: ignore[assignment]
+YoutubeDL = None  # type: ignore[assignment]
+YTMusic = None  # type: ignore[assignment]
 
-try:
-    from ytmusicapi import YTMusic
-except ModuleNotFoundError:
-    YTMusic = None  # type: ignore[assignment]
+_YOUTUBE_READY_EVENT = threading.Event()
+_YOUTUBE_WARMUP_LOCK = threading.Lock()
+_YOUTUBE_WARMUP_ERROR: Optional[str] = None
+_YOUTUBE_WARMUP_STARTED: bool = False
 
 
+from musicpad.app_paths import get_app_root_dir
 from musicpad.dsp_core import (
     DspCore,
     MPAD_FX_DEEPFILTER,
@@ -219,12 +218,7 @@ class Float32RingBuffer:
 
 
 def _app_root_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        if exe_dir.name.lower() == "dist":
-            return exe_dir.parent
-        return exe_dir
-    return Path(__file__).resolve().parent.parent
+    return get_app_root_dir()
 
 
 class AudioEngineError(RuntimeError):
@@ -814,6 +808,89 @@ def _is_mocked_youtube() -> bool:
 class AudioEngine:
     """Streams decoded PCM to a selected Windows audio output device."""
 
+    @classmethod
+    def start_youtube_warmup(cls, on_ready: Optional[Callable[[], None]] = None) -> None:
+        """Start background warmup thread to lazily import yt_dlp and ytmusicapi."""
+        global _YOUTUBE_WARMUP_STARTED
+        with _YOUTUBE_WARMUP_LOCK:
+            if _YOUTUBE_WARMUP_STARTED:
+                return
+            _YOUTUBE_WARMUP_STARTED = True
+
+        def _warmup_worker() -> None:
+            global YoutubeDL, YTMusic, _YOUTUBE_WARMUP_ERROR
+            err = None
+            try:
+                if YoutubeDL is None:
+                    from yt_dlp import YoutubeDL as _YDL
+                    YoutubeDL = _YDL
+            except Exception as exc:
+                err = str(exc)
+            try:
+                if YTMusic is None:
+                    from ytmusicapi import YTMusic as _YTM
+                    YTMusic = _YTM
+            except Exception as exc:
+                err = str(exc) if err is None else f"{err}; {exc}"
+            _YOUTUBE_WARMUP_ERROR = err
+            _YOUTUBE_READY_EVENT.set()
+            if on_ready:
+                try:
+                    on_ready()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_warmup_worker, daemon=True, name="YouTubeWarmupThread")
+        t.start()
+
+    @classmethod
+    def wait_for_youtube_ready(cls, timeout: Optional[float] = None) -> bool:
+        """Wait until background YouTube warmup completes."""
+        global _YOUTUBE_WARMUP_STARTED
+        if not _YOUTUBE_WARMUP_STARTED:
+            cls.start_youtube_warmup()
+        return _YOUTUBE_READY_EVENT.wait(timeout=timeout)
+
+    @classmethod
+    def is_youtube_ready(cls) -> bool:
+        """Check if YouTube modules are ready."""
+        return _YOUTUBE_READY_EVENT.is_set()
+
+    @classmethod
+    def set_youtube_ready_for_test(
+        cls,
+        ready: bool = True,
+        mock_ydl: Any = None,
+        mock_ytm: Any = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Deterministic test seam to control YouTube module readiness."""
+        global YoutubeDL, YTMusic, _YOUTUBE_WARMUP_ERROR, _YOUTUBE_WARMUP_STARTED
+        if ready:
+            if mock_ydl is not None:
+                YoutubeDL = mock_ydl
+            elif YoutubeDL is None:
+                try:
+                    from yt_dlp import YoutubeDL as _YDL
+                    YoutubeDL = _YDL
+                except Exception:
+                    pass
+            if mock_ytm is not None:
+                YTMusic = mock_ytm
+            elif YTMusic is None:
+                try:
+                    from ytmusicapi import YTMusic as _YTM
+                    YTMusic = _YTM
+                except Exception:
+                    pass
+            _YOUTUBE_WARMUP_ERROR = error
+            _YOUTUBE_WARMUP_STARTED = True
+            _YOUTUBE_READY_EVENT.set()
+        else:
+            _YOUTUBE_READY_EVENT.clear()
+            _YOUTUBE_WARMUP_STARTED = False
+            _YOUTUBE_WARMUP_ERROR = None
+
     def __init__(
         self,
         output_device: Optional[int] = None,
@@ -874,17 +951,20 @@ class AudioEngine:
         self._monitor_mic = monitor_mic
         self._route_speakers = True
         self._route_mic = True
-        self._deepfilter_engine = DeepFilterEngine()
+        self._deepfilter_engine = DeepFilterEngine(auto_load=False)
         self._deepfilter_enabled = False
         self._deepfilter_wet = 1.0
+        self._deepfilter_loading = False
+        self._deepfilter_load_error: Optional[str] = None
+        self._deepfilter_callbacks: list[Callable[[bool, Optional[str]], None]] = []
         self._white_noise_removal = False
         self._voice_boost_enabled = False
         self._voice_boost_db = 0.0
         self._lock = threading.RLock()
 
-    def _compute_voice_fx_flags(self) -> int:
+    def _compute_voice_fx_flags(self, require_ready: bool = False) -> int:
         flags = 0
-        if self._deepfilter_enabled:
+        if self._deepfilter_enabled and (not require_ready or self._deepfilter_engine.is_available):
             flags |= MPAD_FX_DEEPFILTER
         if self._white_noise_removal:
             flags |= MPAD_FX_WHITE_NOISE
@@ -908,6 +988,28 @@ class AudioEngine:
             return self._deepfilter_wet
 
     @property
+    def is_deepfilter_loading(self) -> bool:
+        with self._lock:
+            return self._deepfilter_loading or self._deepfilter_engine.is_loading
+
+    @property
+    def is_deepfilter_ready(self) -> bool:
+        with self._lock:
+            return self._deepfilter_engine.is_available
+
+    @property
+    def deepfilter_load_error(self) -> Optional[str]:
+        with self._lock:
+            return self._deepfilter_load_error
+
+    def set_deepfilter_engine_for_test(self, engine: DeepFilterEngine) -> None:
+        """Replace internal DeepFilterEngine instance for deterministic testing."""
+        with self._lock:
+            self._deepfilter_engine = engine
+            self._deepfilter_loading = False
+            self._deepfilter_callbacks.clear()
+
+    @property
     def white_noise_removal(self) -> bool:
         with self._lock:
             return self._white_noise_removal
@@ -926,7 +1028,7 @@ class AudioEngine:
         """Push current mic gain, mute, and DSP voice FX flags to SHM."""
         with self._lock:
             shm = self._injection_shm
-            fx_flags = self._compute_voice_fx_flags()
+            fx_flags = self._compute_voice_fx_flags(require_ready=True)
             fx_wet = self._deepfilter_wet
             effective_gain = self._effective_mic_gain()
             muted = self._mic_muted
@@ -950,11 +1052,51 @@ class AudioEngine:
             except Exception:
                 pass
 
-    def set_deepfilter_state(self, enabled: bool, wet: float = 1.0) -> None:
+    def set_deepfilter_state(
+        self,
+        enabled: bool,
+        wet: float = 1.0,
+        on_complete: Optional[Callable[[bool, Optional[str]], None]] = None,
+    ) -> None:
         with self._lock:
             self._deepfilter_enabled = bool(enabled)
             self._deepfilter_wet = max(0.0, min(1.0, float(wet)))
+            needs_load = (
+                self._deepfilter_enabled
+                and not self._deepfilter_engine.is_available
+                and not self._deepfilter_loading
+            )
+            if needs_load:
+                self._deepfilter_loading = True
+                self._deepfilter_load_error = None
+            if on_complete:
+                if self._deepfilter_engine.is_available:
+                    try:
+                        on_complete(True, None)
+                    except Exception:
+                        pass
+                else:
+                    self._deepfilter_callbacks.append(on_complete)
+
         self._sync_voice_control_to_shm()
+
+        if needs_load:
+            def _on_engine_loaded(success: bool, err: Optional[str]) -> None:
+                with self._lock:
+                    self._deepfilter_loading = False
+                    self._deepfilter_load_error = err
+                    cbs = list(self._deepfilter_callbacks)
+                    self._deepfilter_callbacks.clear()
+                    if not success:
+                        self._deepfilter_enabled = False
+                self._sync_voice_control_to_shm()
+                for cb in cbs:
+                    try:
+                        cb(success, err)
+                    except Exception:
+                        pass
+
+            self._deepfilter_engine.load_model_async(_on_engine_loaded)
 
     def set_white_noise_removal(self, enabled: bool) -> None:
         with self._lock:
@@ -1349,7 +1491,7 @@ class AudioEngine:
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
-                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_flags=self._compute_voice_fx_flags(require_ready=True),
                     voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid or "",
@@ -1433,7 +1575,7 @@ class AudioEngine:
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
-                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_flags=self._compute_voice_fx_flags(require_ready=True),
                     voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=guid or "",
@@ -1492,7 +1634,7 @@ class AudioEngine:
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
-                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_flags=self._compute_voice_fx_flags(require_ready=True),
                     voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid,
@@ -1525,7 +1667,7 @@ class AudioEngine:
                         and self._route_mic
                         and not self._pause_event.is_set()
                     ),
-                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_flags=self._compute_voice_fx_flags(require_ready=True),
                     voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid,
@@ -1549,7 +1691,7 @@ class AudioEngine:
                     mic_gain=self._effective_mic_gain(),
                     mic_mute=self._mic_muted,
                     track_playing=track_active_for_apo,
-                    voice_fx_flags=self._compute_voice_fx_flags(),
+                    voice_fx_flags=self._compute_voice_fx_flags(require_ready=True),
                     voice_fx_param1=self._deepfilter_wet,
                     passthrough=False,
                     target_endpoint_guid=self.target_endpoint_guid,
@@ -2194,7 +2336,7 @@ class AudioEngine:
                         with self._lock:
                             df_enabled = self._deepfilter_enabled
                             df_wet = self._deepfilter_wet
-                            fx_flags = self._compute_voice_fx_flags()
+                            fx_flags = self._compute_voice_fx_flags(require_ready=True)
                             effective_gain = self._effective_mic_gain()
                             muted = self._mic_muted
 
@@ -2262,7 +2404,7 @@ class AudioEngine:
                             mic_gain=self._effective_mic_gain(),
                             mic_mute=self._mic_muted,
                             track_playing=track_active_for_apo,
-                            voice_fx_flags=self._compute_voice_fx_flags(),
+                            voice_fx_flags=self._compute_voice_fx_flags(require_ready=True),
                             voice_fx_param1=self._deepfilter_wet,
                             passthrough=False,
                             target_endpoint_guid=self.target_endpoint_guid,
@@ -2704,6 +2846,8 @@ class AudioEngine:
                     return cached_entry[0], cached_entry[1]
 
         try:
+            if not AudioEngine.is_youtube_ready():
+                AudioEngine.wait_for_youtube_ready()
             if YoutubeDL is None:
                 raise AudioEngineError(
                     "Модулі ytmusicapi або yt-dlp не встановлено."
@@ -2827,6 +2971,8 @@ class AudioEngine:
         with _YT_CACHE_LOCK:
             if browse_id in _ALBUM_CACHE:
                 return dict(_ALBUM_CACHE[browse_id])
+        if not AudioEngine.is_youtube_ready():
+            AudioEngine.wait_for_youtube_ready()
         if YTMusic is None:
             raise AudioEngineError("Модуль ytmusicapi не встановлено.")
         ytmusic = YTMusic()
@@ -2945,10 +3091,14 @@ class AudioEngine:
                 _ALBUM_CACHE[actual_browse_id] = result
         return result
 
-    @staticmethod
-    def get_search_suggestions(query: str) -> list[str]:
+    @classmethod
+    def get_search_suggestions(cls, query: str) -> list[str]:
         q = str(query or "").strip()
-        if not q or YTMusic is None:
+        if not q:
+            return []
+        if not AudioEngine.is_youtube_ready():
+            AudioEngine.wait_for_youtube_ready()
+        if YTMusic is None:
             return []
         try:
             ytmusic = YTMusic()
@@ -2977,6 +3127,8 @@ class AudioEngine:
         query = query.strip()
         if not query:
             return []
+        if not AudioEngine.is_youtube_ready():
+            AudioEngine.wait_for_youtube_ready()
         if YTMusic is None and YoutubeDL is None:
             raise AudioEngineError("Модуль ytmusicapi не встановлено.")
         try:

@@ -10,9 +10,11 @@
 
 ## Quick Start (for Users)
 
-1. Download **`MusicPad.exe`** (or the ZIP bundle) from [**GitHub Releases**](../../releases/latest).
-2. Run the application — it is fully portable and works **out of the box**. All necessary dependencies (FFmpeg, injection driver, DSP libraries) are embedded.
-3. **Select your routing mode** (`File ➔ Settings ➔ Devices`):
+1. Download **`MusicPad-windows-x64.zip`** from [**GitHub Releases**](../../releases/latest).
+2. Extract the archive into any writable folder (e.g., Desktop, Documents, or `D:\Apps` — do **not** extract to `C:\Program Files` without write permissions).
+3. Run **`MusicPad.exe`** inside the extracted `MusicPad` folder — it is fully portable and works **out of the box**. All necessary dependencies (FFmpeg, injection driver, DSP libraries) are embedded in `_internal/`.
+   > **Updating**: To update MusicPad, simply extract the new ZIP archive over your existing `MusicPad` folder. Your settings, sound lists, and cached files in `.cache/` will be preserved.
+4. **Select your routing mode** (`File ➔ Settings ➔ Devices`):
    - **Microphone Injection (Soundpad-style)**: Click **"Install Driver (UAC)"**. MusicPad registers its system audio driver (`MusicPadAPO`) onto your selected physical microphone. In Discord, games, and voice apps, keep your normal microphone selected — audio tracks are blended into your mic feed automatically.
    - **Virtual Cable (VB-Cable)**: Fallback mode for applications without Windows audio enhancement support (WASAPI Exclusive/RAW). Select `CABLE Input` in MusicPad and `CABLE Output` as your microphone in the target voice application ([VB-Audio Virtual Cable](https://vb-audio.com/Cable/)).
 

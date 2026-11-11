@@ -3228,7 +3228,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
         from musicpad.dsp_core import MPAD_FX_DEEPFILTER, MPAD_FX_WHITE_NOISE, MPAD_FX_VOICE_BOOST
 
         # 1. Test DeepFilterEngine
-        df_eng = DeepFilterEngine()
+        df_eng = DeepFilterEngine(auto_load=True)
         self.assertTrue(df_eng.is_available)
         raw_audio = np.random.randn(384, 2).astype(np.float32) * 0.1
         clean = df_eng.process_buffer(raw_audio, wet=1.0)
@@ -3300,6 +3300,332 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(sc.get("voice_boost_db"), 6.0)
                 finally:
                     app._exit()
+
+    def test_on_demand_deepfilter_loading(self) -> None:
+        import numpy as np
+        from unittest.mock import MagicMock
+        from musicpad.deepfilter_engine import DeepFilterEngine
+        from musicpad.dsp_core import MPAD_FX_DEEPFILTER
+
+        # 1. Unloaded engine behaviour
+        eng = DeepFilterEngine(auto_load=False)
+        self.assertFalse(eng.is_available)
+        self.assertFalse(eng.is_loading)
+        test_buf = np.ones((480, 2), dtype=np.float32)
+        out = eng.process_buffer(test_buf, wet=1.0)
+        np.testing.assert_array_equal(out, test_buf)
+
+        # 2. AudioEngine with DeepFilter disabled at startup
+        audio = AudioEngine(routing_mode=ROUTING_MODE_VIRTUAL_CABLE)
+        try:
+            self.assertFalse(audio.deepfilter_enabled)
+            self.assertFalse(audio.is_deepfilter_ready)
+            self.assertFalse(audio.is_deepfilter_loading)
+            flags = audio._compute_voice_fx_flags(require_ready=True)
+            self.assertEqual(flags & MPAD_FX_DEEPFILTER, 0)
+
+            # 3. Deterministic background loading with controlled gate
+            gate = threading.Event()
+            loaded = threading.Event()
+
+            class MockGatedEngine(DeepFilterEngine):
+                def __init__(self):
+                    super().__init__(auto_load=False)
+                    self._mock_ready = False
+
+                @property
+                def is_available(self) -> bool:
+                    return self._mock_ready
+
+                def load_model(self) -> bool:
+                    gate.wait(timeout=5)
+                    self._mock_ready = True
+                    loaded.set()
+                    return True
+
+            mock_engine = MockGatedEngine()
+            audio.set_deepfilter_engine_for_test(mock_engine)
+
+            # Enable deepfilter - starts background loading without blocking
+            audio.set_deepfilter_state(True, 0.8)
+            self.assertTrue(audio.deepfilter_enabled)
+            self.assertTrue(audio.is_deepfilter_loading)
+            self.assertFalse(audio.is_deepfilter_ready)
+            # Before gate opens, require_ready=True leaves MPAD_FX_DEEPFILTER off
+            self.assertEqual(audio._compute_voice_fx_flags(require_ready=True) & MPAD_FX_DEEPFILTER, 0)
+
+            # Rapid redundant calls while loading should not trigger parallel loading
+            audio.set_deepfilter_state(True, 0.8)
+            self.assertTrue(audio.is_deepfilter_loading)
+
+            # Release gate
+            gate.set()
+            self.assertTrue(loaded.wait(timeout=3))
+            time.sleep(0.05)  # brief time for worker to complete callback
+            self.assertFalse(audio.is_deepfilter_loading)
+            self.assertTrue(audio.is_deepfilter_ready)
+            self.assertEqual(audio._compute_voice_fx_flags(require_ready=True) & MPAD_FX_DEEPFILTER, MPAD_FX_DEEPFILTER)
+
+            # 4. Failure handling
+            class MockFailingEngine(DeepFilterEngine):
+                def __init__(self):
+                    super().__init__(auto_load=False)
+
+                @property
+                def is_available(self) -> bool:
+                    return False
+
+                def load_model(self) -> bool:
+                    with self._lock:
+                        self._load_error = "Corrupted model file"
+                    return False
+
+            fail_engine = MockFailingEngine()
+            audio.set_deepfilter_engine_for_test(fail_engine)
+            fail_cb_called = threading.Event()
+            fail_cb_res = []
+
+            def on_fail(success: bool, err: Optional[str]) -> None:
+                fail_cb_res.append((success, err))
+                fail_cb_called.set()
+
+            audio.set_deepfilter_state(True, 0.9, on_complete=on_fail)
+            self.assertTrue(fail_cb_called.wait(timeout=3))
+            self.assertEqual(fail_cb_res[0][0], False)
+            self.assertIn("Corrupted model", fail_cb_res[0][1] or "")
+            # State reverts to disabled
+            self.assertFalse(audio.deepfilter_enabled)
+            self.assertFalse(audio.is_deepfilter_ready)
+            self.assertEqual(audio._compute_voice_fx_flags(require_ready=True) & MPAD_FX_DEEPFILTER, 0)
+
+            # 5. UI error notification test in MusicPadApp
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg_file = Path(tmp) / "state_df_fail.json"
+                with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                    app = main.MusicPadApp()
+                    try:
+                        app.deepfilter_enabled_var.set(False)
+                        app._on_voice_fx_changed()
+                        app.engine.set_deepfilter_engine_for_test(MockFailingEngine())
+                        with patch.object(main.messagebox, "showwarning") as mock_warn:
+                            app.deepfilter_enabled_var.set(True)
+                            app._on_voice_fx_changed()
+                            for _ in range(30):
+                                app.update()
+                                if not app.deepfilter_enabled_var.get() and mock_warn.called:
+                                    break
+                                time.sleep(0.02)
+                            self.assertFalse(app.deepfilter_enabled_var.get())
+                            self.assertTrue(mock_warn.called)
+                    finally:
+                        app._exit()
+        finally:
+            audio.stop()
+
+    def test_deferred_audio_init_and_playback_queue(self) -> None:
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as tmp:
+            t1 = Path(tmp) / "track1.mp3"
+            t2 = Path(tmp) / "track2.mp3"
+            t1.write_bytes(b"dummy1")
+            t2.write_bytes(b"dummy2")
+
+            cfg_file = Path(tmp) / "state_queue.json"
+            cfg_data = {
+                "tracks": [
+                    {"title": "Track 1", "path": str(t1), "is_url": False, "duration": 120.0},
+                    {"title": "Track 2", "path": str(t2), "is_url": False, "duration": 180.0},
+                ],
+                "settings_custom": {
+                    "deepfilter_enabled": True,
+                    "deepfilter_wet": 90.0,
+                },
+                "playback_state": {
+                    "title": "Track 1",
+                    "path": str(t1),
+                    "position": 15.0,
+                    "duration": 120.0,
+                    "status": "paused",
+                },
+            }
+            cfg_file.write_text(json.dumps(cfg_data, ensure_ascii=False), encoding="utf-8")
+
+            gate = threading.Event()
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.set_audio_init_gate_for_test(gate)
+                    app.update()
+
+                    # 1. Gate is held: audio is NOT ready yet
+                    self.assertFalse(app.is_audio_ready)
+
+                    # DeepFilterNet loading must NOT start before audio is ready
+                    self.assertFalse(app.engine.is_deepfilter_loading)
+
+                    # Buttons must not be disabled
+                    self.assertNotEqual(app.pause_button.cget("state"), "disabled")
+
+                    # 2. Queue actions: play track 1, then hotkey track 2
+                    app._play_local_track(app.local_tracks[0])
+                    self.assertIsNotNone(app._queued_playback_action)
+
+                    app._trigger_hotkey_track(app.local_tracks[1], 1)
+                    self.assertIsNotNone(app._queued_playback_action)
+                    self.assertIn("Track 2", app.now_playing_var.get())
+
+                    # Mock engine.play to verify only the latest action executes
+                    mock_play = MagicMock()
+                    app.engine.play = mock_play
+
+                    # 3. Release gate: deferred audio init runs
+                    gate.set()
+                    self.assertTrue(app.wait_for_audio_ready(timeout=5.0))
+                    for _ in range(20):
+                        app.update()
+                        if mock_play.called:
+                            break
+                        time.sleep(0.01)
+
+                    self.assertTrue(app.is_audio_ready)
+                    self.assertIsNotNone(app._audio_ready_ms)
+
+                    # Only the latest queued action (Track 2) was executed once!
+                    self.assertEqual(mock_play.call_count, 1)
+                    played_arg = mock_play.call_args[0][0]
+                    self.assertEqual(played_arg.title, "Track 2")
+
+                    # DeepFilterNet background load begins after audio ready
+                    self.assertTrue(app.engine.deepfilter_enabled)
+                finally:
+                    app._exit()
+
+                # 4. In a fresh run with no queued user actions, verify saved playback state is preserved
+                app2 = main.MusicPadApp()
+                try:
+                    app2.wait_for_audio_ready(timeout=5.0)
+                    app2.update()
+                    self.assertTrue(app2.is_audio_ready)
+                    self.assertEqual(app2.current_index, 1)
+                    self.assertEqual(app2.local_tracks[app2.current_index].title, "Track 2")
+                    self.assertTrue(app2.is_paused)
+                finally:
+                    app2._exit()
+
+    def test_unified_app_root_resolution_onedir_dist_and_release(self) -> None:
+        import sys
+        from musicpad.app_paths import get_app_root_dir
+        repo_root = Path(__file__).resolve().parent.parent
+
+        # 1. Unfrozen dev mode
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertEqual(get_app_root_dir(), repo_root)
+
+        # 2. Frozen onedir in dist/MusicPad/MusicPad.exe -> resolves to repo_root
+        fake_exe = repo_root / "dist" / "MusicPad" / "MusicPad.exe"
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(fake_exe)):
+            self.assertEqual(get_app_root_dir(), repo_root)
+
+        # 3. Frozen onedir in standalone release folder -> resolves to folder containing MusicPad.exe
+        standalone = Path("C:/Program Files/MusicPad/MusicPad.exe")
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(standalone)):
+            self.assertEqual(get_app_root_dir(), standalone.parent)
+
+    def test_check_unextracted_archive_guard(self) -> None:
+        import sys
+        from musicpad.app_paths import check_unextracted_archive_guard
+
+        # 1. Not frozen -> returns True without error
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertTrue(check_unextracted_archive_guard(show_dialog=False, exit_on_error=False))
+
+        # 2. Frozen with _internal present outside Temp/zip -> returns True
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp) / "MusicPad"
+            internal_dir = app_dir / "_internal"
+            internal_dir.mkdir(parents=True)
+            exe_file = app_dir / "MusicPad.exe"
+            exe_file.touch()
+
+            with patch.object(sys, "frozen", True, create=True), patch.object(
+                sys, "executable", str(exe_file)
+            ):
+                self.assertTrue(check_unextracted_archive_guard(show_dialog=False, exit_on_error=False))
+
+        # 3. Frozen without _internal -> triggers native message box and exits
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp) / "MusicPad"
+            app_dir.mkdir(parents=True)
+            exe_file = app_dir / "MusicPad.exe"
+            exe_file.touch()
+
+            with patch.object(sys, "frozen", True, create=True), patch.object(
+                sys, "executable", str(exe_file)
+            ), patch("sys.exit") as mock_exit:
+                if sys.platform == "win32":
+                    with patch("ctypes.windll.user32.MessageBoxW") as mock_msgbox:
+                        mock_msgbox.return_value = 1
+                        ok = check_unextracted_archive_guard(exit_on_error=True, show_dialog=True, ui_lang_id=1058)
+                        self.assertFalse(ok)
+                        mock_msgbox.assert_called_once()
+                        msg = mock_msgbox.call_args[0][1].lower()
+                        self.assertIn("розпакуйте", msg)
+                else:
+                    ok = check_unextracted_archive_guard(exit_on_error=True, show_dialog=False)
+                    self.assertFalse(ok)
+                mock_exit.assert_called_once_with(1)
+
+        # 4. Frozen inside temporary zip path -> triggers guard and English localization
+        zip_temp_exe = r"C:\Users\Roman\AppData\Local\Temp\Temp1_MusicPad.zip\MusicPad\MusicPad.exe"
+        with patch.object(sys, "frozen", True, create=True), patch.object(
+            sys, "executable", zip_temp_exe
+        ), patch("sys.exit") as mock_exit:
+            if sys.platform == "win32":
+                with patch("ctypes.windll.user32.MessageBoxW") as mock_msgbox:
+                    mock_msgbox.return_value = 1
+                    ok = check_unextracted_archive_guard(exit_on_error=True, show_dialog=True, ui_lang_id=1033)
+                    self.assertFalse(ok)
+                    mock_msgbox.assert_called_once()
+                    msg = mock_msgbox.call_args[0][1].lower()
+                    self.assertIn("extract", msg)
+            else:
+                ok = check_unextracted_archive_guard(exit_on_error=True, show_dialog=False)
+                self.assertFalse(ok)
+            mock_exit.assert_called_once_with(1)
+
+    def test_lazy_youtube_warmup_and_search_loading_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_warmup.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                AudioEngine.set_youtube_ready_for_test(ready=False)
+                with patch.object(main.MusicPadApp, "_start_background_warmup"):
+                    app = main.MusicPadApp()
+                    try:
+                        app.wait_for_audio_ready(timeout=5.0)
+                        app.update()
+                        app._select_category("youtube")
+                        app.yt_query_var.set("warmup test song")
+
+                        mock_results = [{"title": "Warmup Song", "artist": "Artist", "duration": 180, "source": "ytmusic"}]
+                        with patch.object(AudioEngine, "search_youtube", return_value=mock_results):
+                            app._perform_yt_search()
+                            status_txt = app.yt_status_lbl.cget("text")
+                            self.assertTrue(any(word in status_txt.lower() for word in ("завантаження", "loading")))
+
+                            AudioEngine.set_youtube_ready_for_test(ready=True)
+                            self.assertTrue(AudioEngine.is_youtube_ready())
+
+                            for _ in range(25):
+                                app.update()
+                                if app.yt_results_data:
+                                    break
+                                time.sleep(0.02)
+
+                            self.assertEqual(len(app.yt_results_data), 1)
+                            self.assertEqual(app.yt_results_data[0]["title"], "Warmup Song")
+                    finally:
+                        AudioEngine.set_youtube_ready_for_test(ready=True)
+                        app._exit()
 
     def test_window_geometry_dynamic_size_and_centering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4919,6 +5245,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
     def test_ui_routing_mode_switch_prompts_and_endpoint_transfer(self) -> None:
         app = main.MusicPadApp()
         try:
+            app.wait_for_audio_ready(timeout=5.0)
             app.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
             not_inst_status = DriverStatus(
                 state="not_installed",
