@@ -2957,9 +2957,10 @@ class TestMusicPadAppGUI(unittest.TestCase):
     def test_compiled_exe_window_and_self_test(self) -> None:
         import subprocess
 
-        exe_path = Path(main.__file__).resolve().parent / "dist" / "MusicPad.exe"
+        onedir_exe = Path(main.__file__).resolve().parent / "dist" / "MusicPad" / "MusicPad.exe"
+        exe_path = onedir_exe if onedir_exe.is_file() else Path(main.__file__).resolve().parent / "dist" / "MusicPad.exe"
         if not exe_path.is_file():
-            self.skipTest("dist/MusicPad.exe not present")
+            self.skipTest("dist/MusicPad/MusicPad.exe not present")
 
         with tempfile.TemporaryDirectory() as tmp:
             rep_file = Path(tmp) / "self_test_report.json"
