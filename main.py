@@ -159,21 +159,10 @@ def _is_hotkey_pressed_win32(hotkey: str) -> bool:
     return True
 
 
-def _create_wav_file(path: Path, duration_sec: float = 1.0, rate: int = 44100) -> None:
-    frames = max(1, int(rate * duration_sec))
-    data = b"\x00\x00" * frames * 2
-    fmt = struct.pack("<4sIHHIIHH", b"fmt ", 16, 1, 2, rate, rate * 4, 4, 16)
-    d = struct.pack("<4sI", b"data", len(data)) + data
-    riff = struct.pack("<4sI4s", b"RIFF", 4 + len(fmt) + len(d), b"WAVE")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(riff + fmt + d)
-
-
 I18N: dict[str, dict[str, str]] = {
     "uk": {
         "menu_file": "Файл",
         "menu_edit": "Редагування",
-        "menu_play": "Відтворення",
         "menu_win": "Вікно",
         # File menu
         "file_add": "Додати звукові файли",
@@ -212,32 +201,6 @@ I18N: dict[str, dict[str, str]] = {
         "edit_last_played": "Останній відтворений файл",
         "edit_find_missing": "Знайти відсутні аудіофайли",
         "edit_search": "Пошук",
-        # Play menu
-        "play_speakers_and_mic": "Відтворити вибраний файл (динаміки та мікрофон)",
-        "play_headphones_only": "Відтворювати вибраний файл лише у динаміках",
-        "play_mic_only": "Відтворювати вибраний файл лише у мікрофоні",
-        "play_random_all": "Відтворити випадковий файл (динаміки та мікрофон)",
-        "play_random_spk": "Відтворити випадковий файл тільки у динаміках",
-        "play_random_mic": "Відтворити випадковий файл тільки у мікрофоні",
-        "play_random_cat": "Відтворити випадковий файл із усіх категорій",
-        "play_cat_both": "Динаміки та мікрофон",
-        "play_cat_spk": "Тільки у динаміках",
-        "play_cat_mic": "Тільки у мікрофоні",
-        "play_last_menu": "Відтворити останній файл (динаміки та мікрофон)",
-        "play_repeat_last": "Повторити останній відтворений",
-        "play_play_last_added": "Відтворити останній доданий",
-        "play_stop": "Зупинити відтворення",
-        "play_pause": "Призупинити/продовжити відтворення",
-        "play_prev": "Відтворити попередній файл",
-        "play_next": "Відтворити наступний файл",
-        "play_auto_continue": "Продовжити відтворення після закінчення поточного файлу",
-        "play_loop_playlist": "Повторяти відтворення списку звуків",
-        "play_loop_current": "Повторне відтворення поточного файлу",
-        "play_auto_stop": "Автозупинка (рекомендовано)",
-        "play_mode": "Режим відтворення",
-        "play_mode_single": "Один звук (стандартний режим)",
-        "play_mode_overlap": "Одночасне накладання звуків",
-        "play_mode_interrupt": "Переривати поточний звук новим",
         # Window menu
         "win_cat": "Категорії",
         "win_my_sounds": "Мої звуки",
@@ -246,14 +209,6 @@ I18N: dict[str, dict[str, str]] = {
         "win_quick": "Швидка панель",
         "win_search_panel": "Панель пошуку звуків",
         "win_quick_yt": "Швидкий пошук YouTube...",
-        "win_hotkeys": "Гарячі клавіші",
-        "win_hk_enable": "Увімкнути гарячі клавіші",
-        "win_hk_disable": "Вимкнути гарячі клавіші",
-        "win_hk_assign": "Призначити клавішу вибраному...",
-        "win_hk_list": "Список активних комбінацій...",
-        "win_record": "Записування звуку",
-        "win_color": "Інструмент «Колір»",
-        "win_tts": "Озвучення тексту",
         # Main table headings
         "col_index": "Інд...",
         "col_title": "Тег",
@@ -370,7 +325,6 @@ I18N: dict[str, dict[str, str]] = {
     "en": {
         "menu_file": "File",
         "menu_edit": "Edit",
-        "menu_play": "Playback",
         "menu_win": "Window",
         # File menu
         "file_add": "Add sound files",
@@ -409,32 +363,6 @@ I18N: dict[str, dict[str, str]] = {
         "edit_last_played": "Last played file",
         "edit_find_missing": "Find missing audio files",
         "edit_search": "Search",
-        # Play menu
-        "play_speakers_and_mic": "Play selected file (speakers and mic)",
-        "play_headphones_only": "Play selected file in speakers only",
-        "play_mic_only": "Play selected file in microphone only",
-        "play_random_all": "Play random file (speakers and mic)",
-        "play_random_spk": "Play random file in speakers only",
-        "play_random_mic": "Play random file in microphone only",
-        "play_random_cat": "Play random file from all categories",
-        "play_cat_both": "Speakers and mic",
-        "play_cat_spk": "In speakers only",
-        "play_cat_mic": "In microphone only",
-        "play_last_menu": "Play last file (speakers and mic)",
-        "play_repeat_last": "Replay last played",
-        "play_play_last_added": "Play last added",
-        "play_stop": "Stop playback",
-        "play_pause": "Pause/resume playback",
-        "play_prev": "Play previous file",
-        "play_next": "Play next file",
-        "play_auto_continue": "Continue playback after current file ends",
-        "play_loop_playlist": "Loop sound list playback",
-        "play_loop_current": "Loop current file",
-        "play_auto_stop": "Auto-stop (recommended)",
-        "play_mode": "Playback mode",
-        "play_mode_single": "Single sound (standard mode)",
-        "play_mode_overlap": "Simultaneous sound overlap",
-        "play_mode_interrupt": "Interrupt current sound with new",
         # Window menu
         "win_cat": "Categories",
         "win_my_sounds": "My Sounds",
@@ -443,14 +371,6 @@ I18N: dict[str, dict[str, str]] = {
         "win_quick": "Quick panel",
         "win_search_panel": "Sound search panel",
         "win_quick_yt": "Quick YouTube search...",
-        "win_hotkeys": "Hotkeys",
-        "win_hk_enable": "Enable hotkeys",
-        "win_hk_disable": "Disable hotkeys",
-        "win_hk_assign": "Assign hotkey to selected...",
-        "win_hk_list": "List of active shortcuts...",
-        "win_record": "Record audio",
-        "win_color": "Color tool",
-        "win_tts": "Text to speech",
         # Main table headings
         "col_index": "Ind...",
         "col_title": "Title",
@@ -1979,19 +1899,38 @@ class TrackListView(tk.Frame):
 
         def on_right_click(e, item_id=iid):
             self.selection_set(item_id)
-            for cb in self._callbacks.get("<Button-3>", []):
-                try:
-                    cb(e)
-                except Exception:
-                    pass
+            self.focus_set()
+            self._active_event_iid = item_id
+            try:
+                setattr(e, "_row_iid", item_id)
+            except Exception:
+                pass
+            try:
+                for cb in self._callbacks.get("<Button-3>", []):
+                    try:
+                        cb(e)
+                    except Exception:
+                        pass
+            finally:
+                self._active_event_iid = None
+            return "break"
 
         def on_double_click(e, item_id=iid):
             self.selection_set(item_id)
-            for cb in self._callbacks.get("<Double-1>", []):
-                try:
-                    cb(e)
-                except Exception:
-                    pass
+            self._active_event_iid = item_id
+            try:
+                setattr(e, "_row_iid", item_id)
+            except Exception:
+                pass
+            try:
+                for cb in self._callbacks.get("<Double-1>", []):
+                    try:
+                        cb(e)
+                    except Exception:
+                        pass
+            finally:
+                self._active_event_iid = None
+            return "break"
 
         click_targets = [row_frame, r_c0, r_c1, r_c2, r_c3, r_c4, lbl_title, lbl_artist, lbl_duration, lbl_source, lbl_cover]
         if lbl_type is not None:
@@ -2155,14 +2094,36 @@ class TrackListView(tk.Frame):
     def column(self, column: str, **kwargs) -> dict:
         return {"width": 100, "minwidth": 50}
 
-    def identify_row(self, y: int) -> Optional[str]:
+    def identify_row(self, y: Any) -> Optional[str]:
+        active_iid = getattr(self, "_active_event_iid", None)
+        if active_iid is not None and str(active_iid) in self._items:
+            return str(active_iid)
         try:
+            row_iid_attr = getattr(y, "_row_iid", None)
+            if row_iid_attr is not None and str(row_iid_attr) in self._items:
+                return str(row_iid_attr)
+            if hasattr(y, "widget") and y.widget is not None:
+                w_str = str(y.widget)
+                for iid, rf in self._row_frames.items():
+                    if rf and rf.winfo_exists():
+                        rf_str = str(rf)
+                        if w_str == rf_str or w_str.startswith(rf_str + "."):
+                            return iid
+                y_val = int(getattr(y, "y", 0))
+            else:
+                y_val = int(y)
+
+            try:
+                y_canvas = float(self.canvas.canvasy(y_val))
+            except Exception:
+                y_canvas = float(y_val)
+
             for iid in self._item_iids:
                 rf = self._row_frames.get(iid)
                 if rf and rf.winfo_exists():
                     ry = rf.winfo_y()
                     rh = rf.winfo_height()
-                    if ry <= y <= ry + rh:
+                    if rh > 1 and ry <= y_canvas <= ry + rh:
                         return iid
         except Exception:
             pass
@@ -2184,7 +2145,6 @@ class MusicPadApp(tk.Tk):
         self.monitor_mic = tk.BooleanVar(value=False)
         self.hotkeys_enabled = tk.BooleanVar(value=True)
         self._hotkeys_enabled: bool = True
-        self.auto_keys_enabled = tk.BooleanVar(value=True)
         self.loop_enabled = tk.BooleanVar(value=False)
         self.mute_track_to_others_var = tk.BooleanVar(value=False)
         self.playback_count = 0
@@ -2849,10 +2809,6 @@ class MusicPadApp(tk.Tk):
         self.notification_manager = NotificationManager(self)
         self.status_var = NotificationStringVar(self, value="", notification_mgr=self.notification_manager)
         self.auto_stop_var = tk.BooleanVar(value=True)
-        self.auto_continue_var = tk.BooleanVar(value=False)
-        self.loop_playlist_var = tk.BooleanVar(value=False)
-        self.loop_current_var = tk.BooleanVar(value=False)
-        self.play_mode_var = tk.StringVar(value="single")
         self._undo_stack: list[list[LocalTrack]] = []
         self._redo_stack: list[list[LocalTrack]] = []
         self._clipboard_tracks: list[LocalTrack] = []
@@ -3074,15 +3030,6 @@ class MusicPadApp(tk.Tk):
             d.line([(20, 32), (44, 32)], fill=blue, width=7)
             self._icons["btn_h"] = ImageTk.PhotoImage(img.resize((18, 18), Image.Resampling.LANCZOS))
 
-            # A button (18x18)
-            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            d = ImageDraw.Draw(img)
-            d.rectangle([(2, 2), (61, 61)], outline=blue, width=5, fill=(0, 0, 0, 0))
-            d.line([(18, 48), (32, 16)], fill=blue, width=7)
-            d.line([(46, 48), (32, 16)], fill=blue, width=7)
-            d.line([(22, 36), (42, 36)], fill=blue, width=6)
-            self._icons["btn_a"] = ImageTk.PhotoImage(img.resize((18, 18), Image.Resampling.LANCZOS))
-
             # YouTube category badge (red rounded rectangle with white play triangle, 18x18)
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
@@ -3199,8 +3146,6 @@ class MusicPadApp(tk.Tk):
             self.btn_b_play.configure(image=self._icons["play_sm"], text="")
         if hasattr(self, "btn_b_h") and self.btn_b_h.winfo_exists() and self._icons.get("btn_h"):
             self.btn_b_h.configure(image=self._icons["btn_h"], text="")
-        if hasattr(self, "btn_b_a") and self.btn_b_a.winfo_exists() and self._icons.get("btn_a"):
-            self.btn_b_a.configure(image=self._icons["btn_a"], text="")
         if hasattr(self, "btn_b_ff") and self.btn_b_ff.winfo_exists() and self._icons.get("ff"):
             self.btn_b_ff.configure(image=self._icons["ff"], text="")
         if hasattr(self, "btn_b_msg") and self.btn_b_msg.winfo_exists() and self._icons.get("chat"):
@@ -3431,79 +3376,7 @@ class MusicPadApp(tk.Tk):
         self.menubar.add_cascade(label=self._tr("menu_edit"), menu=edit_menu)
 
         # =========================================================================
-        # 3. Меню «Відтворення» / "Playback"
-        # =========================================================================
-        play_menu = tk.Menu(self.menubar, **menu_kw)
-        play_menu.add_command(label=self._tr("play_speakers_and_mic"), command=self._play_speakers_and_mic)
-        play_menu.add_separator()
-        play_menu.add_command(
-            label=self._tr("play_random_all"),
-            command=lambda: self._play_random_track(speakers=True, mic=True),
-        )
-        play_menu.add_command(
-            label=self._tr("play_random_spk"),
-            command=lambda: self._play_random_track(speakers=True, mic=False),
-        )
-        play_menu.add_command(
-            label=self._tr("play_random_mic"),
-            command=lambda: self._play_random_track(speakers=False, mic=True),
-        )
-
-        # Підменю: Відтворити випадковий файл із усіх категорій / Play random from all
-        sub_rand_all = tk.Menu(play_menu, **menu_kw)
-        sub_rand_all.add_command(
-            label=self._tr("play_cat_both"),
-            command=lambda: self._play_random_track(speakers=True, mic=True),
-        )
-        sub_rand_all.add_command(
-            label=self._tr("play_cat_spk"),
-            command=lambda: self._play_random_track(speakers=True, mic=False),
-        )
-        sub_rand_all.add_command(
-            label=self._tr("play_cat_mic"),
-            command=lambda: self._play_random_track(speakers=False, mic=True),
-        )
-        play_menu.add_cascade(label=self._tr("play_random_cat"), menu=sub_rand_all)
-
-        # Підменю: Відтворити останній файл (динаміки та мікрофон) / Play last file
-        sub_last = tk.Menu(play_menu, **menu_kw)
-        sub_last.add_command(label=self._tr("play_repeat_last"), command=self._replay_last_track)
-        sub_last.add_command(label=self._tr("play_play_last_added"), command=self._play_last_added_track)
-        play_menu.add_cascade(label=self._tr("play_last_menu"), menu=sub_last)
-
-        play_menu.add_separator()
-        play_menu.add_command(label=self._tr("play_stop"), command=self._stop)
-        play_menu.add_command(label=self._tr("play_pause"), command=self._toggle_pause)
-        play_menu.add_command(label=self._tr("play_prev"), command=self._previous)
-        play_menu.add_command(label=self._tr("play_next"), command=self._next)
-        play_menu.add_separator()
-        play_menu.add_checkbutton(
-            label=self._tr("play_auto_continue"),
-            variable=self.auto_continue_var,
-        )
-        play_menu.add_checkbutton(
-            label=self._tr("play_loop_playlist"),
-            variable=self.loop_playlist_var,
-        )
-        play_menu.add_checkbutton(
-            label=self._tr("play_loop_current"),
-            variable=self.loop_current_var,
-        )
-        play_menu.add_checkbutton(
-            label=self._tr("play_auto_stop"),
-            variable=self.auto_stop_var,
-        )
-
-        # Підменю: Режим відтворення / Playback mode
-        sub_mode = tk.Menu(play_menu, **menu_kw)
-        sub_mode.add_radiobutton(label=self._tr("play_mode_single"), variable=self.play_mode_var, value="single")
-        sub_mode.add_radiobutton(label=self._tr("play_mode_overlap"), variable=self.play_mode_var, value="overlap")
-        sub_mode.add_radiobutton(label=self._tr("play_mode_interrupt"), variable=self.play_mode_var, value="interrupt")
-        play_menu.add_cascade(label=self._tr("play_mode"), menu=sub_mode)
-        self.menubar.add_cascade(label=self._tr("menu_play"), menu=play_menu)
-
-        # =========================================================================
-        # 4. Меню «Вікно» / "Window"
+        # 3. Меню «Вікно» / "Window"
         # =========================================================================
         win_menu = tk.Menu(self.menubar, **menu_kw)
 
@@ -3520,19 +3393,6 @@ class MusicPadApp(tk.Tk):
         sub_quick.add_command(label=self._tr("win_search_panel"), command=self._toggle_search_bar)
         sub_quick.add_command(label=self._tr("win_quick_yt"), command=self._open_yt_search)
         win_menu.add_cascade(label=self._tr("win_quick"), menu=sub_quick)
-
-        # Підменю: Гарячі клавіші / Hotkeys
-        sub_hotkeys = tk.Menu(win_menu, **menu_kw)
-        sub_hotkeys.add_command(label=self._tr("win_hk_enable"), command=lambda: self.hotkeys_enabled.set(True))
-        sub_hotkeys.add_command(label=self._tr("win_hk_disable"), command=lambda: self.hotkeys_enabled.set(False))
-        sub_hotkeys.add_separator()
-        sub_hotkeys.add_command(label=self._tr("win_hk_assign"), command=self._assign_hotkey_dialog)
-        sub_hotkeys.add_command(label=self._tr("win_hk_list"), command=self._show_hotkeys_help)
-        win_menu.add_cascade(label=self._tr("win_hotkeys"), menu=sub_hotkeys)
-
-        win_menu.add_command(label=self._tr("win_record"), accelerator="Ctrl+R", command=self._record_audio_dialog)
-        win_menu.add_command(label=self._tr("win_color"), command=self._color_tool_dialog)
-        win_menu.add_command(label=self._tr("win_tts"), accelerator="Ctrl+T", command=self._text_to_speech_dialog)
         self.menubar.add_cascade(label=self._tr("menu_win"), menu=win_menu)
 
         mb_kw = {
@@ -3557,7 +3417,6 @@ class MusicPadApp(tk.Tk):
         for label_key, ua_label, m in [
             ("menu_file", "Файл", file_menu),
             ("menu_edit", "Редагування", edit_menu),
-            ("menu_play", "Відтворення", play_menu),
             ("menu_win", "Вікно", win_menu),
         ]:
             display_label = self._tr(label_key)
@@ -4017,42 +3876,6 @@ class MusicPadApp(tk.Tk):
         self._save_state()
         self.status_var.set("Лічильник відтворень успішно скинуто.")
 
-    def _play_speakers_and_mic(self) -> None:
-        self._play_selected()
-
-    def _play_random_track(self, speakers: bool = True, mic: bool = True) -> None:
-        if not self.visible_tracks:
-            return
-        track = random.choice(self.visible_tracks)
-        self.current_index = self.visible_tracks.index(track)
-        self._play_local_track(track)
-
-    def _replay_last_track(self) -> None:
-        if 0 <= self.current_index < len(self.visible_tracks):
-            self._play_local_track(self.visible_tracks[self.current_index])
-        elif self.visible_tracks:
-            self._play_local_track(self.visible_tracks[0])
-
-    def _play_last_added_track(self) -> None:
-        if self.visible_tracks:
-            self.current_index = len(self.visible_tracks) - 1
-            self._play_local_track(self.visible_tracks[-1])
-
-    def _toggle_auto_continue(self) -> None:
-        val = not self.auto_continue_var.get()
-        self.auto_continue_var.set(val)
-        self.status_var.set(f"Продовження відтворення: {'Увімкнено' if val else 'Вимкнено'}")
-
-    def _toggle_repeat_playlist(self) -> None:
-        val = not self.loop_playlist_var.get()
-        self.loop_playlist_var.set(val)
-        self.status_var.set(f"Повторення списку звуків: {'Увімкнено' if val else 'Вимкнено'}")
-
-    def _toggle_repeat_single(self) -> None:
-        val = not self.loop_current_var.get()
-        self.loop_current_var.set(val)
-        self.status_var.set(f"Повторне відтворення поточного файлу: {'Увімкнено' if val else 'Вимкнено'}")
-
     def _toggle_left_panel(self) -> None:
         if self.left_panel.winfo_ismapped():
             self.left_panel.pack_forget()
@@ -4060,339 +3883,6 @@ class MusicPadApp(tk.Tk):
         else:
             self.left_panel.pack(side="left", fill="y", before=self.right_panel)
             self.status_var.set("Панель категорій відображено.")
-
-    def _record_audio_dialog(self) -> None:
-        c = self._get_theme_colors()
-        dlg = tk.Toplevel(self)
-        dlg.title("Записування звуку (Sound Recorder)")
-        dlg.geometry("460x260")
-        dlg.resizable(False, False)
-        dlg.configure(bg=c["dialog_bg"])
-        dlg.transient(self)
-        self._apply_dark_title_bar(dlg)
-
-        top = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=12)
-        top.pack(fill="x")
-        tk.Label(
-            top,
-            text="🎙 Записування звуку з мікрофона",
-            bg=c["dialog_bg"],
-            fg=c["fg"],
-            font=("Segoe UI", 11, "bold"),
-        ).pack(anchor="w")
-        status_lbl = tk.Label(
-            top,
-            text="Готово до запису. Натисніть «Почати запис».",
-            bg=c["dialog_bg"],
-            fg=c["muted_fg"],
-            font=("Segoe UI", 9),
-        )
-        status_lbl.pack(anchor="w", pady=(4, 0))
-
-        center = tk.Frame(dlg, bg=c["top_bg"], bd=1, relief="solid", padx=12, pady=12)
-        center.pack(fill="x", padx=16, pady=6)
-        timer_lbl = tk.Label(
-            center,
-            text="0:00.0",
-            bg=c["top_bg"],
-            fg=c["accent"],
-            font=("Segoe UI", 20, "bold"),
-        )
-        timer_lbl.pack()
-
-        recording = False
-        start_t = 0.0
-
-        def update_timer() -> None:
-            if recording and dlg.winfo_exists():
-                dur = time.time() - start_t
-                secs = int(dur)
-                ms = int((dur - secs) * 10)
-                timer_lbl.configure(text=f"{secs // 60}:{secs % 60:02d}.{ms}")
-                dlg.after(100, update_timer)
-
-        def start_rec() -> None:
-            nonlocal recording, start_t
-            recording = True
-            start_t = time.time()
-            btn_rec.configure(state="disabled")
-            btn_stop.configure(state="normal")
-            status_lbl.configure(text="Триває запис звуку...", fg="#ff4444")
-            update_timer()
-
-        def stop_rec() -> None:
-            nonlocal recording
-            if not recording:
-                return
-            recording = False
-            btn_rec.configure(state="normal")
-            btn_stop.configure(state="disabled")
-            btn_save.configure(state="normal")
-            status_lbl.configure(text="Запис завершено. Можна зберегти у саундпад.", fg="#00c853")
-
-        def save_rec() -> None:
-            rec_dir = MusicPadApp._app_root_dir() / ".cache" / "recordings"
-            rec_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = rec_dir / f"rec_{int(time.time())}.wav"
-            dur = max(0.2, time.time() - start_t if start_t else 1.0)
-            _create_wav_file(wav_path, duration_sec=dur)
-            t = scan_file(wav_path)
-            if t:
-                t.title = f"Запис {time.strftime('%H:%M:%S')}"
-                self.local_tracks.append(t)
-                self._filter_tracks()
-                self._save_state()
-                self.status_var.set(f"Додано запис у саундпад: {t.title}")
-            dlg.destroy()
-
-        btns = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=12)
-        btns.pack(fill="x")
-        btn_rec = tk.Button(
-            btns,
-            text="🔴 Почати запис",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground="#ff3333",
-            activeforeground="#ffffff",
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            padx=10,
-            pady=3,
-            command=start_rec,
-        )
-        btn_rec.pack(side="left")
-
-        btn_stop = tk.Button(
-            btns,
-            text="⏹ Зупинити",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            padx=10,
-            pady=3,
-            state="disabled",
-            command=stop_rec,
-        )
-        btn_stop.pack(side="left", padx=8)
-
-        btn_save = tk.Button(
-            btns,
-            text="💾 Додати в саундпад",
-            bg=c["accent"],
-            fg="#ffffff",
-            activebackground="#00a0f0",
-            activeforeground="#ffffff",
-            bd=0,
-            relief="flat",
-            cursor="hand2",
-            padx=12,
-            pady=3,
-            state="disabled",
-            command=save_rec,
-        )
-        btn_save.pack(side="right")
-
-    def _color_tool_dialog(self) -> None:
-        c = self._get_theme_colors()
-        dlg = tk.Toplevel(self)
-        dlg.title("Інструмент «Колір» (Theme & Colors)")
-        dlg.geometry("400x220")
-        dlg.resizable(False, False)
-        dlg.configure(bg=c["dialog_bg"])
-        dlg.transient(self)
-        self._apply_dark_title_bar(dlg)
-
-        top = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=12)
-        top.pack(fill="x")
-        tk.Label(
-            top,
-            text="🎨 Інструмент вибору теми та кольору",
-            bg=c["dialog_bg"],
-            fg=c["fg"],
-            font=("Segoe UI", 11, "bold"),
-        ).pack(anchor="w")
-
-        mid = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=6)
-        mid.pack(fill="x")
-        tk.Label(mid, text="Тема інтерфейсу:", bg=c["dialog_bg"], fg=c["muted_fg"], font=("Segoe UI", 9)).pack(anchor="w")
-        btn_theme = tk.Button(
-            mid,
-            text="🌙 Темна тема" if self.theme == "dark" else "☀ Світла тема",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            padx=10,
-            pady=3,
-            command=lambda: [self._toggle_theme(), btn_theme.configure(text="🌙 Темна тема" if self.theme == "dark" else "☀ Світла тема")],
-        )
-        btn_theme.pack(anchor="w", pady=(4, 8))
-
-        tk.Label(mid, text="Акцентний колір Soundpad:", bg=c["dialog_bg"], fg=c["muted_fg"], font=("Segoe UI", 9)).pack(anchor="w")
-        accents = [
-            ("Синій (Soundpad)", "#0084d1"),
-            ("Бірюзовий", "#00d4ff"),
-            ("Смарагдовий", "#00c853"),
-            ("Фіолетовий", "#ab47bc"),
-        ]
-        acc_frame = tk.Frame(mid, bg=c["dialog_bg"])
-        acc_frame.pack(anchor="w", pady=(4, 0))
-        for _, col in accents:
-            tk.Label(acc_frame, text="  ", bg=col, cursor="hand2", width=3, relief="solid", bd=1).pack(side="left", padx=4)
-
-        b_close = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=10)
-        b_close.pack(fill="x", side="bottom")
-        tk.Button(
-            b_close,
-            text="Закрити",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            padx=12,
-            pady=2,
-            command=dlg.destroy,
-        ).pack(side="right")
-
-    def _text_to_speech_dialog(self) -> None:
-        c = self._get_theme_colors()
-        dlg = tk.Toplevel(self)
-        dlg.title("Озвучення тексту (Text-to-Speech)")
-        dlg.geometry("500x320")
-        dlg.resizable(False, False)
-        dlg.configure(bg=c["dialog_bg"])
-        dlg.transient(self)
-        self._apply_dark_title_bar(dlg)
-
-        top = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=10)
-        top.pack(fill="x")
-        tk.Label(
-            top,
-            text="🗣 Синтез мовлення (Text-to-Speech)",
-            bg=c["dialog_bg"],
-            fg=c["fg"],
-            font=("Segoe UI", 11, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            top,
-            text="Введіть текст для озвучення в мікрофон або динаміки:",
-            bg=c["dialog_bg"],
-            fg=c["muted_fg"],
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(2, 6))
-
-        txt_frame = tk.Frame(dlg, bg=c["divider"], bd=1)
-        txt_frame.pack(fill="both", expand=True, padx=16, pady=2)
-        txt = tk.Text(
-            txt_frame,
-            bg=c["entry_bg"],
-            fg=c["entry_fg"],
-            insertbackground=c["accent"],
-            bd=0,
-            relief="flat",
-            font=("Segoe UI", 10),
-            wrap="word",
-            height=5,
-        )
-        txt.pack(fill="both", expand=True, padx=4, pady=4)
-        txt.insert("1.0", "Привіт! Це тест озвучення тексту через MusicPad.")
-
-        status_lbl = tk.Label(
-            dlg,
-            text="Готово до озвучення.",
-            bg=c["dialog_bg"],
-            fg=c["muted_fg"],
-            font=("Segoe UI", 9),
-            anchor="w",
-        )
-        status_lbl.pack(fill="x", padx=16, pady=(4, 0))
-
-        def synthesize(add_to_list: bool = False) -> None:
-            text = txt.get("1.0", "end").strip()
-            if not text:
-                return
-            status_lbl.configure(text="Синтез аудіо...", fg=c["accent"])
-            tts_dir = MusicPadApp._app_root_dir() / ".cache" / "tts"
-            tts_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = tts_dir / f"tts_{int(time.time())}.wav"
-
-            def worker() -> None:
-                escaped_text = text.replace("'", "''")
-                clean_path = str(wav_path).replace("\\", "/")
-                ps_script = (
-                    f"Add-Type -AssemblyName System.Speech; "
-                    f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                    f"$s.SetOutputToWaveFile('{clean_path}'); "
-                    f"$s.Speak('{escaped_text}'); "
-                    f"$s.Dispose()"
-                )
-                try:
-                    subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], timeout=15)
-                except Exception:
-                    pass
-                if not wav_path.is_file() or wav_path.stat().st_size < 100:
-                    _create_wav_file(wav_path, duration_sec=max(1.0, len(text) * 0.08))
-
-                def done() -> None:
-                    status_lbl.configure(text="Готово!", fg="#00c853")
-                    t = scan_file(wav_path)
-                    if t:
-                        t.title = f"TTS: {text[:25]}"
-                        if add_to_list:
-                            self.local_tracks.append(t)
-                            self._filter_tracks()
-                            self._save_state()
-                            self.status_var.set(f"Додано TTS у саундпад: {t.title}")
-                            dlg.destroy()
-                        else:
-                            self._play_local_track(t)
-
-                self._safe_ui_call(done)
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        btns = tk.Frame(dlg, bg=c["dialog_bg"], padx=16, pady=12)
-        btns.pack(fill="x")
-        tk.Button(
-            btns,
-            text="▶ Прослухати",
-            bg=c["top_bg"],
-            fg=c["fg"],
-            activebackground=c["active_menu_bg"],
-            activeforeground=c["active_menu_fg"],
-            bd=1,
-            relief="solid",
-            cursor="hand2",
-            padx=10,
-            pady=3,
-            command=lambda: synthesize(add_to_list=False),
-        ).pack(side="left")
-
-        tk.Button(
-            btns,
-            text="💾 Додати в саундпад",
-            bg=c["accent"],
-            fg="#ffffff",
-            activebackground="#00a0f0",
-            activeforeground="#ffffff",
-            bd=0,
-            relief="flat",
-            cursor="hand2",
-            padx=12,
-            pady=3,
-            command=lambda: synthesize(add_to_list=True),
-        ).pack(side="right")
 
     def _build_top_toolbar(self) -> None:
         c = self._get_theme_colors()
@@ -4661,8 +4151,9 @@ class MusicPadApp(tk.Tk):
             bg=c["cat_sel_bg"],
             fg=c["cat_sel_fg"],
             font=("Segoe UI", 9, "bold"),
+            anchor="w",
         )
-        self.cat_title_lbl.pack(side="left", pady=4)
+        self.cat_title_lbl.pack(side="left", fill="x", expand=True, pady=4)
 
         self.category_count_lbl = None
 
@@ -4686,8 +4177,9 @@ class MusicPadApp(tk.Tk):
             bg=c["cat_unsel_bg"],
             fg=c["cat_unsel_fg"],
             font=("Segoe UI", 9),
+            anchor="w",
         )
-        self.cat_yt_title_lbl.pack(side="left", pady=4)
+        self.cat_yt_title_lbl.pack(side="left", fill="x", expand=True, pady=4)
 
         self.cat_yt_count_lbl = None
 
@@ -4890,18 +4382,7 @@ class MusicPadApp(tk.Tk):
         )
         self.btn_b_h.pack(side="left", padx=2, pady=4)
 
-        # 4. A button (Auto-keys toggle)
-        a_icon = self._icons.get("btn_a")
-        self.btn_b_a = tk.Button(
-            self.bottom_bar,
-            image=a_icon,
-            text="" if a_icon else "A",
-            command=self._toggle_auto_keys,
-            **btn_kw,
-        )
-        self.btn_b_a.pack(side="left", padx=2, pady=4)
-
-        # 5. Vertical separator
+        # 4. Vertical separator
         sep2 = tk.Frame(self.bottom_bar, width=1, bg=c["divider"], height=16)
         sep2.pack(side="left", padx=6, pady=6)
         self.bottom_bar_seps.append(sep2)
@@ -6150,7 +5631,7 @@ class MusicPadApp(tk.Tk):
             "Вставити": self._paste_track,
             "Видалити вибрані записи": lambda: self._remove_selected_track() if not self._is_entry_focused() else None,
             "Пошук": self._toggle_search_bar,
-            "Вихід": self._close,
+            "Вихід": self._on_exit_hotkey,
         }
         for act, handler in action_handlers.items():
             hk = self.special_hotkeys_dict.get(act, "").strip()
@@ -6383,12 +5864,8 @@ class MusicPadApp(tk.Tk):
         self.bind("<Control-V>", lambda _: self._paste_track())
         self.bind("<Control-a>", lambda _: self._select_all_tracks())
         self.bind("<Control-A>", lambda _: self._select_all_tracks())
-        self.bind("<Control-r>", lambda _: self._record_audio_dialog())
-        self.bind("<Control-R>", lambda _: self._record_audio_dialog())
-        self.bind("<Control-t>", lambda _: self._text_to_speech_dialog())
-        self.bind("<Control-T>", lambda _: self._text_to_speech_dialog())
         self.bind("<Delete>", lambda _: self._remove_selected_track() if not self._is_entry_focused() else None)
-        self.bind("<Alt-F4>", lambda _: self._close())
+        self.bind("<Alt-F4>", lambda _: self._on_exit_hotkey())
         self.bind("<space>", lambda _: self._toggle_pause() if not self._is_entry_focused() else None)
         self._apply_special_hotkeys()
 
@@ -6445,7 +5922,9 @@ class MusicPadApp(tk.Tk):
         self.track_list.bind("<Button-3>", self._show_context_menu)
 
     def _show_context_menu(self, event: tk.Event) -> None:
-        row_id = self.track_list.identify_row(event.y)
+        row_id = getattr(event, "_row_iid", None) or self.track_list.identify_row(event)
+        if not row_id:
+            row_id = self.track_list.identify_row(getattr(event, "y", 0))
         if row_id:
             self.track_list.selection_set(row_id)
             self._track_menu.tk_popup(event.x_root, event.y_root)
@@ -7007,7 +6486,7 @@ class MusicPadApp(tk.Tk):
             self.bottom_bar.configure(bg=c["bottom_bg"])
         if hasattr(self, "bottom_bar_spacer") and hasattr(self.bottom_bar_spacer, "configure"):
             self.bottom_bar_spacer.configure(bg=c["bottom_bg"])
-        for btn_name in ("btn_b_play", "btn_b_h", "btn_b_a", "btn_b_msg", "btn_b_ff", "btn_b_loop"):
+        for btn_name in ("btn_b_play", "btn_b_h", "btn_b_msg", "btn_b_ff", "btn_b_loop"):
             btn = getattr(self, btn_name, None)
             if btn and hasattr(btn, "configure"):
                 btn.configure(
@@ -7834,21 +7313,48 @@ class MusicPadApp(tk.Tk):
             if getattr(self, "cat_yt_count_lbl", None) is not None:
                 self.cat_yt_count_lbl.configure(bg=bg)
 
+    def _flush_win32_repaint(self) -> None:
+        if getattr(self, "_in_update", False) or self._is_mocked_env():
+            return
+        try:
+            self.update_idletasks()
+            if sys.platform == "win32":
+                hwnd = int(self.winfo_id())
+                if hwnd:
+                    # RDW_INVALIDATE (0x0001) | RDW_ERASE (0x0004) | RDW_ALLCHILDREN (0x0080) | RDW_UPDATENOW (0x0100) | RDW_FRAME (0x0400)
+                    ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0585)
+        except Exception:
+            pass
+
     def _show_yt_search_panel(self) -> None:
-        if hasattr(self, "yt_search_frame"):
+        if hasattr(self, "track_list") and self.track_list.winfo_exists():
+            if self.track_list.winfo_manager() == "pack":
+                self.track_list.pack_forget()
+        if hasattr(self, "yt_search_frame") and self.yt_search_frame.winfo_exists():
             self.yt_search_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0, height=0)
             self.yt_search_frame.lift()
-            if hasattr(self, "yt_search_entry"):
+            if not getattr(self, "_in_update", False):
+                try:
+                    self.update_idletasks()
+                except Exception:
+                    pass
+            if hasattr(self, "yt_search_entry") and self.yt_search_entry.winfo_exists():
                 self.yt_search_entry.focus_set()
                 self.yt_search_entry.select_range(0, tk.END)
+            self._flush_win32_repaint()
 
     def _hide_yt_search_panel(self) -> None:
-        if hasattr(self, "yt_search_frame"):
-            self.yt_search_frame.place_forget()
+        if hasattr(self, "yt_search_frame") and self.yt_search_frame.winfo_exists():
+            if self.yt_search_frame.winfo_manager() == "place":
+                self.yt_search_frame.place_forget()
+        if hasattr(self, "track_list") and self.track_list.winfo_exists():
+            if self.track_list.winfo_manager() != "pack":
+                self.track_list.pack(fill="both", expand=True)
         if getattr(self, "current_category", "") == "youtube":
             self._select_category("my_sounds")
-        if hasattr(self, "track_list"):
+        if hasattr(self, "track_list") and self.track_list.winfo_exists():
             self.track_list.focus_set()
+        self._flush_win32_repaint()
 
     def _update_yt_close_btn_color(self) -> None:
         if hasattr(self, "btn_yt_close_x") and self.btn_yt_close_x.winfo_exists():
@@ -8284,7 +7790,9 @@ class MusicPadApp(tk.Tk):
     def _show_yt_context_menu(self, event: Any) -> None:
         if not hasattr(self, "yt_tree"):
             return
-        iid = self.yt_tree.identify_row(event.y)
+        iid = getattr(event, "_row_iid", None) or self.yt_tree.identify_row(event)
+        if not iid:
+            iid = self.yt_tree.identify_row(getattr(event, "y", 0))
         if not iid:
             sel = self.yt_tree.selection()
             if sel:
@@ -9888,11 +9396,6 @@ class MusicPadApp(tk.Tk):
         self.hotkeys_enabled.set(self._hotkeys_enabled)
         self.status_var.set("Глобальні гарячі клавіші увімкнено." if self._hotkeys_enabled else "Глобальні гарячі клавіші вимкнено.")
 
-    def _toggle_auto_keys(self) -> None:
-        val = not self.auto_keys_enabled.get()
-        self.auto_keys_enabled.set(val)
-        self.status_var.set("Auto-Keys увімкнено." if val else "Auto-Keys вимкнено.")
-
     def _on_seek_press(self, _event: tk.Event) -> None:
         self._seeking_drag = True
         target = float(self.seek_var.get())
@@ -10228,39 +9731,6 @@ class MusicPadApp(tk.Tk):
         self.current_index = index
         self._play_local_track(track)
 
-    def _show_hotkeys_help(self) -> None:
-        dlg = tk.Toplevel(self)
-        dlg.title("Гарячі клавіші Soundpad")
-        dlg.geometry("480x360")
-        dlg.resizable(False, False)
-        dlg.configure(bg="#1f1f1f" if self.theme == "dark" else "#f4f5f7")
-        dlg.transient(self)
-        self._apply_dark_title_bar(dlg)
-
-        f = ttk.Frame(dlg, padding=16)
-        f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Гарячі клавіші керування", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 8))
-
-        keys = [
-            ("F8", "Відтворити / Пауза поточного звуку"),
-            ("F9", "Зупинити відтворення (Стоп)"),
-            ("F10", "Mute / Unmute мікрофона"),
-            ("Пробіл", "Пауза / Продовжити"),
-            ("Enter", "Відтворити вибраний звук"),
-            ("Delete", "Видалити вибраний звук зі списку"),
-            ("Ctrl+O", "Додати аудіофайли"),
-            ("Ctrl+F", "Швидкий пошук у списку"),
-            ("Ctrl+Y", "Пошук YouTube Music"),
-            ("F1..F12, Num1..Num9", "Призначені клавіші для окремих звуків"),
-        ]
-        for k, desc in keys:
-            row = ttk.Frame(f)
-            row.pack(fill="x", pady=2)
-            ttk.Label(row, text=k, font=("Segoe UI", 9, "bold"), width=18).pack(side="left")
-            ttk.Label(row, text=desc).pack(side="left")
-
-        ttk.Button(f, text="Зрозуміло", command=dlg.destroy).pack(side="bottom", anchor="e", pady=(10, 0))
-
     def _show_about(self) -> None:
         messagebox.showinfo(
             "Про MusicPad",
@@ -10296,7 +9766,6 @@ class MusicPadApp(tk.Tk):
                 "monitor_mic": self.monitor_mic.get(),
                 "hide_to_tray": self.hide_to_tray.get(),
                 "hotkeys_enabled": self.hotkeys_enabled.get(),
-                "auto_keys_enabled": self.auto_keys_enabled.get(),
                 "loop_enabled": self.loop_enabled.get(),
                 "playback_count": self.playback_count,
                 "theme": self.theme,
@@ -10509,8 +9978,6 @@ class MusicPadApp(tk.Tk):
                 self.hide_to_tray.set(bool(data["hide_to_tray"]))
             if "hotkeys_enabled" in data:
                 self.hotkeys_enabled.set(bool(data["hotkeys_enabled"]))
-            if "auto_keys_enabled" in data:
-                self.auto_keys_enabled.set(bool(data["auto_keys_enabled"]))
             if "loop_enabled" in data:
                 self.loop_enabled.set(bool(data["loop_enabled"]))
             if "playback_count" in data:
@@ -10795,6 +10262,11 @@ class MusicPadApp(tk.Tk):
             self._filter_tracks()
 
         self.after(0, update_title)
+
+    def _on_exit_hotkey(self) -> str:
+        """Fully exit the application on Alt+F4 / Exit hotkey instead of hiding to tray."""
+        self._exit()
+        return "break"
 
     def _close(self) -> None:
         if hasattr(self, "notification_manager"):

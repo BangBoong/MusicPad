@@ -1247,8 +1247,9 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     mbs = [w for w in app.menu_frame.winfo_children() if isinstance(w, main.tk.Menubutton)]
                     names = [mb.cget("text") for mb in mbs]
-                    # Exactly 4 menus: Файл, Редагування, Відтворення, Вікно (NO Довідка)
-                    self.assertEqual(names, ["Файл", "Редагування", "Відтворення", "Вікно"])
+                    # Exactly 3 menus: Файл, Редагування, Вікно (NO Відтворення, NO Довідка)
+                    self.assertEqual(names, ["Файл", "Редагування", "Вікно"])
+                    self.assertNotIn("Відтворення", app._menu_buttons)
 
                     # Check File menu
                     file_menu = app.nametowidget(mbs[0].cget("menu"))
@@ -1272,34 +1273,32 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertIn("Перемішати список", edit_labels)
                     self.assertIn("Вибрати все", edit_labels)
                     self.assertIn("Пошук", edit_labels)
-
-                    # Check Play menu
-                    play_menu = app.nametowidget(mbs[2].cget("menu"))
-                    play_labels = [play_menu.entrycget(i, "label") for i in range(play_menu.index("end") + 1) if play_menu.type(i) != "separator"]
-                    self.assertIn("Відтворити вибраний файл (динаміки та мікрофон)", play_labels)
-                    self.assertIn("Автозупинка (рекомендовано)", play_labels)
                     self.assertTrue(app.auto_stop_var.get())
 
                     # Check Window menu
-                    win_menu = app.nametowidget(mbs[3].cget("menu"))
+                    win_menu = app.nametowidget(mbs[2].cget("menu"))
                     win_labels = [win_menu.entrycget(i, "label") for i in range(win_menu.index("end") + 1) if win_menu.type(i) != "separator"]
                     self.assertIn("Категорії", win_labels)
                     self.assertIn("Швидка панель", win_labels)
-                    self.assertIn("Гарячі клавіші", win_labels)
-                    self.assertIn("Записування звуку", win_labels)
-                    self.assertIn("Інструмент «Колір»", win_labels)
-                    self.assertIn("Озвучення тексту", win_labels)
+                    self.assertNotIn("Гарячі клавіші", win_labels)
+                    self.assertNotIn("Записування звуку", win_labels)
+                    self.assertNotIn("Інструмент «Колір»", win_labels)
+                    self.assertNotIn("Озвучення тексту", win_labels)
+                    self.assertFalse(hasattr(app, "_record_audio_dialog"))
+                    self.assertFalse(hasattr(app, "_color_tool_dialog"))
+                    self.assertFalse(hasattr(app, "_text_to_speech_dialog"))
+                    self.assertFalse(hasattr(app, "_show_hotkeys_help"))
 
                     # Verify menu buttons are clickable and open popups below each button
                     popups_triggered = []
-                    for label in ["Файл", "Редагування", "Відтворення", "Вікно"]:
+                    for label in ["Файл", "Редагування", "Вікно"]:
                         btn = app._menu_buttons[label]
                         m = app.nametowidget(btn.cget("menu"))
                         m.tk_popup = lambda x, y, lbl=label: popups_triggered.append((lbl, x, y))
                         btn.event_generate("<Button-1>")
                         app.update()
-                    self.assertEqual(len(popups_triggered), 4)
-                    self.assertEqual([p[0] for p in popups_triggered], ["Файл", "Редагування", "Відтворення", "Вікно"])
+                    self.assertEqual(len(popups_triggered), 3)
+                    self.assertEqual([p[0] for p in popups_triggered], ["Файл", "Редагування", "Вікно"])
 
                     # Test actions: Shuffle, Select All, Undo
                     t1 = main.LocalTrack("Track A", "C:/fake/a.wav", 1.0)
@@ -1338,7 +1337,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # 1. Border Styling & Theme Colors
                     c_dark = app._get_theme_colors()
                     self.assertEqual(c_dark["menu_border"], "#3f3f3f")
-                    for name in ["Файл", "Редагування", "Відтворення", "Вікно"]:
+                    for name in ["Файл", "Редагування", "Вікно"]:
                         btn = app._menu_buttons[name]
                         m = app.nametowidget(btn.cget("menu"))
                         self.assertEqual(str(m.cget("relief")), "solid")
@@ -1356,7 +1355,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     c_light = app._get_theme_colors()
                     self.assertEqual(c_light["menu_border"], "#d0d4da")
-                    for name in ["Файл", "Редагування", "Відтворення", "Вікно"]:
+                    for name in ["Файл", "Редагування", "Вікно"]:
                         btn = app._menu_buttons[name]
                         m = app.nametowidget(btn.cget("menu"))
                         self.assertEqual(str(m.cget("relief")), "solid")
@@ -1374,7 +1373,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # Bounding boxes caching
                     app._cache_menu_button_rects()
-                    self.assertEqual(len(app._button_rects), 4)
+                    self.assertEqual(len(app._button_rects), 3)
                     for btn in app._menu_buttons.values():
                         self.assertIn(btn, app._button_rects)
                         x, y, w, h = app._button_rects[btn]
@@ -1385,7 +1384,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     # When a menu is open, hovering over a neighboring button switches the menu
                     btn_file = app._menu_buttons["Файл"]
                     btn_edit = app._menu_buttons["Редагування"]
-                    btn_play = app._menu_buttons["Відтворення"]
+                    btn_win = app._menu_buttons["Вікно"]
                     m_file = app._button_to_menu[btn_file]
                     m_edit = app._button_to_menu[btn_edit]
 
@@ -1417,10 +1416,10 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # 4. Moving cursor when NO menu is active only highlights the button
                     self.assertFalse(app.is_menu_active())
-                    app._on_menu_enter(None, btn_play)
-                    self.assertEqual(str(btn_play.cget("bg")), "#333333")
-                    app._on_menu_leave(None, btn_play)
-                    self.assertEqual(str(btn_play.cget("bg")), app._get_theme_colors()["menu_bg"])
+                    app._on_menu_enter(None, btn_win)
+                    self.assertEqual(str(btn_win.cget("bg")), "#333333")
+                    app._on_menu_leave(None, btn_win)
+                    self.assertEqual(str(btn_win.cget("bg")), app._get_theme_colors()["menu_bg"])
 
                     # 5. Debounce test on re-clicking the same menu button
                     app._last_closed_menu_btn = btn_file
@@ -1650,6 +1649,29 @@ class TestMusicPadAppGUI(unittest.TestCase):
                         app._close()
                         self.assertFalse(mock_exit.called)
                         self.assertTrue(mock_withdraw.called)
+
+                    # 6b. Alt+F4 and Exit hotkey must always fully exit even when hide_to_tray is True
+                    with patch.object(app, "_exit") as mock_exit, \
+                         patch.object(app, "withdraw") as mock_withdraw:
+                        self.assertEqual(app._on_exit_hotkey(), "break")
+                        self.assertTrue(mock_exit.called)
+                        self.assertFalse(mock_withdraw.called)
+
+                    app.focus_force()
+                    app.update()
+                    with patch.object(app, "_exit") as mock_exit, \
+                         patch.object(app, "withdraw") as mock_withdraw:
+                        app.event_generate("<Alt-F4>")
+                        app.update()
+                        self.assertTrue(mock_exit.called)
+                        self.assertFalse(mock_withdraw.called)
+
+                    app.special_hotkeys_dict["Вихід"] = "Ctrl+F12"
+                    app._apply_special_hotkeys()
+                    with patch.object(app, "_exit") as mock_exit:
+                        app.event_generate("<Control-F12>")
+                        app.update()
+                        self.assertTrue(mock_exit.called)
 
                     # 7. Localization check in English
                     app.lang_var.set("English")
@@ -2444,7 +2466,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     menu_btn_texts = [b.cget("text") for b in app._menu_buttons.values()]
                     self.assertIn("Файл", menu_btn_texts)
                     self.assertIn("Редагування", menu_btn_texts)
-                    self.assertIn("Відтворення", menu_btn_texts)
+                    self.assertNotIn("Відтворення", menu_btn_texts)
                     self.assertIn("Вікно", menu_btn_texts)
                     self.assertEqual(app.track_list.heading("index")["text"], "Інд...")
                     self.assertEqual(app.track_list.heading("title")["text"], "Тег")
@@ -2464,7 +2486,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     menu_btn_texts_en = [b.cget("text") for b in app._menu_buttons.values()]
                     self.assertIn("File", menu_btn_texts_en)
                     self.assertIn("Edit", menu_btn_texts_en)
-                    self.assertIn("Playback", menu_btn_texts_en)
+                    self.assertNotIn("Playback", menu_btn_texts_en)
                     self.assertIn("Window", menu_btn_texts_en)
 
                     # Main window elements
@@ -3638,16 +3660,18 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     app.update()
 
                     # 1. Verify icons exist in _icons
-                    for icon_name in ("play", "pause", "stop", "prev", "next", "btn_h", "btn_a", "ff", "chat", "note_cover_40"):
+                    for icon_name in ("play", "pause", "stop", "prev", "next", "btn_h", "ff", "chat", "note_cover_40"):
                         self.assertIn(icon_name, app._icons, f"Icon {icon_name} must exist in app._icons")
                         self.assertIsNotNone(app._icons[icon_name])
+                    self.assertNotIn("btn_a", app._icons)
 
                     # 2. Verify toolbar and bottom bar buttons have image configured
                     self.assertTrue(bool(app.btn_tb_stop.cget("image")), "Stop button must have an icon image")
                     self.assertTrue(bool(app.btn_tb_prev.cget("image")), "Prev button must have an icon image")
                     self.assertTrue(bool(app.btn_tb_next.cget("image")), "Next button must have an icon image")
                     self.assertTrue(bool(app.btn_b_h.cget("image")), "H button must have an icon image")
-                    self.assertTrue(bool(app.btn_b_a.cget("image")), "A button must have an icon image")
+                    self.assertFalse(hasattr(app, "btn_b_a"), "Auto-keys A button must be removed")
+                    self.assertFalse(hasattr(app, "auto_keys_enabled"), "auto_keys_enabled must be removed")
                     self.assertTrue(bool(app.btn_b_ff.cget("image")), "FF button must have an icon image")
                     self.assertTrue(bool(app.btn_b_msg.cget("image")), "Chat button must have an icon image")
                     self.assertTrue(bool(app.btn_b_play.cget("image")), "Play button must have an icon image")
@@ -5623,6 +5647,75 @@ class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
                         )
                         saved_after_del = json.loads(cfg_file.read_text(encoding="utf-8"))
                         self.assertNotIn("Silent Hill 2 OST", saved_after_del.get("yt_search_history", []))
+                finally:
+                    app._exit()
+
+    def test_category_switch_no_overlap_and_right_click_row_selection(self) -> None:
+        import types
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+
+                    # 1. Verify category labels fill full row width so bold/normal toggles never shift right border
+                    self.assertEqual(str(app.cat_title_lbl.cget("anchor")), "w")
+                    self.assertEqual(str(app.cat_yt_title_lbl.cget("anchor")), "w")
+                    self.assertEqual(str(app.cat_title_lbl.pack_info().get("fill")), "x")
+                    self.assertEqual(str(app.cat_yt_title_lbl.pack_info().get("fill")), "x")
+
+                    # 2. Populate local tracks in My Sounds and YT search results in YouTube
+                    app.local_tracks = [
+                        main.LocalTrack(title="First Song", path="C:/fake/1.mp3", duration=120.0, artist="Artist 1"),
+                        main.LocalTrack(title="Second Song", path="C:/fake/2.mp3", duration=180.0, artist="Artist 2"),
+                        main.LocalTrack(title="Third Song", path="C:/fake/3.mp3", duration=240.0, artist="Artist 3"),
+                    ]
+                    app._filter_tracks()
+                    app.update()
+
+                    app.yt_query_var.set("three days grace")
+                    app._render_yt_results(
+                        [
+                            {"title": "Animal I Have Become", "artist": "Three Days Grace", "duration": 231.0, "video_id": "v1", "source": "youtube"},
+                            {"title": "I Hate Everything About You", "artist": "Three Days Grace", "duration": 232.0, "video_id": "v2", "source": "youtube"},
+                            {"title": "Never Too Late", "artist": "Three Days Grace", "duration": 209.0, "video_id": "v3", "source": "ytmusic"},
+                        ]
+                    )
+                    app.update()
+
+                    # 3. Switching to YouTube unmaps track_list; switching back to My Sounds re-packs track_list
+                    app._select_category("youtube")
+                    app.update()
+                    self.assertEqual(app.track_list.winfo_manager(), "")
+                    self.assertEqual(app.yt_search_frame.winfo_manager(), "place")
+
+                    app._select_category("my_sounds")
+                    app.update()
+                    self.assertEqual(app.yt_search_frame.winfo_manager(), "")
+                    self.assertEqual(app.track_list.winfo_manager(), "pack")
+
+                    # 4. Right-clicking song #3 (iid="2") in My Sounds with widget-local y=12 must select iid="2", not "0"
+                    with patch.object(app._track_menu, "tk_popup"):
+                        row2_title_lbl = app.track_list._row_widgets["2"]["title"]
+                        evt_my = types.SimpleNamespace(widget=row2_title_lbl, y=12, x_root=200, y_root=300)
+                        # Trigger via widget's bound right-click handler and via _show_context_menu directly
+                        app._show_context_menu(evt_my)
+                        self.assertEqual(app.track_list.selection(), ("2",))
+
+                        app.track_list.selection_set("0")
+                        app._show_context_menu(evt_my)
+                        self.assertEqual(app.track_list.selection(), ("2",))
+
+                    # 5. Right-clicking result #3 (iid="2") in YouTube results with widget-local y=10 must select iid="2", not "0"
+                    app._select_category("youtube")
+                    app.update()
+                    with patch.object(app._yt_context_menu, "tk_popup"):
+                        yt_row2_lbl = app.yt_tree._row_widgets["2"]["title"]
+                        evt_yt = types.SimpleNamespace(widget=yt_row2_lbl, y=10, x_root=250, y_root=350)
+                        app.yt_tree.selection_set("0")
+                        app._show_yt_context_menu(evt_yt)
+                        self.assertEqual(app.yt_tree.selection(), ("2",))
                 finally:
                     app._exit()
 
