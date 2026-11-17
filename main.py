@@ -57,6 +57,8 @@ from musicpad.library import (
     scan_file,
     scan_folder,
 )
+from musicpad.windows_uninstall import register_windows_uninstall, run_windows_uninstall
+from musicpad.single_instance import SingleInstanceGuard, notify_already_running
 
 
 _VK_MAP: dict[str, int] = {
@@ -95,6 +97,34 @@ _MOD_VK = {
 _VK_TO_NAME: dict[int, str] = {vk: name for name, vk in _VK_MAP.items()}
 
 DEFAULT_TRACK_SOURCE = "Вбудований аудіоплеєр (Локальні файли + YouTube Music)"
+DEFAULT_TRACK_SOURCE_EN = "Built-in audio player (Local files + YouTube Music)"
+
+SPECIAL_HOTKEY_I18N_KEYS: dict[str, str] = {
+    "Зупинити відтворення": "hk_act_stop",
+    "Призупинити/продовжити відтворення": "hk_act_pause",
+    "Скасувати": "hk_act_undo",
+    "Копіювати": "hk_act_copy",
+    "Вставити": "hk_act_paste",
+    "Видалити вибрані записи": "hk_act_delete",
+    "Пошук": "hk_act_search",
+    "Вихід": "hk_act_exit",
+}
+
+_DRIVER_REASON_TO_EN: dict[str, str] = {
+    "Не встановлено": "Not installed",
+    "Підтримується лише Windows x64": "Supported only on Windows x64",
+    "Драйвер MusicPad не встановлено": "MusicPad driver not installed",
+    "Файл драйвера або реєстрація COM відсутні (потрібен ремонт)": "Driver file or COM registration missing (repair needed)",
+    "DisableProtectedAudioDG вимкнено (потрібен ремонт)": "DisableProtectedAudioDG disabled (repair needed)",
+    "Не вибрано цільовий мікрофон": "No target microphone selected",
+    "Драйвер встановлено на інший мікрофон (потрібно перенести)": "Driver installed on another microphone (migration needed)",
+    "Цільовий мікрофон не знайдено або вимкнено в системі": "Target microphone not found or disabled in Windows",
+    "Цільовий мікрофон не знайдено в системі": "Target microphone not found in Windows",
+    "Обробку звуку (Enhancements) вимкнено на цільовому мікрофоні": "Audio Enhancements are disabled on the target microphone",
+    "Слот EFX цільового мікрофона скинуто після оновлення (потрібен ремонт)": "Target microphone EFX slot was reset after an update (repair needed)",
+    "Версія драйвера застаріла (потрібен ремонт)": "Driver version is outdated (repair needed)",
+    "Драйвер активний": "Driver active",
+}
 
 
 def _format_tk_hotkey(event: tk.Event) -> Optional[str]:
@@ -321,6 +351,79 @@ I18N: dict[str, dict[str, str]] = {
         "yt_ctx_play": "▶ Відтворити",
         "yt_ctx_cache": "➕ Додати в саундпад (миттєвий старт)",
         "yt_ctx_copy": "📋 Копіювати посилання",
+        # Settings - Hotkeys tab & hotkey dialogs
+        "grp_special_hotkeys": "Спеціальні гарячі клавіші",
+        "hk_col_action": "Дія",
+        "hk_col_shortcut": "Сполучення клавіш",
+        "btn_set_hotkey": "Встановити гарячу клавішу",
+        "btn_clear_hotkey": "Очистити",
+        "hk_act_stop": "Зупинити відтворення",
+        "hk_act_pause": "Призупинити/продовжити відтворення",
+        "hk_act_undo": "Скасувати",
+        "hk_act_copy": "Копіювати",
+        "hk_act_paste": "Вставити",
+        "hk_act_delete": "Видалити вибрані записи",
+        "hk_act_search": "Пошук",
+        "hk_act_exit": "Вихід",
+        "hk_select_action_msg": "Виберіть дію зі списку.",
+        "hk_assign_title": "Призначити гарячу клавішу",
+        "hk_dlg_action": "Дія: {0}",
+        "hk_dlg_current": "Поточна комбінація: {0}",
+        "hk_not_assigned": "Не призначено",
+        "hk_dlg_prompt_special": "Натисніть бажану клавішу або комбінацію (напр. Space, F5, Ctrl+K)\nEsc — скасувати, Backspace — очистити",
+        "hk_conflict_title": "Конфлікт гарячих клавіш",
+        "hk_conflict_track": "Трек «{0}»",
+        "hk_conflict_msg": "Гаряча клавіша [{0}] вже використовується для «{1}».\nПерепризначити її?",
+        "hk_select_track_msg": "Спочатку виберіть трек у списку для призначення гарячої клавіші.",
+        "hk_dlg_track": "Трек: {0}",
+        "hk_dlg_prompt_track": "Натисніть бажану клавішу (напр. F1..F7, Num1, Alt+1)\nабо Esc для скасування:",
+        "hk_assigned_status": "Призначено гарячу клавішу [{0}] для «{1}»",
+        # Settings - Devices tab
+        "grp_routing_mode": "Режим маршрутизації та Драйвер MusicPad",
+        "rad_injection": "Ін'єкція в мікрофон (рекомендовано, без VB-Cable)",
+        "rad_virtual_cable": "Віртуальний кабель (запасний режим)",
+        "lbl_musicpad_driver": "Драйвер MusicPad: ",
+        "btn_install_driver": "Встановити драйвер (UAC)",
+        "btn_repair_driver": "Ремонтувати драйвер (UAC)",
+        "btn_uninstall_driver": "Видалити драйвер (UAC)",
+        "grp_target_mic": "1. Цільовий мікрофон (Вхід)",
+        "lbl_target_mic_desc": "Цільовий мікрофон захоплення мови (фізичний мікрофон / гарнітура):\nСюди надходить голос та ін'єктуються треки для Discord та ігор.",
+        "lbl_mic": "Мікрофон: ",
+        "grp_track_source": "2. Джерело треків / звуку (Вхід)",
+        "lbl_track_source_desc": "Джерело звуку для відтворення (вбудований плеєр або зовнішній вхід):",
+        "lbl_track_source": "Джерело звуку: ",
+        "grp_monitoring": "3. Моніторинг (Навушники) [Вихід]",
+        "lbl_monitoring_desc": "Фізичний пристрій моніторингу (навушники або динаміки):\nСюди надсилається ТІЛЬКИ звук треку (без мікрофона, без власного еха).",
+        "lbl_headphones": "Навушники: ",
+        "grp_virtual_cable": "4. Віртуальний кабель (мікс для Discord) [Вихід]",
+        "lbl_virtual_cable_desc": "Запасний вихід програми (пристрій «CABLE Input (VB-Audio Virtual Cable)»):\nСюди надсилається суміш мікрофона і треку в режимі віртуального кабелю.",
+        "lbl_cable_input": "CABLE Input: ",
+        "chk_check_device_on_launch": "Перевіряти конфігурацію пристрою під час запуску",
+        "btn_refresh_devices": "⟳ Оновити список",
+        "default_track_source": DEFAULT_TRACK_SOURCE,
+        "track_source_input_prefix": "Вхідний канал: ",
+        "status_track_source_changed": "Джерело треків: {0}",
+        "drv_not_installed": "Не встановлено",
+        "drv_not_installed_err": "Не встановлено ({0})",
+        "drv_state_good": "Добре",
+        "drv_err_notify": "Драйвер MusicPad: {0}",
+        "drv_uac_install_prompt": "Для роботи режиму «Ін'єкція в мікрофон» необхідно встановити Драйвер MusicPad на вибраний мікрофон (UAC).\n\nВстановити драйвер зараз?",
+        "drv_uac_move_prompt": "Драйвер MusicPad встановлено на інший мікрофон. Перенести драйвер на вибраний мікрофон зараз?",
+        "drv_uac_title": "Драйвер MusicPad (UAC)",
+        "drv_uac_repair_title": "Ремонт Драйвера MusicPad (UAC)",
+        "drv_uac_repair_prompt": "Драйвер MusicPad потребує відновлення ({0}).\n\nВідновити зараз через UAC?",
+        "status_routing_injection": "Режим маршрутизації: Ін'єкція в мікрофон ({0})",
+        "status_routing_cable": "Режим маршрутизації: Віртуальний кабель",
+        "drv_select_mic_first": "Спочатку виберіть Цільовий мікрофон у списку.",
+        "drv_install_title": "Встановлення Драйвера MusicPad (UAC)",
+        "drv_install_confirm": "Для роботи режиму «Ін'єкція в мікрофон» без платного EV-сертифіката MusicPad зареєструє локальний APO-драйвер на вибраному мікрофоні, увімкне режим завантаження локальної APO (DisableProtectedAudioDG=1) та перезапустить службу аудіо Windows (1–2 секунди).\n\nПродовжити встановлення?",
+        "drv_installed_info": "Драйвер MusicPad встановлено. Якщо у вас запущено Discord чи гру, будь ласка, перепідключіть голосовий канал для застосування оновлення.",
+        "drv_install_fail": "Встановлення драйвера скасовано або не вдалося: {0}",
+        "drv_repaired_info": "Драйвер MusicPad успішно відновлено. Якщо у вас запущено Discord чи гру, будь ласка, перепідключіть голосовий канал для застосування оновлення.",
+        "drv_repair_fail": "Ремонт драйвера скасовано або не вдався: {0}",
+        "drv_uninstalled_info": "Драйвер MusicPad видалено. Увімкнено режим «Віртуальний кабель».",
+        "drv_uninstall_fail": "Видалення драйвера скасовано або не вдалося: {0}",
+        "dev_default_mic_name": "Мікрофон",
     },
     "en": {
         "menu_file": "File",
@@ -483,6 +586,79 @@ I18N: dict[str, dict[str, str]] = {
         "yt_ctx_play": "▶ Play",
         "yt_ctx_cache": "➕ Add to soundpad (instant start)",
         "yt_ctx_copy": "📋 Copy link",
+        # Settings - Hotkeys tab & hotkey dialogs
+        "grp_special_hotkeys": "Special hotkeys",
+        "hk_col_action": "Action",
+        "hk_col_shortcut": "Shortcut",
+        "btn_set_hotkey": "Set hotkey",
+        "btn_clear_hotkey": "Clear",
+        "hk_act_stop": "Stop playback",
+        "hk_act_pause": "Pause/resume playback",
+        "hk_act_undo": "Undo",
+        "hk_act_copy": "Copy",
+        "hk_act_paste": "Paste",
+        "hk_act_delete": "Delete selected entries",
+        "hk_act_search": "Search",
+        "hk_act_exit": "Exit",
+        "hk_select_action_msg": "Select an action from the list.",
+        "hk_assign_title": "Assign hotkey",
+        "hk_dlg_action": "Action: {0}",
+        "hk_dlg_current": "Current shortcut: {0}",
+        "hk_not_assigned": "Not assigned",
+        "hk_dlg_prompt_special": "Press the desired key or combination (e.g. Space, F5, Ctrl+K)\nEsc — cancel, Backspace — clear",
+        "hk_conflict_title": "Hotkey conflict",
+        "hk_conflict_track": "Track «{0}»",
+        "hk_conflict_msg": "Hotkey [{0}] is already assigned to «{1}».\nReassign it?",
+        "hk_select_track_msg": "First select a track in the list to assign a hotkey.",
+        "hk_dlg_track": "Track: {0}",
+        "hk_dlg_prompt_track": "Press the desired key (e.g. F1..F7, Num1, Alt+1)\nor Esc to cancel:",
+        "hk_assigned_status": "Assigned hotkey [{0}] to «{1}»",
+        # Settings - Devices tab
+        "grp_routing_mode": "Routing Mode & MusicPad Driver",
+        "rad_injection": "Microphone Injection (recommended, no VB-Cable)",
+        "rad_virtual_cable": "Virtual Cable (fallback mode)",
+        "lbl_musicpad_driver": "MusicPad Driver: ",
+        "btn_install_driver": "Install driver (UAC)",
+        "btn_repair_driver": "Repair driver (UAC)",
+        "btn_uninstall_driver": "Uninstall driver (UAC)",
+        "grp_target_mic": "1. Target Microphone (Input)",
+        "lbl_target_mic_desc": "Target speech capture microphone (physical mic / headset):\nYour voice is captured here and tracks are injected for Discord and games.",
+        "lbl_mic": "Microphone: ",
+        "grp_track_source": "2. Track / Audio Source (Input)",
+        "lbl_track_source_desc": "Audio playback source (built-in player or external input):",
+        "lbl_track_source": "Audio source: ",
+        "grp_monitoring": "3. Monitoring (Headphones) [Output]",
+        "lbl_monitoring_desc": "Physical monitoring device (headphones or speakers):\nONLY track audio is sent here (no microphone, no self-echo).",
+        "lbl_headphones": "Headphones: ",
+        "grp_virtual_cable": "4. Virtual Cable (Discord mix) [Output]",
+        "lbl_virtual_cable_desc": "Fallback output device («CABLE Input (VB-Audio Virtual Cable)»):\nSends mixed microphone and track audio in Virtual Cable mode.",
+        "lbl_cable_input": "CABLE Input: ",
+        "chk_check_device_on_launch": "Check device configuration on launch",
+        "btn_refresh_devices": "⟳ Refresh list",
+        "default_track_source": DEFAULT_TRACK_SOURCE_EN,
+        "track_source_input_prefix": "Input channel: ",
+        "status_track_source_changed": "Track source: {0}",
+        "drv_not_installed": "Not installed",
+        "drv_not_installed_err": "Not installed ({0})",
+        "drv_state_good": "Good",
+        "drv_err_notify": "MusicPad Driver: {0}",
+        "drv_uac_install_prompt": "To use «Microphone Injection» mode, MusicPad Driver must be installed on the selected microphone (UAC).\n\nInstall the driver now?",
+        "drv_uac_move_prompt": "MusicPad Driver is installed on a different microphone. Move the driver to the selected microphone now?",
+        "drv_uac_title": "MusicPad Driver (UAC)",
+        "drv_uac_repair_title": "MusicPad Driver Repair (UAC)",
+        "drv_uac_repair_prompt": "MusicPad Driver requires repair ({0}).\n\nRepair now via UAC?",
+        "status_routing_injection": "Routing mode: Microphone Injection ({0})",
+        "status_routing_cable": "Routing mode: Virtual Cable",
+        "drv_select_mic_first": "First select a Target Microphone from the list.",
+        "drv_install_title": "MusicPad Driver Installation (UAC)",
+        "drv_install_confirm": "To run «Microphone Injection» without a paid EV certificate, MusicPad will register a local APO driver on the selected microphone, enable local APO loading (DisableProtectedAudioDG=1), and restart the Windows Audio service (1–2 seconds).\n\nContinue installation?",
+        "drv_installed_info": "MusicPad Driver installed. If Discord or a game is running, please reconnect the voice channel to apply the update.",
+        "drv_install_fail": "Driver installation was cancelled or failed: {0}",
+        "drv_repaired_info": "MusicPad Driver repaired successfully. If Discord or a game is running, please reconnect the voice channel to apply the update.",
+        "drv_repair_fail": "Driver repair was cancelled or failed: {0}",
+        "drv_uninstalled_info": "MusicPad Driver uninstalled. Switched to «Virtual Cable» mode.",
+        "drv_uninstall_fail": "Driver removal was cancelled or failed: {0}",
+        "dev_default_mic_name": "Microphone",
     },
 }
 
@@ -761,711 +937,6 @@ class SoundpadButton(tk.Button):
         return super().configure(cnf, **kw)
 
     config = configure
-
-
-def _calculate_bubble_polygon(
-    w: int,
-    h: int,
-    r: int,
-    tail_tip_x: int,
-    tail_w: int,
-    tail_h: int,
-) -> list[tuple[float, float]]:
-    """Generate polygon points for a rounded rectangular speech bubble with a bottom tail."""
-    pts: list[tuple[float, float]] = []
-    x1, y1 = 2.0, 2.0
-    x2 = float(w - 2)
-    y2 = float(h - tail_h - 2)
-    tail_tip_y = float(h - 2)
-    tail_left = float(tail_tip_x - tail_w // 2)
-    tail_right = float(tail_tip_x + tail_w // 2)
-
-    # 1. Top edge and top-right corner arc (-90 to 0 deg)
-    cx, cy = x2 - r, y1 + r
-    for deg in range(-90, 1, 15):
-        rad = math.radians(deg)
-        pts.append((cx + r * math.cos(rad), cy + r * math.sin(rad)))
-
-    # 2. Right edge and bottom-right corner arc (0 to 90 deg)
-    cx, cy = x2 - r, y2 - r
-    for deg in range(0, 91, 15):
-        rad = math.radians(deg)
-        px = cx + r * math.cos(rad)
-        py = cy + r * math.sin(rad)
-        if px >= tail_right:
-            pts.append((px, py))
-
-    # 3. Bottom edge to tail right
-    pts.append((tail_right, y2))
-    # 4. Tail tip pointing down
-    pts.append((float(tail_tip_x), tail_tip_y))
-    # 5. Tail left
-    pts.append((tail_left, y2))
-
-    # 6. Bottom edge to bottom-left corner arc (90 to 180 deg)
-    cx, cy = x1 + r, y2 - r
-    for deg in range(90, 181, 15):
-        rad = math.radians(deg)
-        px = cx + r * math.cos(rad)
-        py = cy + r * math.sin(rad)
-        if px <= tail_left:
-            pts.append((px, py))
-
-    # 7. Left edge and top-left corner arc (180 to 270 deg)
-    cx, cy = x1 + r, y1 + r
-    for deg in range(180, 271, 15):
-        rad = math.radians(deg)
-        pts.append((cx + r * math.cos(rad), cy + r * math.sin(rad)))
-
-    return pts
-
-
-class SpeechBubble(tk.Toplevel):
-    """Custom speech bubble popup widget with a corner tail pointing to the status bar message icon."""
-
-    WIDTH = 320
-    HEIGHT = 86
-    TAIL_HEIGHT = 12
-    TAIL_WIDTH = 12
-    CORNER_RADIUS = 8
-
-    def __init__(
-        self,
-        master: tk.Misc,
-        target_widget: Optional[tk.Widget] = None,
-        theme: str = "dark",
-    ) -> None:
-        super().__init__(master)
-        self.master = master
-        self.target_widget = target_widget
-        self.theme = theme
-        self.tail_tip_x = self.WIDTH - 20
-
-        self._fading_out = False
-        self._fade_job: Optional[str] = None
-        self._auto_close_job: Optional[str] = None
-        self.current_message: str = ""
-        self.current_category: str = "info"
-
-        # Toplevel configuration: borderless and stay on top
-        self.overrideredirect(True)
-        try:
-            self.transient(master)
-        except Exception:
-            pass
-        self._sync_topmost()
-
-        self._master_unmap_bind_id: Optional[str] = None
-        self._master_focus_bind_id: Optional[str] = None
-        try:
-            if hasattr(self.master, "bind"):
-                self._master_unmap_bind_id = self.master.bind("<Unmap>", self._on_master_unmap, add="+")
-                self._master_focus_bind_id = self.master.bind("<FocusOut>", self._on_master_focus_out, add="+")
-        except Exception:
-            pass
-
-        # Windows chroma key transparency
-        self._chroma_key = "#010101"
-        self._transparent_supported = True
-        try:
-            self.wm_attributes("-transparentcolor", self._chroma_key)
-        except Exception:
-            self._transparent_supported = False
-            self._chroma_key = "#1c1c1c" if self.theme == "dark" else "#e0e3e8"
-
-        self.configure(bg=self._chroma_key)
-
-        # Vector canvas for drawing speech bubble polygon
-        self.canvas = tk.Canvas(
-            self,
-            width=self.WIDTH,
-            height=self.HEIGHT,
-            bg=self._chroma_key,
-            highlightthickness=0,
-            bd=0,
-        )
-        self.canvas.pack(fill="both", expand=True)
-
-        # Content frame embedded within bubble body
-        self.content_frame = tk.Frame(self.canvas)
-        body_h = self.HEIGHT - self.TAIL_HEIGHT - 4
-        self._window_id = self.canvas.create_window(
-            12,
-            6,
-            anchor="nw",
-            window=self.content_frame,
-            width=self.WIDTH - 24,
-            height=body_h - 6,
-        )
-
-        # Category icon
-        self.icon_label = tk.Label(
-            self.content_frame,
-            text="ℹ",
-            font=("Segoe UI", 13, "bold"),
-            anchor="center",
-        )
-        self.icon_label.pack(side="left", padx=(2, 8), anchor="center")
-
-        # Close button (×)
-        self.close_btn = tk.Label(
-            self.content_frame,
-            text="×",
-            font=("Segoe UI", 11, "bold"),
-            anchor="ne",
-            cursor="hand2",
-        )
-        self.close_btn.pack(side="right", padx=(2, 2), pady=(0, 0), anchor="ne")
-        self.close_btn.bind("<Enter>", lambda _e: self._on_close_hover(True))
-        self.close_btn.bind("<Leave>", lambda _e: self._on_close_hover(False))
-
-        # Message text
-        self.text_label = tk.Label(
-            self.content_frame,
-            text="",
-            font=("Segoe UI", 9),
-            anchor="w",
-            justify="left",
-            wraplength=235,
-        )
-        self.text_label.pack(side="left", fill="both", expand=True)
-
-        # Clicking on the speech bubble itself dismisses it immediately
-        for w in (self, self.canvas, self.content_frame, self.icon_label, self.text_label, self.close_btn):
-            w.bind("<Button-1>", lambda _e: self.hide_immediate())
-            try:
-                w.configure(cursor="hand2")
-            except Exception:
-                pass
-
-        self.withdraw()
-
-    def _get_colors(self) -> dict[str, str]:
-        dark = self.theme == "dark"
-        if dark:
-            return {
-                "bubble_bg": "#232323",
-                "border": "#3d3d3d",
-                "text": "#ffffff",
-                "close_fg": "#888888",
-                "close_hover": "#ffffff",
-                "info_accent": "#38bdf8",
-                "error_accent": "#ff4d4f",
-            }
-        else:
-            return {
-                "bubble_bg": "#ffffff",
-                "border": "#cccccc",
-                "text": "#1a1a1a",
-                "close_fg": "#999999",
-                "close_hover": "#1a1a1a",
-                "info_accent": "#0078d4",
-                "error_accent": "#d93025",
-            }
-
-    def _on_close_hover(self, hovering: bool) -> None:
-        colors = self._get_colors()
-        self.close_btn.configure(fg=colors["close_hover"] if hovering else colors["close_fg"])
-
-    def _redraw(self) -> None:
-        colors = self._get_colors()
-        bg = colors["bubble_bg"]
-        border = colors["border"]
-        accent = colors["error_accent"] if self.current_category == "error" else colors["info_accent"]
-        text_fg = colors["text"]
-
-        self.canvas.delete("bubble_polygon")
-
-        pts = _calculate_bubble_polygon(
-            self.WIDTH,
-            self.HEIGHT,
-            self.CORNER_RADIUS,
-            self.tail_tip_x,
-            self.TAIL_WIDTH,
-            self.TAIL_HEIGHT,
-        )
-        flat_pts: list[float] = []
-        for x, y in pts:
-            flat_pts.extend((x, y))
-
-        self.canvas.create_polygon(
-            flat_pts,
-            fill=bg,
-            outline=border,
-            width=1.5,
-            tags="bubble_polygon",
-        )
-        self.canvas.tag_raise(self._window_id)
-
-        self.content_frame.configure(bg=bg)
-        display_text = self.current_message
-        if len(display_text) > 220:
-            display_text = display_text[:217] + "..."
-        self.text_label.configure(bg=bg, fg=text_fg, text=display_text)
-        self.close_btn.configure(bg=bg, fg=colors["close_fg"])
-
-        icon_char = "✕" if self.current_category == "error" else "ℹ"
-        self.icon_label.configure(bg=bg, fg=accent, text=icon_char)
-
-    def _reposition(self) -> None:
-        try:
-            if (
-                self.target_widget
-                and self.target_widget.winfo_exists()
-                and self.target_widget.winfo_ismapped()
-            ):
-                is_headless = bool(
-                    os.environ.get("CI")
-                    or os.environ.get("GITHUB_ACTIONS")
-                    or getattr(self.master, "_in_update", False)
-                )
-                if not is_headless:
-                    try:
-                        self.target_widget.update_idletasks()
-                    except Exception:
-                        pass
-                bx = self.target_widget.winfo_rootx()
-                by = self.target_widget.winfo_rooty()
-                bw = self.target_widget.winfo_width()
-                center_x = bx + bw // 2
-                top_y = by
-
-                master = self.master
-                if master and master.winfo_exists() and master.winfo_ismapped():
-                    if not is_headless:
-                        try:
-                            master.update_idletasks()
-                        except Exception:
-                            pass
-                    mx = master.winfo_rootx()
-                    my = master.winfo_rooty()
-                    mw = master.winfo_width()
-                    mh = master.winfo_height()
-                    master_right = mx + mw
-                else:
-                    mx, my, mw, mh = bx - 600, by - 400, 800, 600
-                    master_right = mx + mw
-
-                # Align right edge harmoniously with master window right border (3px margin)
-                desired_margin_right = 3
-                cand_win_x = master_right - self.WIDTH - desired_margin_right
-                cand_tail_tip_x = center_x - cand_win_x
-
-                half_tail = self.TAIL_WIDTH // 2
-                min_tail_x = self.CORNER_RADIUS + half_tail + 4
-                max_tail_x = (self.WIDTH - 2) - half_tail - 2
-
-                tail_tip_x = max(min_tail_x, min(cand_tail_tip_x, max_tail_x))
-                win_x = center_x - tail_tip_x
-                win_y = top_y - self.HEIGHT - 4
-
-                min_x = mx + 2
-                max_x = master_right - self.WIDTH - 2
-                if min_x <= max_x:
-                    if win_x < min_x:
-                        win_x = min_x
-                        tail_tip_x = max(min_tail_x, min(center_x - win_x, max_tail_x))
-                    elif win_x > max_x:
-                        win_x = max_x
-                        tail_tip_x = max(min_tail_x, min(center_x - win_x, max_tail_x))
-
-                min_y = my + 2
-                if win_y < min_y:
-                    win_y = min_y
-
-                self.tail_tip_x = tail_tip_x
-            else:
-                raise ValueError("Target widget not mapped")
-        except Exception:
-            try:
-                master = self.master
-                if master and master.winfo_exists():
-                    if not is_headless:
-                        try:
-                            master.update_idletasks()
-                        except Exception:
-                            pass
-                    mx = master.winfo_rootx()
-                    my = master.winfo_rooty()
-                    mw = master.winfo_width()
-                    mh = master.winfo_height()
-                    win_x = mx + max(0, mw - self.WIDTH - 3)
-                    win_y = my + max(0, mh - self.HEIGHT - 40)
-                    self.tail_tip_x = self.WIDTH - 20
-                else:
-                    win_x, win_y = 100, 100
-                    self.tail_tip_x = self.WIDTH - 20
-            except Exception:
-                win_x, win_y = 100, 100
-                self.tail_tip_x = self.WIDTH - 20
-
-        try:
-            self.geometry(f"{self.WIDTH}x{self.HEIGHT}+{win_x}+{win_y}")
-        except Exception:
-            pass
-
-    def show(self, message: str, category: str = "info") -> None:
-        was_visible = bool(self.winfo_exists() and self.winfo_ismapped() and not self._fading_out)
-        self.current_message = message
-        self.current_category = "error" if str(category).lower() == "error" else "info"
-
-        self._fading_out = False
-        if self._fade_job:
-            try:
-                self.after_cancel(self._fade_job)
-            except Exception:
-                pass
-            self._fade_job = None
-
-        if self._auto_close_job:
-            try:
-                self.after_cancel(self._auto_close_job)
-            except Exception:
-                pass
-            self._auto_close_job = None
-
-        self._sync_topmost()
-        self._reposition()
-        self._redraw()
-
-        if was_visible:
-            # Rapid notification update in-place: maintain full opacity without flicker or re-fading
-            try:
-                self.attributes("-alpha", 1.0)
-                self.lift()
-            except Exception:
-                pass
-        else:
-            # Set alpha to 0 before deiconify to eliminate initial full-opacity frame flash
-            try:
-                self.attributes("-alpha", 0.0)
-                self.deiconify()
-                self.lift()
-            except Exception:
-                pass
-            self._fade_in()
-
-        self._auto_close_job = self.after(4000, self.dismiss)
-
-    def dismiss(self, immediate: bool = False) -> None:
-        if self._auto_close_job:
-            try:
-                self.after_cancel(self._auto_close_job)
-            except Exception:
-                pass
-            self._auto_close_job = None
-
-        if immediate:
-            self.hide_immediate()
-            return
-
-        if self._fading_out:
-            return
-
-        self._fade_out()
-
-    def hide_immediate(self) -> None:
-        if self._auto_close_job:
-            try:
-                self.after_cancel(self._auto_close_job)
-            except Exception:
-                pass
-            self._auto_close_job = None
-        if self._fade_job:
-            try:
-                self.after_cancel(self._fade_job)
-            except Exception:
-                pass
-            self._fade_job = None
-        self._fading_out = False
-        try:
-            self.withdraw()
-            self.attributes("-alpha", 1.0)
-        except Exception:
-            pass
-
-    def set_theme(self, theme: str) -> None:
-        if self.theme != theme:
-            self.theme = theme
-            if not self._transparent_supported:
-                self._chroma_key = "#1c1c1c" if self.theme == "dark" else "#e0e3e8"
-                try:
-                    self.configure(bg=self._chroma_key)
-                    self.canvas.configure(bg=self._chroma_key)
-                except Exception:
-                    pass
-            if self.winfo_exists() and self.winfo_ismapped():
-                self._redraw()
-
-    def _fade_in(self, step: int = 0) -> None:
-        alpha_steps = [0.25, 0.6, 0.9, 1.0]
-        if step < len(alpha_steps):
-            try:
-                self.attributes("-alpha", alpha_steps[step])
-            except Exception:
-                pass
-            self._fade_job = self.after(20, lambda: self._fade_in(step + 1))
-        else:
-            self._fade_job = None
-            try:
-                self.attributes("-alpha", 1.0)
-            except Exception:
-                pass
-
-    def _fade_out(self, step: int = 0) -> None:
-        self._fading_out = True
-        alpha_steps = [0.75, 0.45, 0.15, 0.0]
-        if step < len(alpha_steps):
-            try:
-                self.attributes("-alpha", alpha_steps[step])
-            except Exception:
-                pass
-            self._fade_job = self.after(20, lambda: self._fade_out(step + 1))
-        else:
-            self._fading_out = False
-            self._fade_job = None
-            try:
-                self.withdraw()
-                self.attributes("-alpha", 1.0)
-            except Exception:
-                pass
-
-    def _sync_topmost(self) -> None:
-        """Synchronize topmost attribute with master window so bubble does not float over external apps."""
-        try:
-            master_topmost = False
-            if hasattr(self.master, "attributes"):
-                master_topmost = bool(self.master.attributes("-topmost"))
-            self.attributes("-topmost", master_topmost)
-        except Exception:
-            pass
-
-    def _on_master_unmap(self, event: tk.Event) -> None:
-        if getattr(event, "widget", None) == self.master:
-            self.hide_immediate()
-
-    def _on_master_focus_out(self, event: tk.Event) -> None:
-        if not self.winfo_exists() or not self.winfo_ismapped():
-            return
-
-        def _check_focus() -> None:
-            try:
-                if self.winfo_exists() and self.winfo_ismapped():
-                    fg = self.master.focus_get() if hasattr(self.master, "focus_get") else None
-                    if fg is None:
-                        self.hide_immediate()
-            except Exception:
-                pass
-
-        try:
-            self.after(150, _check_focus)
-        except Exception:
-            pass
-
-    def destroy(self) -> None:
-        try:
-            if getattr(self, "_master_unmap_bind_id", None) and hasattr(self.master, "unbind") and self.master.winfo_exists():
-                self.master.unbind("<Unmap>", self._master_unmap_bind_id)
-            if getattr(self, "_master_focus_bind_id", None) and hasattr(self.master, "unbind") and self.master.winfo_exists():
-                self.master.unbind("<FocusOut>", self._master_focus_bind_id)
-        except Exception:
-            pass
-        super().destroy()
-
-
-class NotificationStringVar(tk.StringVar):
-    """StringVar backwards-compatible wrapper routing writes to NotificationManager."""
-
-    def __init__(
-        self,
-        master: Optional[tk.Misc] = None,
-        value: str = "",
-        name: Optional[str] = None,
-        notification_mgr: Optional[NotificationManager] = None,
-    ) -> None:
-        super().__init__(master=master, value=value, name=name)
-        self._notification_mgr = notification_mgr
-        self._suppress = False
-
-    def set(self, value: Any, category: Optional[str] = None) -> None:
-        if threading.current_thread() is not threading.main_thread():
-            if self._notification_mgr and hasattr(self._notification_mgr.app, "_safe_ui_call"):
-                self._notification_mgr.app._safe_ui_call(self.set, value, category)
-            elif self._notification_mgr and hasattr(self._notification_mgr.app, "after"):
-                self._notification_mgr.app.after(0, lambda: self.set(value, category))
-            return
-
-        super().set(value)
-        if self._suppress or self._notification_mgr is None:
-            return
-        text = str(value).strip() if value is not None else ""
-        if not text:
-            return
-        lower_txt = text.lower()
-        if (
-            lower_txt.startswith("відтворюється:")
-            or lower_txt.startswith("відтворення:")
-            or lower_txt.startswith("відтворення з youtube:")
-            or lower_txt.startswith("зараз грає:")
-            or lower_txt.startswith("playing:")
-            or lower_txt.startswith("now playing:")
-        ):
-            return
-        cat = category
-        if cat is None:
-            lower = text.lower()
-            if lower.startswith("помилка") or " error" in lower or lower.startswith("error") or "збій" in lower:
-                cat = "error"
-            else:
-                cat = "info"
-        self._notification_mgr.notify(text, category=cat)
-
-
-class NotificationManager:
-    """Centralized notification manager providing thread-safe speech bubble notifications."""
-
-    def __init__(self, app: Any) -> None:
-        self.app = app
-        self.last_message: str = "Ласкаво просимо до MusicPad!"
-        self.last_category: str = "info"
-        self._bubble: Optional[SpeechBubble] = None
-        self._target_widget: Optional[tk.Widget] = None
-
-    def set_target_widget(self, widget: tk.Widget) -> None:
-        self._target_widget = widget
-        if self._bubble is not None and self._bubble.winfo_exists():
-            self._bubble.target_widget = widget
-
-    @property
-    def bubble(self) -> SpeechBubble:
-        if self._bubble is None or not self._bubble.winfo_exists():
-            theme = getattr(self.app, "theme", "dark")
-            self._bubble = SpeechBubble(
-                self.app,
-                target_widget=self._target_widget,
-                theme=theme,
-            )
-        return self._bubble
-
-    @property
-    def is_visible(self) -> bool:
-        if self._bubble is None or not self._bubble.winfo_exists():
-            return False
-        try:
-            return bool(self._bubble.winfo_ismapped()) and not getattr(self._bubble, "_fading_out", False)
-        except Exception:
-            return False
-
-    def notify(self, message: str, category: str = "info") -> None:
-        """Post a notification. Thread-safe."""
-        text = str(message).strip() if message is not None else ""
-        if not text:
-            return
-        lower_txt = text.lower()
-        if (
-            lower_txt.startswith("відтворюється:")
-            or lower_txt.startswith("відтворення:")
-            or lower_txt.startswith("відтворення з youtube:")
-            or lower_txt.startswith("зараз грає:")
-            or lower_txt.startswith("playing:")
-            or lower_txt.startswith("now playing:")
-        ):
-            return
-        cat = "error" if str(category).lower() == "error" else "info"
-
-        if threading.current_thread() is not threading.main_thread():
-            if hasattr(self.app, "_safe_ui_call"):
-                self.app._safe_ui_call(self._dispatch_notify, text, cat)
-            else:
-                self.app.after(0, lambda: self._dispatch_notify(text, cat))
-            return
-
-        self._dispatch_notify(text, cat)
-
-    def _dispatch_notify(self, message: str, category: str) -> None:
-        self.last_message = message
-        self.last_category = category
-
-        # Update backwards-compatible StringVar
-        if hasattr(self.app, "status_var"):
-            var = self.app.status_var
-            if isinstance(var, NotificationStringVar):
-                var._suppress = True
-                try:
-                    var.set(message)
-                finally:
-                    var._suppress = False
-            else:
-                try:
-                    var.set(message)
-                except Exception:
-                    pass
-
-        # Don't show floating speech bubble if app window is minimized or hidden in tray
-        if hasattr(self.app, "state") and self.app.state() in ("iconic", "withdrawn"):
-            return
-
-        # Show or update speech bubble
-        try:
-            self.bubble.show(message, category)
-        except Exception:
-            pass
-
-    def notify_info(self, message: str) -> None:
-        self.notify(message, category="info")
-
-    def notify_error(self, message: str) -> None:
-        self.notify(message, category="error")
-
-    def toggle_bubble(self) -> None:
-        """Toggle open/close of the last notification bubble."""
-        if self.is_visible:
-            self.dismiss(immediate=True)
-        else:
-            self.show_last()
-
-    def show_last(self) -> None:
-        msg = self.last_message or "Немає нових сповіщень."
-        cat = self.last_category or "info"
-        if threading.current_thread() is not threading.main_thread():
-            if hasattr(self.app, "_safe_ui_call"):
-                self.app._safe_ui_call(self._dispatch_notify, msg, cat)
-            else:
-                self.app.after(0, lambda: self._dispatch_notify(msg, cat))
-            return
-        self._dispatch_notify(msg, cat)
-
-    def dismiss(self, immediate: bool = False) -> None:
-        if self._bubble is not None and self._bubble.winfo_exists():
-            try:
-                self._bubble.dismiss(immediate=immediate)
-            except Exception:
-                pass
-
-    def set_theme(self, theme: str) -> None:
-        if self._bubble is not None and self._bubble.winfo_exists():
-            self._bubble.set_theme(theme)
-
-    def on_master_configure(self) -> None:
-        if self._bubble is not None and self._bubble.winfo_exists() and self.is_visible:
-            try:
-                if hasattr(self.app, "state") and self.app.state() in ("iconic", "withdrawn"):
-                    self.dismiss(immediate=True)
-                else:
-                    old_tail = self._bubble.tail_tip_x
-                    self._bubble._reposition()
-                    if self._bubble.tail_tip_x != old_tail:
-                        self._bubble._redraw()
-            except Exception:
-                pass
-
-    def destroy(self) -> None:
-        if self._bubble is not None and self._bubble.winfo_exists():
-            try:
-                self._bubble.destroy()
-            except Exception:
-                pass
-            self._bubble = None
 
 
 class TrackListView(tk.Frame):
@@ -2132,13 +1603,19 @@ class TrackListView(tk.Frame):
 
 YTSearchResultsList = TrackListView
 class MusicPadApp(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, instance_guard: Optional[SingleInstanceGuard] = None) -> None:
         super().__init__()
+        self._instance_guard = instance_guard
         self._tray_icon: Any = None
         self._exiting = False
         self._capturing_hotkey = False
         self._seeking_drag = False
         self._pressed_hotkeys: set[str] = set()
+        self._hotkey_lock = threading.Lock()
+        self._hotkeys_wait_release: set[str] = set()
+        self._tk_hotkeys_wait_release: set[str] = set()
+        self._tk_capture_guard_until: dict[str, float] = {}
+        self._special_hotkey_row_to_action: dict[str, str] = {}
         self.hide_to_tray = tk.BooleanVar(value=True)
         self.mic_enabled = tk.BooleanVar(value=True)
         self.mic_muted = tk.BooleanVar(value=False)
@@ -2146,6 +1623,7 @@ class MusicPadApp(tk.Tk):
         self.hotkeys_enabled = tk.BooleanVar(value=True)
         self._hotkeys_enabled: bool = True
         self.loop_enabled = tk.BooleanVar(value=False)
+        self.loop_enabled.trace_add("write", self._update_loop_icon)
         self.mute_track_to_others_var = tk.BooleanVar(value=False)
         self.playback_count = 0
         self.title("MusicPad")
@@ -2220,9 +1698,13 @@ class MusicPadApp(tk.Tk):
         self._apply_dark_title_bar(self)
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Configure>", self._on_configure, add="+")
-        self.bind_all("<Button-1>", self._on_global_click, add="+")
+        self.bind_all("<KeyRelease>", self._on_hotkey_key_release, add="+")
         self._start_hotkey_listener()
         self._poll_ui_queue()
+        if self._instance_guard is not None:
+            self._instance_guard.start_wakeup_listener(
+                lambda: self._safe_ui_call(self._restore_and_focus_window)
+            )
         self._heavy_modules_loaded_before_window = any(
             m in sys.modules for m in ("yt_dlp", "ytmusicapi")
         )
@@ -2245,8 +1727,39 @@ class MusicPadApp(tk.Tk):
                 pass
         return text
 
+    def _translate_driver_reason(self, reason: str) -> str:
+        text = str(reason or "").strip()
+        if not text:
+            return self._tr("drv_not_installed")
+        if not self._is_english():
+            return text
+        if text in _DRIVER_REASON_TO_EN:
+            return _DRIVER_REASON_TO_EN[text]
+        if text.startswith("Не встановлено (") and text.endswith(")"):
+            inner = text[len("Не встановлено ("):-1]
+            return self._tr("drv_not_installed_err", inner)
+        return text
+
+    def _special_hotkey_label(self, action: str) -> str:
+        key = SPECIAL_HOTKEY_I18N_KEYS.get(action)
+        return self._tr(key) if key else action
+
+    def _sync_localized_track_source(self) -> None:
+        if not hasattr(self, "track_source_var"):
+            return
+        cur = str(self.track_source_var.get() or "").strip()
+        if not cur or cur in (DEFAULT_TRACK_SOURCE, DEFAULT_TRACK_SOURCE_EN):
+            self.track_source_var.set(self._tr("default_track_source"))
+            return
+        for prefix in ("Вхідний канал: ", "Input channel: "):
+            if cur.startswith(prefix):
+                dev_name = cur[len(prefix):]
+                self.track_source_var.set(f"{self._tr('track_source_input_prefix')}{dev_name}")
+                return
+
     def _apply_language(self) -> None:
         is_en = self._is_english()
+        self._sync_localized_track_source()
         # 1. Menu bar
         if hasattr(self, "menu_frame"):
             self._build_menu()
@@ -2381,8 +1894,14 @@ class MusicPadApp(tk.Tk):
             if hasattr(self, "_build_tab_voice_boost"):
                 self._build_tab_voice_boost()
 
+            if hasattr(self, "_build_tab_hotkeys"):
+                self._build_tab_hotkeys()
+
             if hasattr(self, "_build_tab_interface"):
                 self._build_tab_interface()
+
+            if hasattr(self, "_build_tab_devices"):
+                self._build_tab_devices()
 
             if hasattr(self, "btn_settings_reset"):
                 self.btn_settings_reset.configure(text=self._tr("btn_reset"))
@@ -2393,25 +1912,60 @@ class MusicPadApp(tk.Tk):
             if hasattr(self, "btn_settings_apply"):
                 self.btn_settings_apply.configure(text=self._tr("btn_apply"))
 
+    def _message_parent(self) -> tk.Misc:
+        settings_win = getattr(self, "_settings_window", None)
+        if settings_win is not None:
+            try:
+                if settings_win.winfo_exists() and settings_win.winfo_viewable():
+                    return settings_win
+            except Exception:
+                pass
+        return self
+
+    def _dispatch_messagebox(self, kind: str, message: str, title: Optional[str] = None) -> None:
+        text = str(message).strip() if message is not None else ""
+        if not text:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            if hasattr(self, "_safe_ui_call"):
+                self._safe_ui_call(self._dispatch_messagebox, kind, text, title)
+            elif hasattr(self, "after"):
+                self.after(0, lambda: self._dispatch_messagebox(kind, text, title))
+            return
+        if hasattr(self, "status_var"):
+            try:
+                self.status_var.set(text)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, "state") and self.state() in ("iconic", "withdrawn"):
+                return
+        except Exception:
+            pass
+        parent = self._message_parent()
+        if kind == "error":
+            dlg_title = title or ("MusicPad — Error" if self._is_english() else "MusicPad — Помилка")
+            messagebox.showerror(dlg_title, text, parent=parent)
+        else:
+            dlg_title = title or (self._tr("drv_uac_title") if hasattr(self, "_tr") else "MusicPad")
+            messagebox.showinfo(dlg_title, text, parent=parent)
+
     def notify(self, message: str, category: str = "info") -> None:
-        """Post a notification speech bubble."""
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.notify(message, category=category)
+        """Show error dialog for errors; non-error messages remain silent unless driver-related."""
+        if str(category).lower() == "error":
+            self.notify_error(message)
 
     def notify_info(self, message: str) -> None:
-        """Post an info notification speech bubble."""
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.notify_info(message)
+        """No-op for non-error notifications after speech-bubble removal."""
+        return
 
     def notify_error(self, message: str) -> None:
-        """Post an error notification speech bubble."""
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.notify_error(message)
+        """Show an error dialog via native messagebox (thread-safe)."""
+        self._dispatch_messagebox("error", message)
 
-    def _toggle_notification_bubble(self) -> None:
-        """Toggle speech bubble notification from bottom-right message icon."""
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.toggle_bubble()
+    def _show_driver_info(self, message: str) -> None:
+        """Show a driver-related informational notice dialog (thread-safe)."""
+        self._dispatch_messagebox("info", message, title=self._tr("drv_uac_title") if hasattr(self, "_tr") else "MusicPad")
 
     def _compute_initial_window_size(self) -> tuple[int, int]:
         try:
@@ -2507,8 +2061,6 @@ class MusicPadApp(tk.Tk):
 
     def _on_configure(self, event: tk.Event) -> None:
         if event and event.widget == self:
-            if hasattr(self, "notification_manager"):
-                self.notification_manager.on_master_configure()
             if not getattr(self, "_loading_state", False) and self.state() == "normal":
                 self._on_window_configure(event)
 
@@ -2531,19 +2083,6 @@ class MusicPadApp(tk.Tk):
             except Exception:
                 pass
         self._save_geom_timer = self.after(500, self._save_state)
-
-    def _on_global_click(self, event: tk.Event) -> None:
-        if hasattr(self, "notification_manager") and self.notification_manager.is_visible:
-            if hasattr(self, "btn_b_msg") and (event.widget is self.btn_b_msg or event.widget == self.btn_b_msg):
-                return
-            bubble = self.notification_manager._bubble
-            if bubble and bubble.winfo_exists():
-                try:
-                    if str(event.widget).startswith(str(bubble)):
-                        return
-                except Exception:
-                    pass
-            self.notification_manager.dismiss()
 
     def _safe_ui_call(self, func: Any, *args: Any, **kwargs: Any) -> None:
         """Thread-safe dispatch from background worker threads to main Tkinter UI thread."""
@@ -2743,9 +2282,40 @@ class MusicPadApp(tk.Tk):
         except Exception:
             pass
 
+    def _icon_path_for_theme(self, ext: str = "png") -> Path:
+        preferred = (
+            f"musicpad_light.{ext}"
+            if getattr(self, "theme", "dark") == "light"
+            else f"musicpad_dark.{ext}"
+        )
+        icon_path = self._resource_path(preferred)
+        if not icon_path.exists():
+            icon_path = self._resource_path(f"musicpad.{ext}")
+        return icon_path
+
     def _set_window_icon(self) -> None:
-        icon_path = self._resource_path("musicpad.png")
+        if sys.platform == "win32":
+            ico_path = self._icon_path_for_theme("ico")
+            if ico_path.exists():
+                try:
+                    self.iconbitmap(default=str(ico_path))
+                except tk.TclError:
+                    pass
+        icon_path = self._icon_path_for_theme("png")
         if icon_path.exists():
+            if Image is not None and ImageTk is not None:
+                try:
+                    with Image.open(icon_path) as im:
+                        rgba = im.convert("RGBA")
+                        self._window_icons = [
+                            ImageTk.PhotoImage(rgba.resize((sz, sz), Image.Resampling.LANCZOS))
+                            for sz in (16, 24, 32, 48, 256)
+                        ]
+                    self._window_icon = self._window_icons[-1]
+                    self.iconphoto(True, *self._window_icons)
+                    return
+                except Exception:
+                    pass
             try:
                 self._window_icon = tk.PhotoImage(file=str(icon_path))
                 self.iconphoto(True, self._window_icon)
@@ -2768,7 +2338,7 @@ class MusicPadApp(tk.Tk):
                 Image = None
         if pystray is None or Image is None:
             return
-        icon_path = self._resource_path("musicpad.png")
+        icon_path = self._icon_path_for_theme()
         if not icon_path.exists():
             return
         try:
@@ -2786,7 +2356,37 @@ class MusicPadApp(tk.Tk):
             self._tray_icon = None
 
     def _show_from_tray(self, icon: Any = None, item: Any = None) -> None:
-        self.after(0, self.deiconify)
+        self.after(0, self._restore_and_focus_window)
+
+    def _restore_and_focus_window(self) -> None:
+        if getattr(self, "_exiting", False):
+            return
+        try:
+            if str(self.state()) in ("withdrawn", "iconic"):
+                self.deiconify()
+        except Exception:
+            try:
+                self.deiconify()
+            except Exception:
+                pass
+        try:
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after_idle(
+                lambda: self.attributes("-topmost", False)
+                if not getattr(self, "_exiting", False)
+                else None
+            )
+            self.focus_force()
+        except Exception:
+            pass
+        if sys.platform == "win32":
+            try:
+                hwnd = ctypes.windll.user32.GetAncestor(self.winfo_id(), 2) or self.winfo_id()
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
 
     def _exit_from_tray(self, icon: Any = None, item: Any = None) -> None:
         self.after(0, self._exit)
@@ -2806,8 +2406,7 @@ class MusicPadApp(tk.Tk):
         self.mix_mic_var = tk.StringVar()
         self.monitor_var = tk.StringVar()
         self.track_source_var = tk.StringVar(value=DEFAULT_TRACK_SOURCE)
-        self.notification_manager = NotificationManager(self)
-        self.status_var = NotificationStringVar(self, value="", notification_mgr=self.notification_manager)
+        self.status_var = tk.StringVar(value="")
         self.auto_stop_var = tk.BooleanVar(value=True)
         self._undo_stack: list[list[LocalTrack]] = []
         self._redo_stack: list[list[LocalTrack]] = []
@@ -3003,7 +2602,7 @@ class MusicPadApp(tk.Tk):
             d.polygon([(32, 12), (32, 52), (58, 32)], fill=blue)
             self._icons["ff"] = ImageTk.PhotoImage(img.resize((14, 14), Image.Resampling.LANCZOS))
 
-            # Loop (opposing horizontal arrows, 14x14)
+            # Loop disabled (opposing horizontal arrows, 14x14)
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
             d.line([(12, 18), (48, 18)], fill=blue, width=5)
@@ -3014,12 +2613,11 @@ class MusicPadApp(tk.Tk):
             d.line([(52, 32), (52, 46)], fill=blue, width=5)
             self._icons["loop"] = ImageTk.PhotoImage(img.resize((14, 14), Image.Resampling.LANCZOS))
 
-            # Chat bubble (14x14)
-            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            d = ImageDraw.Draw(img)
-            d.rounded_rectangle([(6, 10), (58, 46)], radius=10, fill=blue)
-            d.polygon([(14, 44), (10, 58), (28, 46)], fill=blue)
-            self._icons["chat"] = ImageTk.PhotoImage(img.resize((14, 14), Image.Resampling.LANCZOS))
+            # Loop enabled (same opposing horizontal arrows with a center dot, 14x14)
+            img_loop_on = img.copy()
+            d_loop_on = ImageDraw.Draw(img_loop_on)
+            d_loop_on.ellipse([(32 - 7, 32 - 7), (32 + 7, 32 + 7)], fill=blue)
+            self._icons["loop_on"] = ImageTk.PhotoImage(img_loop_on.resize((14, 14), Image.Resampling.LANCZOS))
 
             # H button (18x18)
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -3140,16 +2738,14 @@ class MusicPadApp(tk.Tk):
             self._update_mute_icon()
         if hasattr(self, "btn_tb_mic_mute") and self.btn_tb_mic_mute.winfo_exists():
             self._update_mic_mute_icon()
-        if hasattr(self, "btn_tb_loop") and self.btn_tb_loop.winfo_exists() and self._icons.get("loop"):
-            self.btn_tb_loop.configure(image=self._icons["loop"], text="")
+        if hasattr(self, "btn_tb_loop") and self.btn_tb_loop.winfo_exists():
+            self._update_loop_icon()
         if hasattr(self, "btn_b_play") and self.btn_b_play.winfo_exists() and self._icons.get("play_sm"):
             self.btn_b_play.configure(image=self._icons["play_sm"], text="")
         if hasattr(self, "btn_b_h") and self.btn_b_h.winfo_exists() and self._icons.get("btn_h"):
             self.btn_b_h.configure(image=self._icons["btn_h"], text="")
         if hasattr(self, "btn_b_ff") and self.btn_b_ff.winfo_exists() and self._icons.get("ff"):
             self.btn_b_ff.configure(image=self._icons["ff"], text="")
-        if hasattr(self, "btn_b_msg") and self.btn_b_msg.winfo_exists() and self._icons.get("chat"):
-            self.btn_b_msg.configure(image=self._icons["chat"], text="")
         if hasattr(self, "btn_cat_sounds") and self.btn_cat_sounds.winfo_exists() and self._icons.get("house_sm"):
             self.btn_cat_sounds.configure(image=self._icons["house_sm"])
         if hasattr(self, "btn_cat_youtube") and self.btn_cat_youtube.winfo_exists() and self._icons.get("yt_icon"):
@@ -3219,6 +2815,12 @@ class MusicPadApp(tk.Tk):
         AudioEngine.start_youtube_warmup(
             on_ready=lambda: self._safe_ui_call(self._on_youtube_warmup_complete)
         )
+        if getattr(sys, "frozen", False) and not self._is_mocked_env() and "--self-test" not in sys.argv:
+            threading.Thread(
+                target=register_windows_uninstall,
+                name="musicpad-uninstall-reg",
+                daemon=True,
+            ).start()
 
     def _on_pil_warmup_complete(self) -> None:
         if not getattr(self, "_icons", None) or not any(self._icons.values()):
@@ -4060,15 +3662,13 @@ class MusicPadApp(tk.Tk):
         )
         self.btn_tb_mic_mute.grid(row=1, column=8, padx=2, pady=(0, 4))
 
-        # Under volume_scale (Col 9, Row 1): Loop button (🔁)
-        loop_icon = self._icons.get("loop")
+        # Under volume_scale (Col 9, Row 1): Loop button (🔁 / 🔂)
         self.btn_tb_loop = tk.Button(
             self.top_bar,
-            image=loop_icon,
-            text="" if loop_icon else "🔁",
             command=self._toggle_loop,
             **btn_kw,
         )
+        self._update_loop_icon()
         self.btn_tb_loop.grid(row=1, column=9, padx=(2, 0), pady=(0, 4), sticky="w")
         self.btn_b_loop = self.btn_tb_loop
 
@@ -4387,29 +3987,11 @@ class MusicPadApp(tk.Tk):
         sep2.pack(side="left", padx=6, pady=6)
         self.bottom_bar_seps.append(sep2)
 
-        # 6. Spacer between left and right controls (status_label completely removed)
+        # 6. Spacer between left and right controls
         self.bottom_bar_spacer = tk.Frame(self.bottom_bar, bg=c["bottom_bg"])
         self.bottom_bar_spacer.pack(side="left", fill="x", expand=True)
 
         # 7. Right side controls
-        # Notification speech bubble toggle button
-        chat_icon = self._icons.get("chat")
-        self.btn_b_msg = tk.Button(
-            self.bottom_bar,
-            image=chat_icon,
-            text="" if chat_icon else "💬",
-            command=self._toggle_notification_bubble,
-            **btn_kw,
-        )
-        self.btn_b_msg.pack(side="right", padx=(2, 8), pady=4)
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.set_target_widget(self.btn_b_msg)
-
-        # Vertical separator between FF and Chat (authentic!)
-        sep3 = tk.Frame(self.bottom_bar, width=1, bg=c["divider"], height=16)
-        sep3.pack(side="right", padx=(3, 3), pady=6)
-        self.bottom_bar_seps.append(sep3)
-
         # Fast forward (▶▶)
         ff_icon = self._icons.get("ff")
         self.btn_b_ff = tk.Button(
@@ -4419,7 +4001,7 @@ class MusicPadApp(tk.Tk):
             command=self._seek_forward,
             **btn_kw,
         )
-        self.btn_b_ff.pack(side="right", padx=2, pady=4)
+        self.btn_b_ff.pack(side="right", padx=(2, 8), pady=4)
 
 
 
@@ -4949,14 +4531,48 @@ class MusicPadApp(tk.Tk):
                 if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
                     sb.pack_forget()
 
+    def _sync_special_hotkeys_tree(self) -> None:
+        if not hasattr(self, "special_hotkeys_tree") or not self.special_hotkeys_tree.winfo_exists():
+            return
+        selected_action: Optional[str] = None
+        cur_sel = self.special_hotkeys_tree.selection()
+        if cur_sel:
+            selected_action = self._resolve_special_hotkey_action(cur_sel[0])
+        for item in self.special_hotkeys_tree.get_children():
+            self.special_hotkeys_tree.delete(item)
+        self._special_hotkey_row_to_action.clear()
+        reselect_iid: Optional[str] = None
+        for action, sc in self.special_hotkeys_dict.items():
+            display_action = self._special_hotkey_label(action)
+            iid = self.special_hotkeys_tree.insert("", "end", values=(display_action, sc))
+            self._special_hotkey_row_to_action[iid] = action
+            if selected_action == action:
+                reselect_iid = iid
+        if reselect_iid:
+            self.special_hotkeys_tree.selection_set(reselect_iid)
+
+    def _resolve_special_hotkey_action(self, item_id: str) -> str:
+        if item_id in self._special_hotkey_row_to_action:
+            return self._special_hotkey_row_to_action[item_id]
+        vals = self.special_hotkeys_tree.item(item_id, "values")
+        displayed = str(vals[0]) if vals else ""
+        if displayed in self.special_hotkeys_dict:
+            return displayed
+        for canonical in self.special_hotkeys_dict:
+            if self._special_hotkey_label(canonical) == displayed:
+                return canonical
+        return displayed
+
     def _build_tab_hotkeys(self) -> None:
         f = self.tab_hotkeys
+        for child in f.winfo_children():
+            child.destroy()
 
-        # Group 1: Спеціальні гарячі клавіші
-        g1 = ttk.LabelFrame(f, text="Спеціальні гарячі клавіші", padding=8)
-        g1.pack(fill="both", expand=True, pady=(0, 6))
+        # Group 1: Спеціальні гарячі клавіші / Special hotkeys
+        self.grp_special_hotkeys = ttk.LabelFrame(f, text=self._tr("grp_special_hotkeys"), padding=8)
+        self.grp_special_hotkeys.pack(fill="both", expand=True, pady=(0, 6))
 
-        tree_frame = ttk.Frame(g1)
+        tree_frame = ttk.Frame(self.grp_special_hotkeys)
         tree_frame.pack(fill="both", expand=True)
 
         self.special_hotkeys_tree = ttk.Treeview(
@@ -4966,8 +4582,8 @@ class MusicPadApp(tk.Tk):
             height=12,
             selectmode="browse",
         )
-        self.special_hotkeys_tree.heading("action", text="Дія")
-        self.special_hotkeys_tree.heading("shortcut", text="Сполучення клавіш")
+        self.special_hotkeys_tree.heading("action", text=self._tr("hk_col_action"))
+        self.special_hotkeys_tree.heading("shortcut", text=self._tr("hk_col_shortcut"))
         self.special_hotkeys_tree.column("action", width=340, anchor="w")
         self.special_hotkeys_tree.column("shortcut", width=160, anchor="w")
 
@@ -4978,10 +4594,32 @@ class MusicPadApp(tk.Tk):
 
         self.special_hotkeys_tree.bind("<Double-1>", lambda _: self._set_special_hotkey())
 
-        btns_sh = ttk.Frame(g1)
+        btns_sh = ttk.Frame(self.grp_special_hotkeys)
         btns_sh.pack(fill="x", pady=(6, 2))
-        ttk.Button(btns_sh, text="Встановити гарячу клавішу", command=self._set_special_hotkey).pack(side="left", padx=(0, 6))
-        ttk.Button(btns_sh, text="Очистити", command=self._clear_special_hotkey).pack(side="left")
+        self.btn_set_special_hotkey = ttk.Button(
+            btns_sh,
+            text=self._tr("btn_set_hotkey"),
+            command=self._set_special_hotkey,
+        )
+        self.btn_set_special_hotkey.pack(side="left", padx=(0, 6))
+        self.btn_clear_special_hotkey = ttk.Button(
+            btns_sh,
+            text=self._tr("btn_clear_hotkey"),
+            command=self._clear_special_hotkey,
+        )
+        self.btn_clear_special_hotkey.pack(side="left")
+
+        self._sync_special_hotkeys_tree()
+
+        if hasattr(f, "_canvas") and f._canvas.winfo_exists():
+            f.update_idletasks()
+            bbox = f._canvas.bbox("all")
+            if bbox:
+                f._canvas.configure(scrollregion=bbox)
+            sb = getattr(f, "_scrollbar", None)
+            if sb and sb.winfo_exists():
+                if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
+                    sb.pack_forget()
 
     def _build_tab_interface(self) -> None:
         f = self.tab_interface
@@ -5060,51 +4698,57 @@ class MusicPadApp(tk.Tk):
         self.chk_hide_to_tray.pack(anchor="w", pady=4)
 
     def _get_track_sources(self) -> list[str]:
-        sources = [DEFAULT_TRACK_SOURCE]
+        sources = [self._tr("default_track_source") if hasattr(self, "_tr") else DEFAULT_TRACK_SOURCE]
         if hasattr(self, "input_map"):
+            prefix = self._tr("track_source_input_prefix") if hasattr(self, "_tr") else "Вхідний канал: "
             for name in self.input_map:
-                sources.append(f"Вхідний канал: {name}")
+                sources.append(f"{prefix}{name}")
         return sources
 
     def _track_source_changed(self, _event: Optional[tk.Event] = None) -> None:
         src = self.track_source_var.get()
-        self.status_var.set(f"Джерело треків: {src}")
+        self.status_var.set(self._tr("status_track_source_changed", src))
         self._save_state()
 
     def _build_tab_devices(self) -> None:
         f = self.tab_devices
+        for child in f.winfo_children():
+            child.destroy()
         self.rec_devices_tree = None
+        self._sync_localized_track_source()
 
         container = ttk.Frame(f)
         container.pack(fill="both", expand=True, padx=8, pady=6)
 
-        # 0. Режим маршрутизації та Драйвер MusicPad
+        # 0. Режим маршрутизації та Драйвер MusicPad / Routing Mode & MusicPad Driver
         self.g_routing_mode = ttk.LabelFrame(
             container,
-            text="Режим маршрутизації та Драйвер MusicPad",
+            text=self._tr("grp_routing_mode"),
             padding=8,
         )
         self.g_routing_mode.pack(fill="x", pady=(0, 6))
 
-        ttk.Radiobutton(
+        self.rad_routing_injection = ttk.Radiobutton(
             self.g_routing_mode,
-            text="Ін'єкція в мікрофон (рекомендовано, без VB-Cable)",
+            text=self._tr("rad_injection"),
             variable=self.routing_mode_var,
             value=ROUTING_MODE_INJECTION,
             command=self._on_routing_mode_changed,
-        ).pack(anchor="w", pady=1)
+        )
+        self.rad_routing_injection.pack(anchor="w", pady=1)
 
-        ttk.Radiobutton(
+        self.rad_routing_cable = ttk.Radiobutton(
             self.g_routing_mode,
-            text="Віртуальний кабель (запасний режим)",
+            text=self._tr("rad_virtual_cable"),
             variable=self.routing_mode_var,
             value=ROUTING_MODE_VIRTUAL_CABLE,
             command=self._on_routing_mode_changed,
-        ).pack(anchor="w", pady=1)
+        )
+        self.rad_routing_cable.pack(anchor="w", pady=1)
 
         r_drv_status = ttk.Frame(self.g_routing_mode)
         r_drv_status.pack(fill="x", pady=(4, 2))
-        ttk.Label(r_drv_status, text="Драйвер MusicPad: ", width=16, anchor="w").pack(side="left")
+        ttk.Label(r_drv_status, text=self._tr("lbl_musicpad_driver"), width=18, anchor="w").pack(side="left")
         self.lbl_driver_status = ttk.Label(
             r_drv_status,
             textvariable=self.driver_status_var,
@@ -5117,39 +4761,39 @@ class MusicPadApp(tk.Tk):
         r_drv_btns.pack(fill="x", pady=(4, 2))
         self.btn_install_driver = ttk.Button(
             r_drv_btns,
-            text="Встановити драйвер (UAC)",
+            text=self._tr("btn_install_driver"),
             command=self._install_driver_uac_action,
         )
         self.btn_install_driver.pack(side="left", padx=(0, 6))
 
         self.btn_repair_driver = ttk.Button(
             r_drv_btns,
-            text="Ремонтувати драйвер (UAC)",
+            text=self._tr("btn_repair_driver"),
             command=self._repair_driver_uac_action,
         )
         self.btn_repair_driver.pack(side="left", padx=(0, 6))
 
         self.btn_uninstall_driver = ttk.Button(
             r_drv_btns,
-            text="Видалити драйвер (UAC)",
+            text=self._tr("btn_uninstall_driver"),
             command=self._uninstall_driver_uac_action,
         )
         self.btn_uninstall_driver.pack(side="left")
 
-        # 1. Цільовий мікрофон (Вхід)
-        g_mic = ttk.LabelFrame(container, text="1. Цільовий мікрофон (Вхід)", padding=8)
-        g_mic.pack(fill="x", pady=(0, 6))
+        # 1. Цільовий мікрофон (Вхід) / Target Microphone (Input)
+        self.g_mic = ttk.LabelFrame(container, text=self._tr("grp_target_mic"), padding=8)
+        self.g_mic.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
-            g_mic,
-            text="Цільовий мікрофон захоплення мови (фізичний мікрофон / гарнітура):\nСюди надходить голос та ін'єктуються треки для Discord та ігор.",
+            self.g_mic,
+            text=self._tr("lbl_target_mic_desc"),
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(0, 4))
 
-        r_mic = ttk.Frame(g_mic)
+        r_mic = ttk.Frame(self.g_mic)
         r_mic.pack(fill="x", pady=2)
-        ttk.Label(r_mic, text="Мікрофон: ", width=15, anchor="w").pack(side="left")
+        ttk.Label(r_mic, text=self._tr("lbl_mic"), width=15, anchor="w").pack(side="left")
         self.combo_phys_mic = ttk.Combobox(
             r_mic,
             textvariable=self.mix_mic_var,
@@ -5161,20 +4805,20 @@ class MusicPadApp(tk.Tk):
         self.combo_phys_mic.pack(side="left", fill="x", expand=True)
         self.settings_mic_combo = self.combo_phys_mic
 
-        # 2. Джерело треків / звуку (Вхід)
-        g_track = ttk.LabelFrame(container, text="2. Джерело треків / звуку (Вхід)", padding=8)
-        g_track.pack(fill="x", pady=(0, 6))
+        # 2. Джерело треків / звуку (Вхід) / Track / Audio Source (Input)
+        self.g_track = ttk.LabelFrame(container, text=self._tr("grp_track_source"), padding=8)
+        self.g_track.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
-            g_track,
-            text="Джерело звуку для відтворення (вбудований плеєр або зовнішній вхід):",
+            self.g_track,
+            text=self._tr("lbl_track_source_desc"),
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(0, 4))
 
-        r_track = ttk.Frame(g_track)
+        r_track = ttk.Frame(self.g_track)
         r_track.pack(fill="x", pady=2)
-        ttk.Label(r_track, text="Джерело звуку: ", width=15, anchor="w").pack(side="left")
+        ttk.Label(r_track, text=self._tr("lbl_track_source"), width=15, anchor="w").pack(side="left")
         self.combo_track_source = ttk.Combobox(
             r_track,
             textvariable=self.track_source_var,
@@ -5185,20 +4829,20 @@ class MusicPadApp(tk.Tk):
         self.combo_track_source.bind("<<ComboboxSelected>>", self._track_source_changed)
         self.combo_track_source.pack(side="left", fill="x", expand=True)
 
-        # 3. Моніторинг (Навушники) [Вихід]
-        g_hp = ttk.LabelFrame(container, text="3. Моніторинг (Навушники) [Вихід]", padding=8)
-        g_hp.pack(fill="x", pady=(0, 6))
+        # 3. Моніторинг (Навушники) [Вихід] / Monitoring (Headphones) [Output]
+        self.g_hp = ttk.LabelFrame(container, text=self._tr("grp_monitoring"), padding=8)
+        self.g_hp.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
-            g_hp,
-            text="Фізичний пристрій моніторингу (навушники або динаміки):\nСюди надсилається ТІЛЬКИ звук треку (без мікрофона, без власного еха).",
+            self.g_hp,
+            text=self._tr("lbl_monitoring_desc"),
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(0, 4))
 
-        r_hp = ttk.Frame(g_hp)
+        r_hp = ttk.Frame(self.g_hp)
         r_hp.pack(fill="x", pady=2)
-        ttk.Label(r_hp, text="Навушники: ", width=15, anchor="w").pack(side="left")
+        ttk.Label(r_hp, text=self._tr("lbl_headphones"), width=15, anchor="w").pack(side="left")
         self.combo_headphones = ttk.Combobox(
             r_hp,
             textvariable=self.monitor_var,
@@ -5210,22 +4854,22 @@ class MusicPadApp(tk.Tk):
         self.combo_headphones.pack(side="left", fill="x", expand=True)
         self.monitor_combo = self.combo_headphones
 
-        # 4. Віртуальний кабель (мікс для Discord) [Вихід]
+        # 4. Віртуальний кабель (мікс для Discord) [Вихід] / Virtual Cable (Discord mix) [Output]
         self.g_virtual_cable = ttk.LabelFrame(
-            container, text="4. Віртуальний кабель (мікс для Discord) [Вихід]", padding=8
+            container, text=self._tr("grp_virtual_cable"), padding=8
         )
         self.g_virtual_cable.pack(fill="x", pady=(0, 6))
 
         ttk.Label(
             self.g_virtual_cable,
-            text="Запасний вихід програми (пристрій «CABLE Input (VB-Audio Virtual Cable)»):\nСюди надсилається суміш мікрофона і треку в режимі віртуального кабелю.",
+            text=self._tr("lbl_virtual_cable_desc"),
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(0, 4))
 
         r_cable = ttk.Frame(self.g_virtual_cable)
         r_cable.pack(fill="x", pady=2)
-        ttk.Label(r_cable, text="CABLE Input: ", width=15, anchor="w").pack(side="left")
+        ttk.Label(r_cable, text=self._tr("lbl_cable_input"), width=15, anchor="w").pack(side="left")
         self.combo_virtual_cable = ttk.Combobox(
             r_cable,
             textvariable=self.output_var,
@@ -5242,19 +4886,31 @@ class MusicPadApp(tk.Tk):
         b_frame = ttk.Frame(container)
         b_frame.pack(fill="x", pady=(8, 2))
 
-        ttk.Checkbutton(
+        self.chk_check_device_config = ttk.Checkbutton(
             b_frame,
-            text="Перевіряти конфігурацію пристрою під час запуску",
+            text=self._tr("chk_check_device_on_launch"),
             variable=self.check_device_config_on_launch_var,
-        ).pack(side="left")
+        )
+        self.chk_check_device_config.pack(side="left")
 
-        ttk.Button(
+        self.btn_refresh_devices = ttk.Button(
             b_frame,
-            text="⟳ Оновити список",
+            text=self._tr("btn_refresh_devices"),
             command=self._load_devices,
-        ).pack(side="right")
+        )
+        self.btn_refresh_devices.pack(side="right")
 
         self._refresh_driver_status(notify_on_issue=False)
+
+        if hasattr(f, "_canvas") and f._canvas.winfo_exists():
+            f.update_idletasks()
+            bbox = f._canvas.bbox("all")
+            if bbox:
+                f._canvas.configure(scrollregion=bbox)
+            sb = getattr(f, "_scrollbar", None)
+            if sb and sb.winfo_exists():
+                if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
+                    sb.pack_forget()
 
     def _resolve_selected_mic_guid(self) -> str:
         mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
@@ -5284,10 +4940,11 @@ class MusicPadApp(tk.Tk):
                 state="not_installed",
                 installed_endpoint_guid="",
                 target_endpoint_guid=target_guid,
-                reason=f"Не встановлено ({exc})",
+                reason=self._tr("drv_not_installed_err", exc),
             )
+        localized_msg = self._translate_driver_reason(status.message)
         if hasattr(self, "driver_status_var"):
-            self.driver_status_var.set(status.message)
+            self.driver_status_var.set(localized_msg)
         if hasattr(self, "combo_virtual_cable") and self.combo_virtual_cable is not None:
             try:
                 if self.combo_virtual_cable.winfo_exists():
@@ -5301,7 +4958,7 @@ class MusicPadApp(tk.Tk):
             and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
             and status.state != "active"
         ):
-            self.notify_error(f"Драйвер MusicPad: {status.message}")
+            self.notify_error(self._tr("drv_err_notify", localized_msg))
         return status
 
     def _on_routing_mode_changed(self) -> None:
@@ -5312,37 +4969,39 @@ class MusicPadApp(tk.Tk):
         )
         target_guid = self._resolve_selected_mic_guid()
         status = self._refresh_driver_status(notify_on_issue=False)
+        localized_msg = self._translate_driver_reason(status.message)
         is_loading = getattr(self, "_loading_state", False)
 
         if mode == ROUTING_MODE_INJECTION and not is_loading and status.state != "active":
             if status.state in ("not_installed", "wrong_endpoint"):
                 prompt = (
-                    "Для роботи режиму «Ін'єкція в мікрофон» необхідно встановити Драйвер MusicPad на вибраний мікрофон (UAC).\n\n"
-                    "Встановити драйвер зараз?"
+                    self._tr("drv_uac_install_prompt")
                     if status.state == "not_installed"
-                    else "Драйвер MusicPad встановлено на інший мікрофон. Перенести драйвер на вибраний мікрофон зараз?"
+                    else self._tr("drv_uac_move_prompt")
                 )
                 confirm = messagebox.askyesno(
-                    "Драйвер MusicPad (UAC)",
+                    self._tr("drv_uac_title"),
                     prompt,
                     parent=self._settings_window if getattr(self, "_settings_window", None) else self,
                 )
                 if confirm:
                     self._install_driver_uac_action()
                     status = self._refresh_driver_status(notify_on_issue=False)
+                    localized_msg = self._translate_driver_reason(status.message)
                 else:
                     if status.state == "not_installed":
                         self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
                         mode = ROUTING_MODE_VIRTUAL_CABLE
             elif status.state in ("inactive", "outdated"):
                 confirm = messagebox.askyesno(
-                    "Ремонт Драйвера MusicPad (UAC)",
-                    f"Драйвер MusicPad потребує відновлення ({status.message}).\n\nВідновити зараз через UAC?",
+                    self._tr("drv_uac_repair_title"),
+                    self._tr("drv_uac_repair_prompt", localized_msg),
                     parent=self._settings_window if getattr(self, "_settings_window", None) else self,
                 )
                 if confirm:
                     self._repair_driver_uac_action()
                     status = self._refresh_driver_status(notify_on_issue=False)
+                    localized_msg = self._translate_driver_reason(status.message)
 
         if hasattr(self, "engine"):
             if hasattr(self.engine, "set_target_endpoint_guid"):
@@ -5350,9 +5009,9 @@ class MusicPadApp(tk.Tk):
             if hasattr(self.engine, "set_routing_mode"):
                 self.engine.set_routing_mode(mode)
         if mode == ROUTING_MODE_INJECTION:
-            self.status_var.set(f"Режим маршрутизації: Ін'єкція в мікрофон ({status.message})")
+            self.status_var.set(self._tr("status_routing_injection", localized_msg))
         else:
-            self.status_var.set("Режим маршрутизації: Віртуальний кабель")
+            self.status_var.set(self._tr("status_routing_cable"))
         self._save_state()
 
     @staticmethod
@@ -5360,21 +5019,17 @@ class MusicPadApp(tk.Tk):
         if isinstance(res, tuple) and len(res) >= 2:
             return bool(res[0]), str(res[1])
         if isinstance(res, int):
-            return (res == 0), ("" if res == 0 else f"код {res}")
+            return (res == 0), ("" if res == 0 else f"code {res}")
         return bool(res), ""
 
     def _install_driver_uac_action(self) -> None:
         target_guid = self._resolve_selected_mic_guid()
         if not target_guid:
-            self.notify_error("Спочатку виберіть Цільовий мікрофон у списку.")
+            self.notify_error(self._tr("drv_select_mic_first"))
             return
         confirm = messagebox.askyesno(
-            "Встановлення Драйвера MusicPad (UAC)",
-            "Для роботи режиму «Ін'єкція в мікрофон» без платного EV-сертифіката "
-            "MusicPad зареєструє локальний APO-драйвер на вибраному мікрофоні, "
-            "увімкне режим завантаження локальної APO (DisableProtectedAudioDG=1) "
-            "та перезапустить службу аудіо Windows (1–2 секунди).\n\n"
-            "Продовжити встановлення?",
+            self._tr("drv_install_title"),
+            self._tr("drv_install_confirm"),
             parent=self._settings_window if getattr(self, "_settings_window", None) else self,
         )
         if not confirm:
@@ -5387,17 +5042,15 @@ class MusicPadApp(tk.Tk):
         if ok:
             self.routing_mode_var.set(ROUTING_MODE_INJECTION)
             self._on_routing_mode_changed()
-            self.notify_info(
-                "Драйвер MusicPad встановлено. Якщо у вас запущено Discord чи гру, будь ласка, перепідключіть голосовий канал для застосування оновлення."
-            )
+            self._show_driver_info(self._tr("drv_installed_info"))
         else:
             self._refresh_driver_status(notify_on_issue=False)
-            self.notify_error(f"Встановлення драйвера скасовано або не вдалося: {msg}")
+            self.notify_error(self._tr("drv_install_fail", msg))
 
     def _repair_driver_uac_action(self) -> None:
         target_guid = self._resolve_selected_mic_guid()
         if not target_guid:
-            self.notify_error("Спочатку виберіть Цільовий мікрофон у списку.")
+            self.notify_error(self._tr("drv_select_mic_first"))
             return
         if getattr(self, "engine", None) is not None:
             self.engine.stop()
@@ -5406,12 +5059,10 @@ class MusicPadApp(tk.Tk):
             self.engine.reinitialize_audio_subsystem()
         if ok:
             self._refresh_driver_status(notify_on_issue=False)
-            self.notify_info(
-                "Драйвер MusicPad успішно відновлено. Якщо у вас запущено Discord чи гру, будь ласка, перепідключіть голосовий канал для застосування оновлення."
-            )
+            self._show_driver_info(self._tr("drv_repaired_info"))
         else:
             self._refresh_driver_status(notify_on_issue=False)
-            self.notify_error(f"Ремонт драйвера скасовано або не вдався: {msg}")
+            self.notify_error(self._tr("drv_repair_fail", msg))
 
     def _uninstall_driver_uac_action(self) -> None:
         target_guid = self._resolve_selected_mic_guid()
@@ -5423,10 +5074,10 @@ class MusicPadApp(tk.Tk):
         if ok:
             self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
             self._on_routing_mode_changed()
-            self.notify_info("Драйвер MusicPad видалено. Увімкнено режим «Віртуальний кабель».")
+            self._show_driver_info(self._tr("drv_uninstalled_info"))
         else:
             self._refresh_driver_status(notify_on_issue=False)
-            self.notify_error(f"Видалення драйвера скасовано або не вдалося: {msg}")
+            self.notify_error(self._tr("drv_uninstall_fail", msg))
 
     def _build_settings_bottom_bar(self) -> None:
         c = self._get_theme_colors()
@@ -5458,19 +5109,82 @@ class MusicPadApp(tk.Tk):
     def _show_settings_hint(self, title: str, msg: str) -> None:
         messagebox.showinfo(title, msg, parent=self._settings_window)
 
+    def _arm_hotkey_release_guard(self, hk: str, *, duration_s: float = 0.2) -> None:
+        hk_up = str(hk or "").strip().upper()
+        if not hk_up:
+            return
+        until = time.monotonic() + duration_s
+        with self._hotkey_lock:
+            self._hotkeys_wait_release.add(hk_up)
+            self._pressed_hotkeys.add(hk_up)
+            self._tk_hotkeys_wait_release.add(hk_up)
+            self._tk_capture_guard_until[hk_up] = until
+
+    def _on_hotkey_key_release(self, event: tk.Event) -> None:
+        with self._hotkey_lock:
+            if not self._tk_hotkeys_wait_release:
+                return
+            released = _format_tk_hotkey(event)
+            keysym_up = str(getattr(event, "keysym", "")).upper()
+            to_discard: list[str] = []
+            rel_main = released.split("+")[-1].upper() if released else ""
+            for hk_up in self._tk_hotkeys_wait_release:
+                hk_main = hk_up.split("+")[-1].upper()
+                if (
+                    (released and released.upper() == hk_up)
+                    or (rel_main and rel_main == hk_main)
+                    or (keysym_up and keysym_up == hk_main)
+                ):
+                    to_discard.append(hk_up)
+            for hk_up in to_discard:
+                self._tk_hotkeys_wait_release.discard(hk_up)
+                self._tk_capture_guard_until.pop(hk_up, None)
+
+    def _is_tk_hotkey_suppressed(self, hk: str) -> bool:
+        hk_up = str(hk or "").strip().upper()
+        if not hk_up:
+            return False
+        now = time.monotonic()
+        with self._hotkey_lock:
+            if hk_up not in self._tk_hotkeys_wait_release:
+                return False
+            guard_until = self._tk_capture_guard_until.get(hk_up, 0.0)
+        is_still_down = False
+        if sys.platform == "win32" and not self._is_mocked_env():
+            try:
+                is_still_down = _is_hotkey_pressed_win32(hk_up)
+            except Exception:
+                is_still_down = False
+        if is_still_down or now < guard_until:
+            return True
+        with self._hotkey_lock:
+            self._tk_hotkeys_wait_release.discard(hk_up)
+            self._tk_capture_guard_until.pop(hk_up, None)
+        return False
+
+    def _dispatch_tk_hotkey(self, hk: str, handler: Any) -> Any:
+        if getattr(self, "_capturing_hotkey", False) or self._is_tk_hotkey_suppressed(hk):
+            return "break"
+        return handler()
+
+    def _set_capturing_hotkey(self, capturing: bool) -> None:
+        with self._hotkey_lock:
+            self._capturing_hotkey = capturing
+
     def _set_special_hotkey(self) -> None:
         sel = self.special_hotkeys_tree.selection()
         if not sel:
-            messagebox.showinfo("Гарячі клавіші", "Виберіть дію зі списку.", parent=self._settings_window)
+            messagebox.showinfo(self._tr("tab_hotkeys"), self._tr("hk_select_action_msg"), parent=self._settings_window)
             return
         item_id = sel[0]
-        action = self.special_hotkeys_tree.item(item_id, "values")[0]
+        action = self._resolve_special_hotkey_action(item_id)
+        display_action = self._special_hotkey_label(action)
         cur = self.special_hotkeys_dict.get(action, "")
 
-        self._capturing_hotkey = True
+        self._set_capturing_hotkey(True)
         parent_win = self._settings_window if (self._settings_window and self._settings_window.winfo_exists()) else self
         dlg = tk.Toplevel(parent_win)
-        dlg.title("Призначити гарячу клавішу")
+        dlg.title(self._tr("hk_assign_title"))
         dlg.geometry("460x170")
         dlg.resizable(False, False)
         dlg.configure(bg="#1f1f1f" if self.theme == "dark" else "#f4f5f7")
@@ -5480,71 +5194,79 @@ class MusicPadApp(tk.Tk):
 
         ttk.Label(
             dlg,
-            text=f"Дія: {action}",
+            text=self._tr("hk_dlg_action", display_action),
             font=("Segoe UI", 10, "bold"),
             padding=(16, 14, 16, 2),
         ).pack(fill="x")
         ttk.Label(
             dlg,
-            text=f"Поточна комбінація: {cur if cur else 'Не призначено'}",
+            text=self._tr("hk_dlg_current", cur if cur else self._tr("hk_not_assigned")),
             font=("Segoe UI", 9),
             padding=(16, 2, 16, 4),
         ).pack(fill="x")
         ttk.Label(
             dlg,
-            text="Натисніть бажану клавішу або комбінацію (напр. Space, F5, Ctrl+K)\nEsc — скасувати, Backspace — очистити",
+            text=self._tr("hk_dlg_prompt_special"),
             padding=(16, 4, 16, 8),
         ).pack(fill="x")
 
-        def on_key(event: tk.Event) -> None:
+        def on_key(event: tk.Event) -> str:
             keysym = str(getattr(event, "keysym", "")).upper()
             keycode = getattr(event, "keycode", None)
             if keysym == "ESCAPE" or keycode == 0x1B:
-                self._capturing_hotkey = False
+                self._arm_hotkey_release_guard("ESCAPE")
+                self._set_capturing_hotkey(False)
                 dlg.destroy()
-                return
+                return "break"
 
             if keysym in ("BACKSPACE",) or keycode == 0x08:
-                self._capturing_hotkey = False
+                self._arm_hotkey_release_guard("BACKSPACE")
+                self._set_capturing_hotkey(False)
                 self.special_hotkeys_dict[action] = ""
-                self.special_hotkeys_tree.item(item_id, values=(action, ""))
+                self.special_hotkeys_tree.item(item_id, values=(display_action, ""))
                 self._save_state()
                 self._apply_special_hotkeys()
                 dlg.destroy()
-                return
+                return "break"
 
             hk = _format_tk_hotkey(event)
             if not hk:
-                return
+                return "break"
 
-            self._capturing_hotkey = False
+            # Arm release guard BEFORE unmasking _capturing_hotkey so the polling
+            # thread or Tk bindings cannot fire this keystroke while it is held down.
+            self._arm_hotkey_release_guard(hk)
+            self._set_capturing_hotkey(False)
 
             # Check for conflicts
             conflict_name: Optional[str] = None
+            conflict_display: Optional[str] = None
             conflict_is_track = False
             for other_act, other_hk in self.special_hotkeys_dict.items():
                 if other_act != action and other_hk.strip().upper() == hk.upper():
                     conflict_name = other_act
+                    conflict_display = self._special_hotkey_label(other_act)
                     break
 
             if not conflict_name:
                 for tr in getattr(self, "local_tracks", []):
                     if tr.hotkey.strip().upper() == hk.upper():
                         conflict_name = f"Трек «{tr.title}»"
+                        conflict_display = self._tr("hk_conflict_track", tr.title)
                         conflict_is_track = True
                         break
 
             if conflict_name:
                 dlg.grab_release()
                 reassign = messagebox.askyesno(
-                    "Конфлікт гарячих клавіш",
-                    f"Гаряча клавіша [{hk}] вже використовується для «{conflict_name}».\nПерепризначити її?",
+                    self._tr("hk_conflict_title"),
+                    self._tr("hk_conflict_msg", hk, conflict_display or conflict_name),
                     parent=dlg,
                 )
                 dlg.grab_set()
                 if not reassign:
-                    self._capturing_hotkey = True
-                    return
+                    self._set_capturing_hotkey(True)
+                    return "break"
 
                 if conflict_is_track:
                     for tr in getattr(self, "local_tracks", []):
@@ -5555,31 +5277,36 @@ class MusicPadApp(tk.Tk):
                 else:
                     self.special_hotkeys_dict[conflict_name] = ""
                     for child in self.special_hotkeys_tree.get_children():
-                        if self.special_hotkeys_tree.item(child, "values")[0] == conflict_name:
-                            self.special_hotkeys_tree.item(child, values=(conflict_name, ""))
+                        if self._resolve_special_hotkey_action(child) == conflict_name:
+                            self.special_hotkeys_tree.item(
+                                child,
+                                values=(self._special_hotkey_label(conflict_name), ""),
+                            )
 
             self.special_hotkeys_dict[action] = hk
-            self.special_hotkeys_tree.item(item_id, values=(action, hk))
+            self.special_hotkeys_tree.item(item_id, values=(display_action, hk))
             self._save_state()
             self._apply_special_hotkeys()
             dlg.destroy()
+            return "break"
 
         dlg.bind("<KeyPress>", on_key)
+        dlg.bind("<Alt-F4>", on_key)
         dlg.protocol(
             "WM_DELETE_WINDOW",
-            lambda: (setattr(self, "_capturing_hotkey", False), dlg.destroy()),
+            lambda: (self._set_capturing_hotkey(False), dlg.destroy()),
         )
         dlg.focus_force()
 
     def _clear_special_hotkey(self) -> None:
         sel = self.special_hotkeys_tree.selection()
         if not sel:
-            messagebox.showinfo("Гарячі клавіші", "Виберіть дію зі списку.", parent=self._settings_window)
+            messagebox.showinfo(self._tr("tab_hotkeys"), self._tr("hk_select_action_msg"), parent=self._settings_window)
             return
         item_id = sel[0]
-        action = self.special_hotkeys_tree.item(item_id, "values")[0]
+        action = self._resolve_special_hotkey_action(item_id)
         self.special_hotkeys_dict[action] = ""
-        self.special_hotkeys_tree.item(item_id, values=(action, ""))
+        self.special_hotkeys_tree.item(item_id, values=(self._special_hotkey_label(action), ""))
         self._save_state()
         self._apply_special_hotkeys()
 
@@ -5639,7 +5366,7 @@ class MusicPadApp(tk.Tk):
                 continue
             for seq in self._hotkey_to_tk_sequences(hk):
                 try:
-                    self.bind(seq, lambda _e, h=handler: h())
+                    self.bind(seq, lambda _e, h=handler, k=hk: self._dispatch_tk_hotkey(k, h))
                 except Exception:
                     pass
 
@@ -5702,20 +5429,16 @@ class MusicPadApp(tk.Tk):
         for item in self.rec_devices_tree.get_children():
             self.rec_devices_tree.delete(item)
         for _, dev in getattr(self, "input_devices", []):
-            name = dev.get("name", "Мікрофон")
+            name = dev.get("name", self._tr("dev_default_mic_name"))
             is_chk = self.recording_devices_checked.get(name, False)
             if not is_chk and (self.mix_mic_var.get() == name or self.input_var.get() == name):
                 is_chk = True
                 self.recording_devices_checked[name] = True
             chk_sym = "☑" if is_chk else "☐"
-            self.rec_devices_tree.insert("", "end", values=(chk_sym, name, "+0 dB", "Добре"), tags=("good",))
+            self.rec_devices_tree.insert("", "end", values=(chk_sym, name, "+0 dB", self._tr("drv_state_good")), tags=("good",))
 
     def _sync_settings_to_dialog(self) -> None:
-        if hasattr(self, "special_hotkeys_tree") and self.special_hotkeys_tree.winfo_exists():
-            for item in self.special_hotkeys_tree.get_children():
-                self.special_hotkeys_tree.delete(item)
-            for action, sc in self.special_hotkeys_dict.items():
-                self.special_hotkeys_tree.insert("", "end", values=(action, sc))
+        self._sync_special_hotkeys_tree()
 
         if hasattr(self, "hide_to_tray_var"):
             self.hide_to_tray_var.set(self.hide_to_tray.get() if hasattr(self, "hide_to_tray") else True)
@@ -5798,8 +5521,6 @@ class MusicPadApp(tk.Tk):
             self._apply_language()
         if hasattr(self, "always_on_top_var"):
             self.attributes("-topmost", self.always_on_top_var.get())
-            if hasattr(self, "notification_manager") and getattr(self.notification_manager, "_bubble", None):
-                self.notification_manager._bubble._sync_topmost()
         target_guid = self._resolve_selected_mic_guid()
         if hasattr(self, "routing_mode_var") and hasattr(self, "engine"):
             if hasattr(self.engine, "set_target_endpoint_guid"):
@@ -5844,29 +5565,41 @@ class MusicPadApp(tk.Tk):
             self._settings_window.withdraw()
 
     def _bind_shortcuts(self) -> None:
-        self.bind("<Control-o>", lambda _: self._add_files())
-        self.bind("<Control-O>", lambda _: self._add_files())
-        self.bind("<Control-s>", lambda _: self._save_sound_list())
-        self.bind("<Control-S>", lambda _: self._save_sound_list())
-        self.bind("<Control-f>", lambda _: self._toggle_search_bar())
-        self.bind("<Control-F>", lambda _: self._toggle_search_bar())
-        self.bind("<Control-y>", lambda _: self._redo())
-        self.bind("<Control-Y>", lambda _: self._redo())
-        self.bind("<Control-Shift-y>", lambda _: self._open_yt_search())
-        self.bind("<Control-Shift-Y>", lambda _: self._open_yt_search())
-        self.bind("<Control-z>", lambda _: self._undo())
-        self.bind("<Control-Z>", lambda _: self._undo())
-        self.bind("<Control-x>", lambda _: self._cut_track())
-        self.bind("<Control-X>", lambda _: self._cut_track())
-        self.bind("<Control-c>", lambda _: self._copy_track())
-        self.bind("<Control-C>", lambda _: self._copy_track())
-        self.bind("<Control-v>", lambda _: self._paste_track())
-        self.bind("<Control-V>", lambda _: self._paste_track())
-        self.bind("<Control-a>", lambda _: self._select_all_tracks())
-        self.bind("<Control-A>", lambda _: self._select_all_tracks())
-        self.bind("<Delete>", lambda _: self._remove_selected_track() if not self._is_entry_focused() else None)
-        self.bind("<Alt-F4>", lambda _: self._on_exit_hotkey())
-        self.bind("<space>", lambda _: self._toggle_pause() if not self._is_entry_focused() else None)
+        self.bind("<Control-o>", lambda _: self._dispatch_tk_hotkey("Ctrl+O", self._add_files))
+        self.bind("<Control-O>", lambda _: self._dispatch_tk_hotkey("Ctrl+O", self._add_files))
+        self.bind("<Control-s>", lambda _: self._dispatch_tk_hotkey("Ctrl+S", self._save_sound_list))
+        self.bind("<Control-S>", lambda _: self._dispatch_tk_hotkey("Ctrl+S", self._save_sound_list))
+        self.bind("<Control-f>", lambda _: self._dispatch_tk_hotkey("Ctrl+F", self._toggle_search_bar))
+        self.bind("<Control-F>", lambda _: self._dispatch_tk_hotkey("Ctrl+F", self._toggle_search_bar))
+        self.bind("<Control-y>", lambda _: self._dispatch_tk_hotkey("Ctrl+Y", self._redo))
+        self.bind("<Control-Y>", lambda _: self._dispatch_tk_hotkey("Ctrl+Y", self._redo))
+        self.bind("<Control-Shift-y>", lambda _: self._dispatch_tk_hotkey("Ctrl+Shift+Y", self._open_yt_search))
+        self.bind("<Control-Shift-Y>", lambda _: self._dispatch_tk_hotkey("Ctrl+Shift+Y", self._open_yt_search))
+        self.bind("<Control-z>", lambda _: self._dispatch_tk_hotkey("Ctrl+Z", self._undo))
+        self.bind("<Control-Z>", lambda _: self._dispatch_tk_hotkey("Ctrl+Z", self._undo))
+        self.bind("<Control-x>", lambda _: self._dispatch_tk_hotkey("Ctrl+X", self._cut_track))
+        self.bind("<Control-X>", lambda _: self._dispatch_tk_hotkey("Ctrl+X", self._cut_track))
+        self.bind("<Control-c>", lambda _: self._dispatch_tk_hotkey("Ctrl+C", self._copy_track))
+        self.bind("<Control-C>", lambda _: self._dispatch_tk_hotkey("Ctrl+C", self._copy_track))
+        self.bind("<Control-v>", lambda _: self._dispatch_tk_hotkey("Ctrl+V", self._paste_track))
+        self.bind("<Control-V>", lambda _: self._dispatch_tk_hotkey("Ctrl+V", self._paste_track))
+        self.bind("<Control-a>", lambda _: self._dispatch_tk_hotkey("Ctrl+A", self._select_all_tracks))
+        self.bind("<Control-A>", lambda _: self._dispatch_tk_hotkey("Ctrl+A", self._select_all_tracks))
+        self.bind(
+            "<Delete>",
+            lambda _: self._dispatch_tk_hotkey(
+                "Del",
+                lambda: self._remove_selected_track() if not self._is_entry_focused() else None,
+            ),
+        )
+        self.bind("<Alt-F4>", lambda _: self._dispatch_tk_hotkey("Alt+F4", self._on_exit_hotkey))
+        self.bind(
+            "<space>",
+            lambda _: self._dispatch_tk_hotkey(
+                "Space",
+                lambda: self._toggle_pause() if not self._is_entry_focused() else None,
+            ),
+        )
         self._apply_special_hotkeys()
 
     def _open_settings(self) -> None:
@@ -6486,7 +6219,7 @@ class MusicPadApp(tk.Tk):
             self.bottom_bar.configure(bg=c["bottom_bg"])
         if hasattr(self, "bottom_bar_spacer") and hasattr(self.bottom_bar_spacer, "configure"):
             self.bottom_bar_spacer.configure(bg=c["bottom_bg"])
-        for btn_name in ("btn_b_play", "btn_b_h", "btn_b_msg", "btn_b_ff", "btn_b_loop"):
+        for btn_name in ("btn_b_play", "btn_b_h", "btn_b_ff", "btn_b_loop"):
             btn = getattr(self, btn_name, None)
             if btn and hasattr(btn, "configure"):
                 btn.configure(
@@ -6614,8 +6347,14 @@ class MusicPadApp(tk.Tk):
             self.theme_button.configure(text="Світла тема" if dark else "Темна тема")
         if hasattr(self, "_update_mute_icon"):
             self._update_mute_icon()
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.set_theme(self.theme)
+        self._set_window_icon()
+        if getattr(self, "_tray_icon", None) is not None and Image is not None:
+            try:
+                t_icon_path = self._icon_path_for_theme()
+                if t_icon_path.exists():
+                    self._tray_icon.icon = Image.open(t_icon_path).convert("RGBA")
+            except Exception:
+                pass
         self._apply_dark_title_bar(self)
 
     def _load_devices(self) -> None:
@@ -6715,7 +6454,7 @@ class MusicPadApp(tk.Tk):
                     else "VB-Cable не знайдено: можна вибрати інший пристрій."
                 )
         except AudioEngineError as exc:
-            self.status_var.set(str(exc))
+            self.notify_error(str(exc))
 
     def _ensure_engine(self) -> AudioEngine:
         out_dev = self.output_map.get(self.output_var.get())
@@ -9298,7 +9037,18 @@ class MusicPadApp(tk.Tk):
     def _toggle_loop(self) -> None:
         val = not self.loop_enabled.get()
         self.loop_enabled.set(val)
+        self._update_loop_icon()
         self.status_var.set("Повторення звуку (Loop): увімкнено." if val else "Повторення звуку (Loop): вимкнено.")
+
+    def _update_loop_icon(self, *args: Any) -> None:
+        if not hasattr(self, "btn_tb_loop") or not self.btn_tb_loop.winfo_exists() or not hasattr(self, "_icons"):
+            return
+        enabled = bool(self.loop_enabled.get()) if hasattr(self, "loop_enabled") else False
+        img = self._icons.get("loop_on") if enabled else self._icons.get("loop")
+        if img:
+            self.btn_tb_loop.configure(image=img, text="")
+        else:
+            self.btn_tb_loop.configure(image="", text="🔂" if enabled else "🔁")
 
     def _update_mute_icon(self, *args: Any) -> None:
         if not hasattr(self, "btn_tb_mute") or not hasattr(self, "_icons"):
@@ -9564,12 +9314,12 @@ class MusicPadApp(tk.Tk):
     def _assign_hotkey_dialog(self) -> None:
         selected = self._selected_track()
         if not selected:
-            self.status_var.set("Спочатку виберіть трек у списку для призначення гарячої клавіші.")
+            self.status_var.set(self._tr("hk_select_track_msg"))
             return
         track, _ = selected
-        self._capturing_hotkey = True
+        self._set_capturing_hotkey(True)
         dlg = tk.Toplevel(self)
-        dlg.title("Призначити гарячу клавішу")
+        dlg.title(self._tr("hk_assign_title"))
         dlg.geometry("420x160")
         dlg.resizable(False, False)
         dlg.configure(bg="#1f1f1f" if self.theme == "dark" else "#f4f5f7")
@@ -9579,37 +9329,44 @@ class MusicPadApp(tk.Tk):
 
         ttk.Label(
             dlg,
-            text=f"Трек: {track.title[:45]}",
+            text=self._tr("hk_dlg_track", track.title[:45]),
             font=("Segoe UI", 10, "bold"),
             padding=(16, 14, 16, 4),
         ).pack(fill="x")
         ttk.Label(
             dlg,
-            text="Натисніть бажану клавішу (напр. F1..F7, Num1, Alt+1)\nабо Esc для скасування:",
+            text=self._tr("hk_dlg_prompt_track"),
             padding=(16, 4),
         ).pack(fill="x")
 
-        def on_key(event: tk.Event) -> None:
+        def on_key(event: tk.Event) -> str:
             hk = _format_tk_hotkey(event)
             if not hk:
-                return
-            self._capturing_hotkey = False
+                return "break"
             if hk == "ESCAPE":
+                self._arm_hotkey_release_guard("ESCAPE")
+                self._set_capturing_hotkey(False)
                 dlg.destroy()
-                return
+                return "break"
+            # Arm release guard BEFORE unmasking _capturing_hotkey so the polling
+            # thread or Tk bindings cannot play/trigger the track during assignment.
+            self._arm_hotkey_release_guard(hk)
             for other in self.local_tracks:
                 if other is not track and other.hotkey.upper() == hk.upper():
                     other.hotkey = ""
             track.hotkey = hk
             self._filter_tracks()
-            self.status_var.set(f"Призначено гарячу клавішу [{hk}] для «{track.title}»")
+            self.status_var.set(self._tr("hk_assigned_status", hk, track.title))
             self._save_state()
+            self._set_capturing_hotkey(False)
             dlg.destroy()
+            return "break"
 
         dlg.bind("<KeyPress>", on_key)
+        dlg.bind("<Alt-F4>", on_key)
         dlg.protocol(
             "WM_DELETE_WINDOW",
-            lambda: (setattr(self, "_capturing_hotkey", False), dlg.destroy()),
+            lambda: (self._set_capturing_hotkey(False), dlg.destroy()),
         )
         dlg.focus_force()
 
@@ -9677,49 +9434,70 @@ class MusicPadApp(tk.Tk):
             return False
         return True
 
+    def _poll_global_hotkeys_step(self) -> list[Any]:
+        with self._hotkey_lock:
+            capturing = bool(getattr(self, "_capturing_hotkey", False))
+            hotkeys_enabled = bool(getattr(self, "_hotkeys_enabled", True))
+            wait_release_snapshot = set(getattr(self, "_hotkeys_wait_release", ()))
+            prev_pressed = set(getattr(self, "_pressed_hotkeys", ()))
+        if capturing or not hotkeys_enabled:
+            return []
+        try:
+            active_now: set[str] = set()
+            still_waiting: set[str] = set()
+            for w_hk in wait_release_snapshot:
+                if _is_hotkey_pressed_win32(w_hk):
+                    still_waiting.add(w_hk)
+                    active_now.add(w_hk)
+
+            pause_hk = self.special_hotkeys_dict.get("Призупинити/продовжити відтворення", "").strip()
+            stop_hk = self.special_hotkeys_dict.get("Зупинити відтворення", "").strip()
+
+            global_actions: list[tuple[str, Any]] = [
+                ("F10", self._toggle_mute_hotkey),
+            ]
+            if pause_hk:
+                global_actions.append((pause_hk, self._toggle_pause))
+            else:
+                global_actions.append(("F8", self._toggle_pause))
+
+            if stop_hk:
+                global_actions.append((stop_hk, self._stop))
+            else:
+                global_actions.append(("F9", self._stop))
+
+            triggered: list[Any] = []
+            for hk_str, action in global_actions:
+                hk_upper = hk_str.upper()
+                if _is_hotkey_pressed_win32(hk_upper):
+                    active_now.add(hk_upper)
+                    if hk_upper not in prev_pressed and hk_upper not in still_waiting:
+                        triggered.append(action)
+                        self.after(0, action)
+
+            for idx, track in enumerate(list(self.local_tracks)):
+                hk = track.hotkey.strip().upper()
+                if not hk:
+                    continue
+                if _is_hotkey_pressed_win32(hk):
+                    active_now.add(hk)
+                    if hk not in prev_pressed and hk not in still_waiting:
+                        cb = lambda t=track, i=idx: self._trigger_hotkey_track(t, i)
+                        triggered.append(cb)
+                        self.after(0, cb)
+
+            with self._hotkey_lock:
+                newly_added = self._hotkeys_wait_release - wait_release_snapshot
+                self._hotkeys_wait_release = still_waiting | newly_added
+                self._pressed_hotkeys = active_now | self._hotkeys_wait_release
+            return triggered
+        except Exception:
+            return []
+
     def _poll_global_hotkeys(self) -> None:
         while not self._exiting:
             time.sleep(0.035)
-            if self._capturing_hotkey or not getattr(self, "_hotkeys_enabled", True):
-                continue
-            try:
-                active_now: set[str] = set()
-
-                pause_hk = self.special_hotkeys_dict.get("Призупинити/продовжити відтворення", "").strip()
-                stop_hk = self.special_hotkeys_dict.get("Зупинити відтворення", "").strip()
-
-                global_actions: list[tuple[str, Any]] = [
-                    ("F10", self._toggle_mute_hotkey),
-                ]
-                if pause_hk:
-                    global_actions.append((pause_hk, self._toggle_pause))
-                else:
-                    global_actions.append(("F8", self._toggle_pause))
-
-                if stop_hk:
-                    global_actions.append((stop_hk, self._stop))
-                else:
-                    global_actions.append(("F9", self._stop))
-
-                for hk_str, action in global_actions:
-                    hk_upper = hk_str.upper()
-                    if _is_hotkey_pressed_win32(hk_upper):
-                        active_now.add(hk_upper)
-                        if hk_upper not in self._pressed_hotkeys:
-                            self.after(0, action)
-
-                for idx, track in enumerate(list(self.local_tracks)):
-                    hk = track.hotkey.strip().upper()
-                    if not hk:
-                        continue
-                    if _is_hotkey_pressed_win32(hk):
-                        active_now.add(hk)
-                        if hk not in self._pressed_hotkeys:
-                            self.after(0, lambda t=track, i=idx: self._trigger_hotkey_track(t, i))
-
-                self._pressed_hotkeys = active_now
-            except Exception:
-                pass
+            self._poll_global_hotkeys_step()
 
     def _toggle_mute_hotkey(self) -> None:
         self.mic_muted.set(not self.mic_muted.get())
@@ -10269,8 +10047,6 @@ class MusicPadApp(tk.Tk):
         return "break"
 
     def _close(self) -> None:
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.dismiss(immediate=True)
         self._save_state()
         if not self.hide_to_tray.get():
             self._exit()
@@ -10283,15 +10059,12 @@ class MusicPadApp(tk.Tk):
                 self._tray_icon.notify("MusicPad працює у системному треї", "MusicPad")
             except Exception:
                 pass
-        self.notify_info("MusicPad працює у системному треї")
 
     def _exit(self) -> None:
         if self._exiting:
             return
         self._exiting = True
         self._save_state()
-        if hasattr(self, "notification_manager"):
-            self.notification_manager.destroy()
         if hasattr(self, "engine"):
             try:
                 self.engine.stop()
@@ -10311,6 +10084,12 @@ class MusicPadApp(tk.Tk):
             except Exception:
                 pass
         self._teardown_windows_hooks()
+        if getattr(self, "_instance_guard", None) is not None:
+            try:
+                self._instance_guard.release()
+            except Exception:
+                pass
+            self._instance_guard = None
         self.destroy()
 
 
@@ -10472,6 +10251,29 @@ def _parse_and_run_driver_cli(argv: list[str]) -> Optional[int]:
     return None
 
 
+def _parse_and_run_uninstall_cli(argv: list[str]) -> Optional[int]:
+    if len(argv) >= 2 and argv[1] == "--uninstall":
+        silent = "--silent" in argv[2:]
+        return run_windows_uninstall(silent=silent)
+    return None
+
+
+def _run_main_gui_single_instance(
+    guard_cls: type[SingleInstanceGuard] = SingleInstanceGuard,
+    notify_fn: Any = notify_already_running,
+) -> int:
+    guard = guard_cls()
+    if not guard.acquire():
+        guard.signal_existing_instance()
+        notify_fn()
+        return 0
+    try:
+        MusicPadApp(instance_guard=guard).mainloop()
+    finally:
+        guard.release()
+    return 0
+
+
 if __name__ == "__main__":
     check_unextracted_archive_guard()
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
@@ -10483,4 +10285,9 @@ if __name__ == "__main__":
         import os
 
         os._exit(driver_rc)
-    MusicPadApp().mainloop()
+    uninstall_rc = _parse_and_run_uninstall_cli(sys.argv)
+    if uninstall_rc is not None:
+        import os
+
+        os._exit(uninstall_rc)
+    _run_main_gui_single_instance()

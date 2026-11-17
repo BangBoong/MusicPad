@@ -1823,12 +1823,15 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 finally:
                     app._exit()
 
-    def test_notification_manager_and_speech_bubble_system(self) -> None:
-        # 1. Test polygon generation
-        pts = main._calculate_bubble_polygon(320, 86, 10, 288, 16, 12)
-        self.assertGreater(len(pts), 20)
-        # Tail tip should be present in polygon
-        self.assertIn((288.0, 84.0), [(round(x, 1), round(y, 1)) for x, y in pts])
+    def test_error_only_and_driver_notifications_without_speech_bubble(self) -> None:
+        # 1. Verify SpeechBubble / NotificationManager system is completely removed
+        for symbol in (
+            "_calculate_bubble_polygon",
+            "SpeechBubble",
+            "NotificationManager",
+            "NotificationStringVar",
+        ):
+            self.assertFalse(hasattr(main, symbol), f"{symbol} must be removed")
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg_file = Path(tmp) / "test_state.json"
@@ -1836,177 +1839,67 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 app = main.MusicPadApp()
                 try:
                     app.update()
-                    # 2. Verify removal of old status label and addition of btn_b_msg
                     self.assertFalse(hasattr(app, "status_label"))
-                    self.assertTrue(hasattr(app, "btn_b_msg"))
-                    self.assertTrue(hasattr(app, "bottom_bar_spacer"))
-                    self.assertTrue(hasattr(app, "notification_manager"))
-                    self.assertIsInstance(app.status_var, main.NotificationStringVar)
+                    self.assertFalse(hasattr(app, "btn_b_msg"))
+                    self.assertFalse(hasattr(app, "notification_manager"))
+                    self.assertFalse(hasattr(app, "_toggle_notification_bubble"))
+                    self.assertIs(type(app.status_var), main.tk.StringVar)
 
-                    nm = app.notification_manager
-                    self.assertEqual(nm._target_widget, app.btn_b_msg)
+                    # 2. Non-error notify_info and status_var writes stay silent (no dialogs)
+                    with patch("main.messagebox.showerror") as mock_err, \
+                         patch("main.messagebox.showinfo") as mock_info:
+                        app.notify_info("Налаштування застосовано!")
+                        app.notify("Інформаційне повідомлення", category="info")
+                        app.status_var.set("Дію скасовано.")
+                        app.update()
+                        self.assertEqual(app.status_var.get(), "Дію скасовано.")
+                        mock_err.assert_not_called()
+                        mock_info.assert_not_called()
 
-                    # 3. Test notify_info and notify_error
-                    app.notify_info("Налаштування застосовано!")
-                    app.update()
-                    self.assertEqual(nm.last_message, "Налаштування застосовано!")
-                    self.assertEqual(nm.last_category, "info")
-                    self.assertEqual(app.status_var.get(), "Налаштування застосовано!")
+                    # 3. Errors trigger messagebox.showerror with localized title
+                    with patch("main.messagebox.showerror") as mock_err:
+                        app.notify_error("Збій завантаження YouTube!")
+                        mock_err.assert_called_once()
+                        self.assertEqual(mock_err.call_args[0][0], "MusicPad — Помилка")
+                        self.assertEqual(mock_err.call_args[0][1], "Збій завантаження YouTube!")
+                        self.assertEqual(mock_err.call_args[1].get("parent"), app)
 
-                    bubble = nm.bubble
-                    self.assertEqual(bubble.current_message, "Налаштування застосовано!")
-                    self.assertEqual(bubble.current_category, "info")
-                    self.assertEqual(bubble.icon_label.cget("text"), "ℹ")
-                    self.assertEqual(bubble.text_label.cget("text"), "Налаштування застосовано!")
+                        app.lang_var.set("English")
+                        app._apply_language()
+                        app._show_error("Audio stream failed")
+                        self.assertEqual(mock_err.call_count, 2)
+                        self.assertEqual(mock_err.call_args[0][0], "MusicPad — Error")
+                        self.assertEqual(mock_err.call_args[0][1], "Audio stream failed")
 
-                    app.notify_error("Збій завантаження YouTube!")
-                    app.update()
-                    self.assertEqual(nm.last_message, "Збій завантаження YouTube!")
-                    self.assertEqual(nm.last_category, "error")
-                    self.assertEqual(app.status_var.get(), "Збій завантаження YouTube!")
-                    self.assertEqual(bubble.icon_label.cget("text"), "✕")
-
-                    # 4. Test backwards compatibility with status_var.set
-                    app.status_var.set("Дію скасовано.")
-                    app.update()
-                    self.assertEqual(nm.last_message, "Дію скасовано.")
-                    self.assertEqual(nm.last_category, "info")
-                    self.assertEqual(bubble.icon_label.cget("text"), "ℹ")
-
-                    app.status_var.set("Помилка аудіопотоку")
-                    app.update()
-                    self.assertEqual(nm.last_message, "Помилка аудіопотоку")
-                    self.assertEqual(nm.last_category, "error")
-                    self.assertEqual(bubble.icon_label.cget("text"), "✕")
-
-                    # Empty string does not trigger notification
-                    app.status_var.set("")
-                    self.assertEqual(nm.last_message, "Помилка аудіопотоку")
-
-                    # 5. Test theme adaptation (Dark vs Light)
-                    app.theme = "dark"
-                    bubble.set_theme("dark")
-                    bubble._redraw()
-                    dark_colors = bubble._get_colors()
-                    self.assertEqual(dark_colors["bubble_bg"], "#232323")
-                    self.assertEqual(dark_colors["text"], "#ffffff")
-
-                    app.theme = "light"
-                    bubble.set_theme("light")
-                    bubble._redraw()
-                    light_colors = bubble._get_colors()
-                    self.assertEqual(light_colors["bubble_bg"], "#ffffff")
-                    self.assertEqual(light_colors["text"], "#1a1a1a")
-
-                    app._apply_theme()
-                    self.assertEqual(bubble.theme, "light")
-
-                    # 6. Test toggle bubble via bottom-right message button
-                    nm.dismiss(immediate=True)
-                    app.update()
-                    self.assertFalse(nm.is_visible)
-
-                    app._toggle_notification_bubble()
-                    app.update()
-                    self.assertTrue(nm.is_visible)
-                    self.assertEqual(bubble.current_message, "Помилка аудіопотоку")
-
-                    app._toggle_notification_bubble()
-                    nm.dismiss(immediate=True)
-                    app.update()
-                    self.assertFalse(nm.is_visible)
-
-                    # 7. Test rapid notifications update (in-place text & category update without flicker)
-                    app.notify_info("Перше сповіщення")
-                    app.notify_info("Друге сповіщення")
-                    app.notify_error("Третє швидке сповіщення")
-                    app.update()
-                    self.assertEqual(bubble.current_message, "Третє швидке сповіщення")
-                    self.assertEqual(bubble.current_category, "error")
-                    # Alpha should remain 1.0 (no dimming/flickering to 0.25 on rapid update)
-                    self.assertAlmostEqual(float(bubble.attributes("-alpha")), 1.0, places=2)
-
-                    # 8. Test immediate click to dismiss
-                    bubble.hide_immediate()
-                    app.update()
-                    self.assertFalse(nm.is_visible)
-
-                    # 9. Test multi-monitor positioning with negative coordinates
-                    app.geometry("960x680+-1000+200")
-                    app.update()
-                    bubble._reposition()
-                    geom = bubble.geometry()
-                    self.assertTrue("+-" in geom or "320x86+-" in geom)
-
-                    # Restore normal geometry
-                    app.geometry("960x680+100+100")
-                    app.update()
-
-                    # 10. Test minimized / withdrawn state suppression (no floating ghost bubble)
+                    # 4. Suppressed when minimized / withdrawn to tray
                     app.withdraw()
-                    app.notify_info("Повідомлення у фоні")
-                    app.update()
-                    self.assertEqual(nm.last_message, "Повідомлення у фоні")
-                    self.assertFalse(nm.is_visible)
+                    with patch("main.messagebox.showerror") as mock_err:
+                        app.notify_error("Фонова помилка")
+                        mock_err.assert_not_called()
                     app.deiconify()
                     app.update()
 
-                    # 11. Test thread-safe notification from worker thread (both app.notify and status_var.set)
+                    # 5. Thread-safe notify_error from background worker marshals onto UI thread
                     bg_done = threading.Event()
+                    with patch("main.messagebox.showerror") as mock_err:
+                        def worker() -> None:
+                            app.notify_error("Помилка з потоку")
+                            bg_done.set()
 
-                    def worker() -> None:
-                        app.notify("Сповіщення з потоку", "info")
-                        app.status_var.set("Сповіщення через status_var з потоку")
-                        bg_done.set()
-
-                    t = threading.Thread(target=worker, daemon=True)
-                    t.start()
-                    t.join(timeout=2.0)
-                    self.assertTrue(bg_done.is_set())
-
-                    for _ in range(15):
+                        t = threading.Thread(target=worker, daemon=True)
+                        t.start()
+                        t.join(timeout=2.0)
+                        self.assertTrue(bg_done.is_set())
+                        app._drain_ui_queue()
                         app.update()
-                        if nm.last_message == "Сповіщення через status_var з потоку":
-                            break
-                        time.sleep(0.02)
-                    self.assertEqual(nm.last_message, "Сповіщення через status_var з потоку")
+                        mock_err.assert_called_once()
+                        self.assertEqual(mock_err.call_args[0][1], "Помилка з потоку")
 
-                    # 12. Test topmost synchronization with master window
-                    app.always_on_top_var.set(False)
-                    app._apply_settings()
-                    bubble._sync_topmost()
-                    self.assertFalse(bool(bubble.attributes("-topmost")))
-
-                    app.always_on_top_var.set(True)
-                    app._apply_settings()
-                    self.assertTrue(bool(bubble.attributes("-topmost")))
-
-                    app.always_on_top_var.set(False)
-                    app._apply_settings()
-                    self.assertFalse(bool(bubble.attributes("-topmost")))
-
-                    # 13. Test automatic hiding on master unmap and focus out
-                    app.notify_info("Тест приховування")
-                    app.update()
-                    self.assertTrue(nm.is_visible)
-
-                    # Trigger master unmap
-                    unmap_event = type("MockEvent", (), {"widget": app})()
-                    bubble._on_master_unmap(unmap_event)
-                    app.update()
-                    self.assertFalse(nm.is_visible)
-
-                    # Show bubble again and test focus out check
-                    app.notify_info("Тест фокусу")
-                    app.update()
-                    self.assertTrue(nm.is_visible)
-
-                    focus_event = type("MockEvent", (), {"widget": app})()
-                    with patch.object(app, "focus_get", return_value=None):
-                        bubble._on_master_focus_out(focus_event)
-                        time.sleep(0.2)
-                        app.update()
-                        self.assertFalse(nm.is_visible)
+                    # 6. Driver informational notices are preserved via messagebox.showinfo
+                    with patch("main.messagebox.showinfo") as mock_info:
+                        app._show_driver_info(app._tr("drv_installed_info"))
+                        mock_info.assert_called_once()
+                        self.assertEqual(mock_info.call_args[0][1], app._tr("drv_installed_info"))
                 finally:
                     app._exit()
 
@@ -2019,6 +1912,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app.update()
                     # 1. Dark Theme Initial Verification
                     self.assertEqual(app.theme, "dark")
+                    self.assertEqual(app._icon_path_for_theme().name, "musicpad_dark.png")
                     c_dark = app._get_theme_colors()
                     self.assertEqual(app.cget("bg"), c_dark["bg"])
                     self.assertEqual(app.top_bar.cget("bg"), c_dark["top_bg"])
@@ -2046,6 +1940,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app._toggle_theme()
                     app.update()
                     self.assertEqual(app.theme, "light")
+                    self.assertEqual(app._icon_path_for_theme().name, "musicpad_light.png")
                     c_light = app._get_theme_colors()
                     self.assertEqual(app.cget("bg"), "#f4f5f7")
                     self.assertEqual(app.top_bar.cget("bg"), "#eaedf1")
@@ -2241,6 +2136,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app._toggle_theme()
                     app.update()
                     self.assertEqual(app.theme, "light")
+                    self.assertEqual(app._icon_path_for_theme().name, "musicpad_light.png")
                     c_light = app._get_theme_colors()
                     self.assertEqual(app.info_panel.cget("bg"), c_light["info_bg"])
                     self.assertEqual(app.stats_frame.cget("bg"), c_light["info_bg"])
@@ -2260,6 +2156,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app._toggle_theme()
                     app.update()
                     self.assertEqual(app.theme, "dark")
+                    self.assertEqual(app._icon_path_for_theme().name, "musicpad_dark.png")
                     c_dark = app._get_theme_colors()
                     self.assertEqual(app.info_panel.cget("bg"), c_dark["info_bg"])
                     self.assertEqual(app.info_cat_name_lbl.cget("fg"), c_dark["fg"])
@@ -2521,6 +2418,74 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.btn_settings_cancel.cget("text"), "Cancel")
                     self.assertEqual(app.btn_settings_apply.cget("text"), "Apply")
 
+                    # Hotkeys tab translated to English
+                    self.assertEqual(app.grp_special_hotkeys.cget("text"), "Special hotkeys")
+                    self.assertEqual(app.special_hotkeys_tree.heading("action")["text"], "Action")
+                    self.assertEqual(app.special_hotkeys_tree.heading("shortcut")["text"], "Shortcut")
+                    self.assertEqual(app.btn_set_special_hotkey.cget("text"), "Set hotkey")
+                    self.assertEqual(app.btn_clear_special_hotkey.cget("text"), "Clear")
+                    hk_items_en = app.special_hotkeys_tree.get_children()
+                    hk_actions_en = [app.special_hotkeys_tree.item(it, "values")[0] for it in hk_items_en]
+                    self.assertEqual(
+                        hk_actions_en,
+                        [
+                            "Stop playback",
+                            "Pause/resume playback",
+                            "Undo",
+                            "Copy",
+                            "Paste",
+                            "Delete selected entries",
+                            "Search",
+                            "Exit",
+                        ],
+                    )
+                    # Setting/clearing while in English updates canonical dict cleanly
+                    app.special_hotkeys_tree.selection_set(hk_items_en[0])
+                    with patch("tkinter.Toplevel") as mock_top:
+                        captured_cb = {}
+                        fake_dlg = MagicMock()
+                        fake_dlg.bind = lambda evt, cb: captured_cb.update({evt: cb})
+                        mock_top.return_value = fake_dlg
+                        app._set_special_hotkey()
+                        ev_f7 = MagicMock()
+                        ev_f7.keysym = "F7"
+                        ev_f7.keycode = 0x76
+                        ev_f7.state = 0
+                        captured_cb["<KeyPress>"](ev_f7)
+                    self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "F7")
+                    self.assertEqual(app.special_hotkeys_tree.item(hk_items_en[0], "values")[0], "Stop playback")
+                    self.assertEqual(app.special_hotkeys_tree.item(hk_items_en[0], "values")[1], "F7")
+                    app.special_hotkeys_tree.selection_set(hk_items_en[0])
+                    app._clear_special_hotkey()
+                    self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "")
+
+                    # Devices tab translated to English
+                    self.assertEqual(app.g_routing_mode.cget("text"), "Routing Mode & MusicPad Driver")
+                    self.assertEqual(app.rad_routing_injection.cget("text"), "Microphone Injection (recommended, no VB-Cable)")
+                    self.assertEqual(app.rad_routing_cable.cget("text"), "Virtual Cable (fallback mode)")
+                    self.assertEqual(app.btn_install_driver.cget("text"), "Install driver (UAC)")
+                    self.assertEqual(app.btn_repair_driver.cget("text"), "Repair driver (UAC)")
+                    self.assertEqual(app.btn_uninstall_driver.cget("text"), "Uninstall driver (UAC)")
+                    self.assertEqual(app.g_mic.cget("text"), "1. Target Microphone (Input)")
+                    self.assertEqual(app.g_track.cget("text"), "2. Track / Audio Source (Input)")
+                    self.assertEqual(app.g_hp.cget("text"), "3. Monitoring (Headphones) [Output]")
+                    self.assertEqual(app.g_virtual_cable.cget("text"), "4. Virtual Cable (Discord mix) [Output]")
+                    self.assertEqual(app.chk_check_device_config.cget("text"), "Check device configuration on launch")
+                    self.assertEqual(app.btn_refresh_devices.cget("text"), "⟳ Refresh list")
+                    self.assertEqual(app.track_source_var.get(), main.DEFAULT_TRACK_SOURCE_EN)
+                    with patch.object(
+                        main,
+                        "get_driver_status",
+                        return_value=DriverStatus(
+                            state="active",
+                            installed_endpoint_guid="{1}",
+                            target_endpoint_guid="{1}",
+                            reason="Драйвер активний",
+                        ),
+                    ):
+                        app._refresh_driver_status(notify_on_issue=False)
+                        self.assertEqual(app.driver_status_var.get(), "Driver active")
+
                     # 3. Switch back to Ukrainian
                     app.lang_var.set("Українська")
                     app._apply_settings()
@@ -2531,7 +2496,142 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertIn("Редагування", menu_btn_texts_uk)
                     self.assertEqual(app.track_list.heading("title")["text"], "Тег")
                     self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
+                    self.assertEqual(app.grp_special_hotkeys.cget("text"), "Спеціальні гарячі клавіші")
+                    self.assertEqual(app.g_routing_mode.cget("text"), "Режим маршрутизації та Драйвер MusicPad")
+                    self.assertEqual(app.track_source_var.get(), main.DEFAULT_TRACK_SOURCE)
                     self.assertEqual(app.status_var.get(), "Налаштування збережено та застосовано.")
+                finally:
+                    app._exit()
+
+    def test_assign_hotkey_does_not_trigger_until_key_released(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_hk_guard.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    track = main.LocalTrack(title="Kick", path=str(Path(tmp) / "kick.wav"), duration=1.5)
+                    app.local_tracks = [track]
+                    app._filter_tracks()
+                    first_iid = app.track_list.get_children()[0]
+                    app.track_list.selection_set(first_iid)
+
+                    # 1. Assign F1 to track while F1 stays held down physically
+                    pressed_state = {"F1": False, "F9": False}
+                    with patch.object(
+                        main,
+                        "_is_hotkey_pressed_win32",
+                        side_effect=lambda hk: pressed_state.get(hk.upper(), False),
+                    ), patch("tkinter.Toplevel") as mock_top:
+                        captured_cb = {}
+                        fake_dlg = MagicMock()
+                        fake_dlg.bind = lambda evt, cb: captured_cb.update({evt: cb})
+                        mock_top.return_value = fake_dlg
+
+                        app._assign_hotkey_dialog()
+                        self.assertIn("<KeyPress>", captured_cb)
+
+                        pressed_state["F1"] = True
+                        ev_f1 = MagicMock()
+                        ev_f1.keysym = "F1"
+                        ev_f1.keycode = 0x70
+                        ev_f1.state = 0
+                        res = captured_cb["<KeyPress>"](ev_f1)
+                        self.assertEqual(res, "break")
+                        self.assertEqual(track.hotkey, "F1")
+
+                        # Key still held down across multiple poll ticks -> must NOT trigger playback
+                        with patch.object(app, "_play_local_track") as mock_play:
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            self.assertFalse(mock_play.called)
+
+                            # Key released -> poll sees release
+                            pressed_state["F1"] = False
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            self.assertFalse(mock_play.called)
+
+                            # Fresh press after release -> MUST trigger playback once
+                            pressed_state["F1"] = True
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            self.assertEqual(mock_play.call_count, 1)
+
+                    # 2. Assign F9 to "Зупинити відтворення" in Settings -> Hotkeys while F9 stays held down
+                    app._open_settings()
+                    app.update()
+                    items = app.special_hotkeys_tree.get_children()
+                    app.special_hotkeys_tree.selection_set(items[0])
+
+                    pressed_state["F1"] = False
+                    pressed_state["F9"] = False
+                    with patch.object(
+                        main,
+                        "_is_hotkey_pressed_win32",
+                        side_effect=lambda hk: pressed_state.get(hk.upper(), False),
+                    ), patch("tkinter.Toplevel") as mock_top:
+                        captured_cb = {}
+                        fake_dlg = MagicMock()
+                        fake_dlg.bind = lambda evt, cb: captured_cb.update({evt: cb})
+                        mock_top.return_value = fake_dlg
+
+                        app._set_special_hotkey()
+                        pressed_state["F9"] = True
+                        ev_f9 = MagicMock()
+                        ev_f9.keysym = "F9"
+                        ev_f9.keycode = 0x78
+                        ev_f9.state = 0
+                        res = captured_cb["<KeyPress>"](ev_f9)
+                        self.assertEqual(res, "break")
+                        self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "F9")
+
+                        with patch.object(app, "_stop") as mock_stop:
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            self.assertFalse(mock_stop.called)
+
+                            pressed_state["F9"] = False
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            self.assertFalse(mock_stop.called)
+
+                            pressed_state["F9"] = True
+                            app._poll_global_hotkeys_step()
+                            app.update()
+                            self.assertEqual(mock_stop.call_count, 1)
+
+                    # 3. Assign Space to Pause/Resume and verify Tk dispatch guard suppresses immediately until KeyRelease
+                    app.special_hotkeys_tree.selection_set(items[1])
+                    with patch("tkinter.Toplevel") as mock_top:
+                        captured_cb = {}
+                        fake_dlg = MagicMock()
+                        fake_dlg.bind = lambda evt, cb: captured_cb.update({evt: cb})
+                        mock_top.return_value = fake_dlg
+                        app._set_special_hotkey()
+                        ev_space = MagicMock()
+                        ev_space.keysym = "space"
+                        ev_space.keycode = 0x20
+                        ev_space.state = 0
+                        captured_cb["<KeyPress>"](ev_space)
+
+                    with patch.object(app, "_toggle_pause") as mock_pause:
+                        res = app._dispatch_tk_hotkey("Space", app._toggle_pause)
+                        self.assertEqual(res, "break")
+                        self.assertFalse(mock_pause.called)
+
+                        # Simulate KeyRelease of Space -> next press works
+                        ev_rel = MagicMock()
+                        ev_rel.keysym = "space"
+                        ev_rel.keycode = 0x20
+                        ev_rel.state = 0
+                        app._on_hotkey_key_release(ev_rel)
+                        app._dispatch_tk_hotkey("Space", app._toggle_pause)
+                        self.assertEqual(mock_pause.call_count, 1)
                 finally:
                     app._exit()
 
@@ -3013,6 +3113,15 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 Path(rep["cache_dir"]),
                 Path(main.__file__).resolve().parent / ".cache" / "youtube",
             )
+            if onedir_exe.is_file():
+                from musicpad.version import resolve_build_version
+
+                bundled_ver = onedir_exe.parent / "_internal" / "VERSION"
+                self.assertTrue(bundled_ver.is_file(), "Compiled onedir bundle missing _internal/VERSION")
+                self.assertEqual(
+                    bundled_ver.read_text(encoding="utf-8").strip(),
+                    resolve_build_version(Path(main.__file__).resolve().parent),
+                )
 
     def test_ffmpeg_and_ffprobe_embedding_and_workflow(self) -> None:
         import sys
@@ -3219,12 +3328,15 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
 
                     # Test UAC helper install callback (mocked)
                     with patch("main.messagebox.askyesno", return_value=True), patch(
+                        "main.messagebox.showinfo"
+                    ) as mock_info, patch(
                         "main.run_driver_helper_uac", return_value=(True, "OK")
                     ) as mock_uac:
                         app._install_driver_uac_action()
                         mock_uac.assert_called_once_with(
                             "install", "{547a2ef2-a5b3-44d4-a876-1b6a52c704c8}"
                         )
+                        mock_info.assert_called_once()
 
                     app._save_state()
                     self.assertTrue(cfg_file.is_file())
@@ -3660,10 +3772,11 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     app.update()
 
                     # 1. Verify icons exist in _icons
-                    for icon_name in ("play", "pause", "stop", "prev", "next", "btn_h", "ff", "chat", "note_cover_40"):
+                    for icon_name in ("play", "pause", "stop", "prev", "next", "btn_h", "ff", "note_cover_40"):
                         self.assertIn(icon_name, app._icons, f"Icon {icon_name} must exist in app._icons")
                         self.assertIsNotNone(app._icons[icon_name])
                     self.assertNotIn("btn_a", app._icons)
+                    self.assertNotIn("chat", app._icons)
 
                     # 2. Verify toolbar and bottom bar buttons have image configured
                     self.assertTrue(bool(app.btn_tb_stop.cget("image")), "Stop button must have an icon image")
@@ -3673,7 +3786,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertFalse(hasattr(app, "btn_b_a"), "Auto-keys A button must be removed")
                     self.assertFalse(hasattr(app, "auto_keys_enabled"), "auto_keys_enabled must be removed")
                     self.assertTrue(bool(app.btn_b_ff.cget("image")), "FF button must have an icon image")
-                    self.assertTrue(bool(app.btn_b_msg.cget("image")), "Chat button must have an icon image")
+                    self.assertFalse(hasattr(app, "btn_b_msg"), "Chat speech bubble button must be removed")
                     self.assertTrue(bool(app.btn_b_play.cget("image")), "Play button must have an icon image")
 
                     # 3. Check idle now playing display: cover is hidden so title is centered
@@ -4486,6 +4599,25 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     # 3. Loop button alias
                     self.assertIs(app.btn_b_loop, app.btn_tb_loop)
 
+                    # Loop icon switches between disabled ('loop') and enabled ('loop_on' with center dot)
+                    self.assertIn("loop", app._icons)
+                    self.assertIn("loop_on", app._icons)
+                    self.assertNotEqual(str(app._icons["loop"]), str(app._icons["loop_on"]))
+                    loop_off_img = main.ImageTk.getimage(app._icons["loop"])
+                    loop_on_img = main.ImageTk.getimage(app._icons["loop_on"])
+                    self.assertEqual(loop_off_img.size, (14, 14))
+                    self.assertEqual(loop_on_img.size, (14, 14))
+                    self.assertLess(loop_off_img.getpixel((7, 7))[3], 20)
+                    self.assertGreater(loop_on_img.getpixel((7, 7))[3], 128)
+                    self.assertEqual(str(app.btn_tb_loop.cget("image")), str(app._icons["loop"]))
+
+                    app._toggle_loop()
+                    self.assertTrue(app.loop_enabled.get())
+                    self.assertEqual(str(app.btn_tb_loop.cget("image")), str(app._icons["loop_on"]))
+
+                    app._refresh_icon_buttons()
+                    self.assertEqual(str(app.btn_tb_loop.cget("image")), str(app._icons["loop_on"]))
+
                     # 4. Elements ordering in top_bar
                     tb_children = app.top_bar.winfo_children()
                     p_idx = tb_children.index(app.pause_button)
@@ -4498,6 +4630,17 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertTrue(p_idx < s_idx < pr_idx < n_idx < sep_idx < t_idx < sk_idx)
                 finally:
                     app._exit()
+
+                # Startup reload with loop_enabled=True displays 'loop_on' icon immediately
+                app2 = main.MusicPadApp()
+                try:
+                    self.assertTrue(app2.loop_enabled.get())
+                    self.assertEqual(str(app2.btn_tb_loop.cget("image")), str(app2._icons["loop_on"]))
+                    app2._toggle_loop()
+                    self.assertFalse(app2.loop_enabled.get())
+                    self.assertEqual(str(app2.btn_tb_loop.cget("image")), str(app2._icons["loop"]))
+                finally:
+                    app2._exit()
 
     def test_mute_track_to_others_broadcast_and_persistence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4564,33 +4707,6 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(app.lbl_np_artist.cget("text"), "")
                 finally:
                     app._exit()
-
-    def test_speech_bubble_suppressed_for_playing_track(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg_file = Path(tmp) / "state_bubble_suppress.json"
-            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
-                app = main.MusicPadApp()
-                try:
-                    # Mock bubble.show
-                    bubble = app.notification_manager.bubble
-                    with patch.object(bubble, "show") as mock_show:
-                        # 1. Playing notification via notify_info
-                        app.notify_info("Відтворюється: Song A")
-                        mock_show.assert_not_called()
-
-                        # 2. Playing notification via status_var
-                        app.status_var.set("Відтворюється: Song B")
-                        mock_show.assert_not_called()
-
-                        app.status_var.set("Зараз грає: Song C")
-                        mock_show.assert_not_called()
-
-                        # 3. Non-playback notifications should still show
-                        app.status_var.set("Дію скасовано.")
-                        mock_show.assert_called_once_with("Дію скасовано.", "info")
-                finally:
-                    app._exit()
-
 
     def test_btn_wrench_placed_to_the_right_of_clear_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5381,7 +5497,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
             ]
 
             with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
-                with patch("main.list_capture_endpoints", return_value=active_eps):
+                with patch("main.list_capture_endpoints", return_value=active_eps), patch("main.messagebox.showerror"):
                     app = main.MusicPadApp()
                     try:
                         resolved = app._resolve_selected_mic_guid()
@@ -5718,6 +5834,332 @@ class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
                         self.assertEqual(app.yt_tree.selection(), ("2",))
                 finally:
                     app._exit()
+
+
+class TestWindowsUninstall(unittest.TestCase):
+    def test_register_and_unregister_windows_uninstall_hkcu(self) -> None:
+        import winreg
+        from musicpad.windows_uninstall import (
+            estimate_dir_size_kb,
+            is_safe_uninstall_dir,
+            register_windows_uninstall,
+            unregister_windows_uninstall,
+        )
+
+        test_subkey = r"Software\MusicPad_Test_Uninstall_Unit"
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp) / "MusicPad"
+            (app_dir / "_internal").mkdir(parents=True)
+            (app_dir / ".cache").mkdir(parents=True)
+            fake_exe = app_dir / "MusicPad.exe"
+            fake_exe.write_bytes(b"M" * 4096)
+            (app_dir / "_internal" / "lib.dll").write_bytes(b"D" * 8192)
+            # .cache is excluded from EstimatedSize
+            (app_dir / ".cache" / "big_audio.m4a").write_bytes(b"A" * 1024 * 1024)
+
+            self.assertTrue(is_safe_uninstall_dir(app_dir))
+            self.assertFalse(is_safe_uninstall_dir(Path(main.__file__).resolve().parent))
+            self.assertEqual(estimate_dir_size_kb(app_dir), 12)
+
+            # Unfrozen runs must not register
+            self.assertFalse(
+                register_windows_uninstall(exe_path=fake_exe, is_frozen=False, reg_subkey=test_subkey)
+            )
+
+            try:
+                from musicpad.version import get_app_version
+
+                ok = register_windows_uninstall(exe_path=fake_exe, is_frozen=True, reg_subkey=test_subkey)
+                self.assertTrue(ok)
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, test_subkey, 0, winreg.KEY_READ) as k:
+                    self.assertEqual(winreg.QueryValueEx(k, "DisplayName")[0], "MusicPad")
+                    self.assertEqual(winreg.QueryValueEx(k, "DisplayVersion")[0], get_app_version())
+                    self.assertEqual(winreg.QueryValueEx(k, "InstallLocation")[0], str(app_dir.resolve()))
+                    self.assertEqual(winreg.QueryValueEx(k, "DisplayIcon")[0], f"{fake_exe.resolve()},0")
+                    self.assertEqual(winreg.QueryValueEx(k, "UninstallString")[0], f'"{fake_exe.resolve()}" --uninstall')
+                    self.assertEqual(
+                        winreg.QueryValueEx(k, "QuietUninstallString")[0],
+                        f'"{fake_exe.resolve()}" --uninstall --silent',
+                    )
+                    self.assertEqual(winreg.QueryValueEx(k, "NoModify")[0], 1)
+                    self.assertEqual(winreg.QueryValueEx(k, "NoRepair")[0], 1)
+                    self.assertEqual(winreg.QueryValueEx(k, "EstimatedSize")[0], 12)
+            finally:
+                self.assertTrue(unregister_windows_uninstall(reg_subkey=test_subkey))
+                with self.assertRaises(FileNotFoundError):
+                    winreg.OpenKey(winreg.HKEY_CURRENT_USER, test_subkey, 0, winreg.KEY_READ)
+
+    def test_detect_ui_prefs_and_run_windows_uninstall_flows(self) -> None:
+        from musicpad.windows_uninstall import detect_uninstall_ui_prefs, run_windows_uninstall
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp) / "MusicPad"
+            app_dir.mkdir(parents=True)
+            fake_exe = app_dir / "MusicPad.exe"
+            fake_exe.write_bytes(b"exe")
+            prog_data = Path(tmp) / "ProgramData_MusicPad"
+            prog_data.mkdir()
+            (prog_data / "injection.bin").write_bytes(b"123")
+
+            state_file = app_dir / "state.json"
+            state_file.write_text(json.dumps({"language": "en", "theme": "light"}), encoding="utf-8")
+            self.assertEqual(detect_uninstall_ui_prefs(state_path=state_file), ("en", "light"))
+            self.assertEqual(
+                detect_uninstall_ui_prefs(state_path=app_dir / "missing.json", ui_lang_id=0x22),
+                ("uk", "dark"),
+            )
+
+            # 1. Unfrozen run fails safely
+            with patch("musicpad.windows_uninstall._show_error_box") as err_box:
+                self.assertEqual(run_windows_uninstall(silent=False, exe_path=fake_exe, is_frozen=False), 1)
+                err_box.assert_called_once()
+
+            # 2. Cancelled confirmation leaves everything intact
+            close_mock = MagicMock()
+            uac_mock = MagicMock()
+            unreg_mock = MagicMock(return_value=True)
+            cleanup_mock = MagicMock()
+            rc_cancel = run_windows_uninstall(
+                silent=False,
+                exe_path=fake_exe,
+                is_frozen=True,
+                driver_present_fn=lambda: True,
+                run_driver_uac_fn=uac_mock,
+                confirm_fn=lambda *_a: (False, False),
+                close_instances_fn=close_mock,
+                unregister_fn=unreg_mock,
+                spawn_cleanup_fn=cleanup_mock,
+                program_data_dir=prog_data,
+            )
+            self.assertEqual(rc_cancel, 0)
+            close_mock.assert_not_called()
+            uac_mock.assert_not_called()
+            unreg_mock.assert_not_called()
+            cleanup_mock.assert_not_called()
+            self.assertTrue(prog_data.exists())
+
+            # 3. Cancelled/failed driver UAC aborts before unregistering or deleting files
+            with patch("musicpad.windows_uninstall._show_error_box") as err_box:
+                rc_drv_fail = run_windows_uninstall(
+                    silent=False,
+                    exe_path=fake_exe,
+                    is_frozen=True,
+                    driver_present_fn=lambda: True,
+                    run_driver_uac_fn=lambda act: (False, "UAC cancelled"),
+                    confirm_fn=lambda *_a: (True, False),
+                    close_instances_fn=close_mock,
+                    unregister_fn=unreg_mock,
+                    spawn_cleanup_fn=cleanup_mock,
+                    program_data_dir=prog_data,
+                )
+            self.assertEqual(rc_drv_fail, 1)
+            err_box.assert_called_once()
+            close_mock.assert_called_once_with(fake_exe.resolve())
+            unreg_mock.assert_not_called()
+            cleanup_mock.assert_not_called()
+            self.assertTrue(prog_data.exists())
+
+            # 4. Successful uninstall closes instances, runs driver uninstall, deletes ProgramData, unregisters & cleans up
+            close_mock.reset_mock()
+            uac_calls: list[str] = []
+            rc_ok = run_windows_uninstall(
+                silent=False,
+                exe_path=fake_exe,
+                is_frozen=True,
+                driver_present_fn=lambda: True,
+                run_driver_uac_fn=lambda act: (uac_calls.append(act) or True, "OK"),
+                confirm_fn=lambda *_a: (True, True),
+                close_instances_fn=close_mock,
+                unregister_fn=unreg_mock,
+                spawn_cleanup_fn=cleanup_mock,
+                program_data_dir=prog_data,
+            )
+            self.assertEqual(rc_ok, 0)
+            self.assertEqual(uac_calls, ["uninstall"])
+            close_mock.assert_called_once_with(fake_exe.resolve())
+            self.assertFalse(prog_data.exists())
+            unreg_mock.assert_called_once()
+            cleanup_mock.assert_called_once_with(app_dir.resolve(), True)
+
+            # 5. CLI dispatcher routes --uninstall and --silent
+            with patch("main.run_windows_uninstall", return_value=0) as cli_uninst:
+                self.assertEqual(main._parse_and_run_uninstall_cli(["MusicPad.exe", "--uninstall"]), 0)
+                cli_uninst.assert_called_once_with(silent=False)
+            with patch("main.run_windows_uninstall", return_value=0) as cli_silent:
+                self.assertEqual(main._parse_and_run_uninstall_cli(["MusicPad.exe", "--uninstall", "--silent"]), 0)
+                cli_silent.assert_called_once_with(silent=True)
+
+    def test_spawn_cleanup_script_removes_install_dir_and_honors_keep_cache(self) -> None:
+        import warnings
+        from musicpad.windows_uninstall import spawn_cleanup_script
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Case A: keep_cache=False deletes entire folder (with spaces + Unicode path)
+            dir_full = Path(tmp) / "Музика (App)" / "MusicPad"
+            (dir_full / "_internal").mkdir(parents=True)
+            (dir_full / ".cache").mkdir(parents=True)
+            (dir_full / "MusicPad.exe").write_bytes(b"exe")
+            (dir_full / "_internal" / "dep.dll").write_bytes(b"dll")
+            (dir_full / ".cache" / "musicpad_state.json").write_text("{}", encoding="utf-8")
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                script_full = spawn_cleanup_script(dir_full, keep_cache=False, wait_pid=999991)
+                self.assertIsNotNone(script_full)
+                deadline = time.monotonic() + 8.0
+                while (dir_full.exists() or script_full.exists()) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertFalse(dir_full.exists())
+                self.assertFalse(script_full.exists())
+
+                # Case B: keep_cache=True removes app binaries while keeping .cache intact
+                dir_keep = Path(tmp) / "KeepCache" / "MusicPad"
+                (dir_keep / "_internal").mkdir(parents=True)
+                (dir_keep / ".cache").mkdir(parents=True)
+                (dir_keep / "MusicPad.exe").write_bytes(b"exe")
+                (dir_keep / "_internal" / "dep.dll").write_bytes(b"dll")
+                saved_state = dir_keep / ".cache" / "musicpad_state.json"
+                saved_state.write_text('{"language":"en"}', encoding="utf-8")
+
+                script_keep = spawn_cleanup_script(dir_keep, keep_cache=True, wait_pid=999992)
+                self.assertIsNotNone(script_keep)
+                deadline = time.monotonic() + 8.0
+                while (
+                    (dir_keep / "MusicPad.exe").exists()
+                    or (dir_keep / "_internal").exists()
+                    or script_keep.exists()
+                ) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertFalse((dir_keep / "MusicPad.exe").exists())
+                self.assertFalse((dir_keep / "_internal").exists())
+                self.assertTrue(saved_state.is_file())
+                self.assertFalse(script_keep.exists())
+
+    def test_release_version_resolution_and_normalization(self) -> None:
+        from musicpad.version import (
+            get_app_version,
+            normalize_release_version,
+            parse_numeric_version_tuple,
+            resolve_build_version,
+        )
+
+        self.assertEqual(normalize_release_version("v1.6.4"), "1.6.4")
+        self.assertEqual(normalize_release_version("V0.2.1-beta"), "0.2.1-beta")
+        self.assertEqual(normalize_release_version("main"), "1.6.4")
+        self.assertEqual(parse_numeric_version_tuple("1.6.4"), (1, 6, 4, 0))
+        self.assertEqual(parse_numeric_version_tuple("0.2.1-beta"), (0, 2, 1, 0))
+
+        # CI tag env overrides git tag; non-version branch ref falls back to git tag
+        repo_root = Path(main.__file__).resolve().parent
+        self.assertEqual(resolve_build_version(repo_root, env={"GITHUB_REF_NAME": "v2.0.1"}), "2.0.1")
+        self.assertEqual(
+            resolve_build_version(repo_root, env={"MUSICPAD_VERSION": "v1.7.0", "GITHUB_REF_NAME": "v1.6.4"}),
+            "1.7.0",
+        )
+        branch_ver = resolve_build_version(repo_root, env={"GITHUB_REF_NAME": "main"})
+        self.assertEqual(branch_ver, get_app_version())
+
+        # Bundled _MEIPASS/VERSION takes priority when present
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "VERSION").write_text("v9.8.7\n", encoding="utf-8")
+            with patch.object(main.sys, "_MEIPASS", tmp, create=True):
+                self.assertEqual(get_app_version(), "9.8.7")
+
+
+class TestSingleInstance(unittest.TestCase):
+    def test_win32_mutex_lock_and_wakeup_event(self) -> None:
+        from musicpad.single_instance import (
+            SingleInstanceGuard,
+            get_already_running_message,
+            notify_already_running,
+        )
+
+        suffix = f"{os.getpid()}_{int(time.time() * 1000)}"
+        mutex_name = f"Local\\MusicPadTestMutex_{suffix}"
+        event_name = f"Local\\MusicPadTestEvent_{suffix}"
+
+        g1 = SingleInstanceGuard(mutex_name=mutex_name, event_name=event_name)
+        g2 = SingleInstanceGuard(mutex_name=mutex_name, event_name=event_name)
+        woke = threading.Event()
+        try:
+            self.assertTrue(g1.acquire())
+            g1.start_wakeup_listener(woke.set)
+
+            # Second guard sees primary instance and signals wakeup event
+            self.assertFalse(g2.acquire())
+            self.assertTrue(g2.signal_existing_instance())
+            self.assertTrue(woke.wait(timeout=2.0))
+        finally:
+            g1.release()
+
+        # Once g1 released mutex, g2 can acquire
+        try:
+            self.assertTrue(g2.acquire())
+        finally:
+            g2.release()
+
+        # Localized already-running message and MessageBoxW call
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "state.json"
+            state_file.write_text('{"language":"en"}', encoding="utf-8")
+            msg_en = get_already_running_message(state_path=state_file)
+            self.assertIn("already running", msg_en)
+
+            state_file.write_text('{"language":"uk"}', encoding="utf-8")
+            msg_uk = get_already_running_message(state_path=state_file)
+            self.assertIn("вже запущено", msg_uk)
+
+            with patch("ctypes.windll.user32.MessageBoxW") as mb_mock:
+                notify_already_running(state_path=state_file, show_dialog=True)
+                mb_mock.assert_called_once()
+                self.assertEqual(mb_mock.call_args[0][1], msg_uk)
+
+    def test_duplicate_launch_restores_tray_window_and_skips_second_app(self) -> None:
+        from musicpad.single_instance import SingleInstanceGuard
+
+        suffix = f"{os.getpid()}_{int(time.time() * 1000)}"
+        mutex_name = f"Local\\MusicPadAppTestMutex_{suffix}"
+        event_name = f"Local\\MusicPadAppTestEvent_{suffix}"
+
+        guard_primary = SingleInstanceGuard(mutex_name=mutex_name, event_name=event_name)
+        self.assertTrue(guard_primary.acquire())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp(instance_guard=guard_primary)
+                try:
+                    app.update()
+                    app.withdraw()
+                    app.update()
+                    self.assertEqual(str(app.state()), "withdrawn")
+
+                    # Duplicate launch tries same guard -> blocked, signals tray window restore, shows message
+                    guard_second = SingleInstanceGuard(mutex_name=mutex_name, event_name=event_name)
+                    self.assertFalse(guard_second.acquire())
+                    self.assertTrue(guard_second.signal_existing_instance())
+
+                    deadline = time.monotonic() + 2.5
+                    while str(app.state()) != "normal" and time.monotonic() < deadline:
+                        app.update()
+                        time.sleep(0.03)
+                    self.assertEqual(str(app.state()), "normal")
+                finally:
+                    app._exit()
+
+        # Verify _run_main_gui_single_instance exits early without creating MusicPadApp
+        fake_guard = MagicMock()
+        fake_guard.acquire.return_value = False
+        fake_notify = MagicMock()
+        with patch.object(main, "MusicPadApp") as app_cls_mock:
+            rc = main._run_main_gui_single_instance(
+                guard_cls=lambda: fake_guard,  # type: ignore[arg-type]
+                notify_fn=fake_notify,
+            )
+        self.assertEqual(rc, 0)
+        fake_guard.signal_existing_instance.assert_called_once()
+        fake_notify.assert_called_once()
+        app_cls_mock.assert_not_called()
 
 
 if __name__ == "__main__":

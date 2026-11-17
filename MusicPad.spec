@@ -1,7 +1,61 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 import shutil
+import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo,
+    StringFileInfo,
+    StringStruct,
+    StringTable,
+    VSVersionInfo,
+    VarFileInfo,
+    VarStruct,
+)
+
+if SPECPATH not in sys.path:
+    sys.path.insert(0, SPECPATH)
+
+from musicpad.version import parse_numeric_version_tuple, resolve_build_version
+
+app_version = resolve_build_version(Path(SPECPATH))
+ver_tuple = parse_numeric_version_tuple(app_version)
+version_file = Path(SPECPATH) / "build" / "VERSION"
+version_file.parent.mkdir(parents=True, exist_ok=True)
+version_file.write_text(app_version, encoding="utf-8")
+
+pe_version_info = VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=ver_tuple,
+        prodvers=ver_tuple,
+        mask=0x3F,
+        flags=0x0,
+        OS=0x40004,
+        fileType=0x1,
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo(
+            [
+                StringTable(
+                    "040904B0",
+                    [
+                        StringStruct("CompanyName", "MusicPad"),
+                        StringStruct("FileDescription", "MusicPad"),
+                        StringStruct("FileVersion", app_version),
+                        StringStruct("InternalName", "MusicPad"),
+                        StringStruct("OriginalFilename", "MusicPad.exe"),
+                        StringStruct("ProductName", "MusicPad"),
+                        StringStruct("ProductVersion", app_version),
+                    ],
+                )
+            ]
+        ),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)
 
 ytmusicapi_datas = collect_data_files('ytmusicapi')
 
@@ -65,7 +119,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=ffmpeg_binaries + native_binaries,
-    datas=[('assets', 'assets'), ('assets/musicpad.png', '.')] + ytmusicapi_datas + deepfilter_datas,
+    datas=[('assets', 'assets'), ('assets/musicpad.png', '.'), (str(version_file.resolve()), '.')] + ytmusicapi_datas + deepfilter_datas,
     hiddenimports=['wave', 'queue', 'pystray._win32', 'deepfilternet_slim', 'musicpad.deepfilter_engine'],
     hookspath=[],
     hooksconfig={},
@@ -93,6 +147,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets/musicpad.ico'] if os.path.exists('assets/musicpad.ico') else ['musicpad.ico'],
+    version=pe_version_info,
 )
 
 coll = COLLECT(

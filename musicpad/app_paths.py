@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -104,3 +105,34 @@ def get_app_root_dir(executable: Optional[str] = None, is_frozen: Optional[bool]
 
     # Case 3: standard release / portable folder
     return exe_dir
+
+
+def detect_saved_ui_prefs(
+    state_path: Optional[Path] = None,
+    ui_lang_id: Optional[int] = None,
+) -> tuple[str, str]:
+    """Return ``(lang, theme)`` from saved ``musicpad_state.json`` or Windows UI language."""
+    lang: Optional[str] = None
+    theme = "dark"
+    cfg_file = state_path or (get_app_root_dir() / ".cache" / "musicpad_state.json")
+    if cfg_file.is_file():
+        try:
+            data = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if data.get("language") in ("uk", "en"):
+                lang = str(data["language"])
+            if data.get("theme") in ("dark", "light"):
+                theme = str(data["theme"])
+        except Exception:
+            pass
+
+    if lang is None:
+        if ui_lang_id is None and sys.platform == "win32":
+            try:
+                import ctypes
+
+                ui_lang_id = int(ctypes.windll.kernel32.GetUserDefaultUILanguage())
+            except Exception:
+                ui_lang_id = 1033
+        lang = "uk" if ((ui_lang_id or 1033) & 0xFF) == 0x22 else "en"
+
+    return lang, theme

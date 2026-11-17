@@ -1273,6 +1273,9 @@ def uninstall_driver() -> None:
                 BACKUP_FILE.unlink()
             except OSError:
                 pass
+
+        if DATA_DIR.is_dir():
+            shutil.rmtree(DATA_DIR, ignore_errors=True)
     finally:
         _start_audio_services()
 
