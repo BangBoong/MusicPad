@@ -1058,9 +1058,15 @@ class AudioEngine:
         wet: float = 1.0,
         on_complete: Optional[Callable[[bool, Optional[str]], None]] = None,
     ) -> None:
+        new_enabled = bool(enabled)
+        new_wet = max(0.0, min(1.0, float(wet)))
         with self._lock:
-            self._deepfilter_enabled = bool(enabled)
-            self._deepfilter_wet = max(0.0, min(1.0, float(wet)))
+            changed = (
+                self._deepfilter_enabled != new_enabled
+                or abs(self._deepfilter_wet - new_wet) > 1e-6
+            )
+            self._deepfilter_enabled = new_enabled
+            self._deepfilter_wet = new_wet
             needs_load = (
                 self._deepfilter_enabled
                 and not self._deepfilter_engine.is_available
@@ -1070,7 +1076,7 @@ class AudioEngine:
                 self._deepfilter_loading = True
                 self._deepfilter_load_error = None
             if on_complete:
-                if self._deepfilter_engine.is_available:
+                if self._deepfilter_engine.is_available or not self._deepfilter_enabled:
                     try:
                         on_complete(True, None)
                     except Exception:
@@ -1078,7 +1084,8 @@ class AudioEngine:
                 else:
                     self._deepfilter_callbacks.append(on_complete)
 
-        self._sync_voice_control_to_shm()
+        if changed or needs_load:
+            self._sync_voice_control_to_shm()
 
         if needs_load:
             def _on_engine_loaded(success: bool, err: Optional[str]) -> None:
@@ -1099,14 +1106,24 @@ class AudioEngine:
             self._deepfilter_engine.load_model_async(_on_engine_loaded)
 
     def set_white_noise_removal(self, enabled: bool) -> None:
+        new_val = bool(enabled)
         with self._lock:
-            self._white_noise_removal = bool(enabled)
+            if self._white_noise_removal == new_val:
+                return
+            self._white_noise_removal = new_val
         self._sync_voice_control_to_shm()
 
     def set_voice_boost(self, enabled: bool, gain_db: float = 0.0) -> None:
+        new_enabled = bool(enabled)
+        new_db = max(0.0, min(24.0, float(gain_db)))
         with self._lock:
-            self._voice_boost_enabled = bool(enabled)
-            self._voice_boost_db = max(0.0, min(24.0, float(gain_db)))
+            if (
+                self._voice_boost_enabled == new_enabled
+                and abs(self._voice_boost_db - new_db) <= 1e-6
+            ):
+                return
+            self._voice_boost_enabled = new_enabled
+            self._voice_boost_db = new_db
         self._sync_voice_control_to_shm()
 
     def set_blocksize(self, blocksize: int) -> None:
@@ -2258,6 +2275,18 @@ class AudioEngine:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _elevate_current_thread_priority() -> bool:
+        """Raise the calling OS thread priority on Windows so audio outpaces UI bursts."""
+        if os.name != "nt":
+            return False
+        try:
+            k32 = ctypes.windll.kernel32
+            # THREAD_PRIORITY_HIGHEST = 2
+            return bool(k32.SetThreadPriority(k32.GetCurrentThread(), 2))
+        except Exception:
+            return False
+
     def _run(self) -> None:
         stream: Optional[Any] = None
         monitor_stream: Optional[Any] = None
@@ -2266,6 +2295,15 @@ class AudioEngine:
         mic_channels = 0
         notified_finished = False
         last_pos_notify = 0.0
+        prev_switch_interval: Optional[float] = None
+
+        self._elevate_current_thread_priority()
+        try:
+            prev_switch_interval = sys.getswitchinterval()
+            if prev_switch_interval > 0.001:
+                sys.setswitchinterval(0.001)
+        except Exception:
+            prev_switch_interval = None
 
         try:
             self._devices_dirty.clear()
@@ -2595,6 +2633,11 @@ class AudioEngine:
                 except Exception:
                     pass
             self._decode_thread = None
+            if prev_switch_interval is not None:
+                try:
+                    sys.setswitchinterval(prev_switch_interval)
+                except Exception:
+                    pass
             with self._lock:
                 self._process = None
                 self._stream = None

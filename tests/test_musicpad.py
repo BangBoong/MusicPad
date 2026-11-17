@@ -771,6 +771,65 @@ class TestAudioEngineUnit(unittest.TestCase):
                         cached_path = AudioEngine.fetch_thumbnail("https://example.com/img.jpg", "mock_vid_1")
                         self.assertEqual(path, cached_path)
 
+    def test_audio_worker_thread_priority_switch_interval_and_unchanged_setters(self) -> None:
+        import ctypes
+        import os
+        import sys
+
+        orig_interval = sys.getswitchinterval()
+        observed_intervals: list[float] = []
+        observed_priorities: list[int] = []
+
+        def fake_out_stream(*args: Any, **kwargs: Any) -> MagicMock:
+            observed_intervals.append(sys.getswitchinterval())
+            if os.name == "nt":
+                k32 = ctypes.windll.kernel32
+                observed_priorities.append(int(k32.GetThreadPriority(k32.GetCurrentThread())))
+            m = MagicMock()
+            m.write = lambda _data: time.sleep(0.01)
+            return m
+
+        engine = AudioEngine(output_device=1)
+        try:
+            with patch("musicpad.audio_engine.sd.RawOutputStream", side_effect=fake_out_stream):
+                engine.set_input_device(None)
+                with patch.object(engine, "_sync_voice_control_to_shm") as mock_sync:
+                    engine.set_white_noise_removal(False)
+                    engine.set_voice_boost(False, 0.0)
+                    engine.set_deepfilter_state(False, 1.0)
+                    self.assertEqual(mock_sync.call_count, 0)
+
+                    engine.set_white_noise_removal(True)
+                    engine.set_white_noise_removal(True)
+                    self.assertEqual(mock_sync.call_count, 1)
+
+                engine.set_routing_mode(engine.routing_mode)
+                engine.set_output_device(1)
+                engine.set_monitor_device(None)
+                self.assertFalse(engine._devices_dirty.is_set())
+
+                with patch.object(engine, "check_ffmpeg", return_value=True), patch(
+                    "musicpad.audio_engine.subprocess.Popen"
+                ) as mock_popen:
+                    fake_proc = MagicMock()
+                    fake_proc.poll.return_value = None
+                    fake_proc.stdout.read.side_effect = [b"\x01\x00" * 512, b""]
+                    mock_popen.return_value = fake_proc
+
+                    engine.play("song.mp3")
+                    deadline = time.monotonic() + 2.0
+                    while not observed_intervals and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(observed_intervals)
+                    self.assertLessEqual(observed_intervals[0], 0.001)
+                    if os.name == "nt":
+                        self.assertTrue(observed_priorities)
+                        self.assertGreaterEqual(observed_priorities[0], 2)
+        finally:
+            engine.stop()
+
+        self.assertAlmostEqual(sys.getswitchinterval(), orig_interval, places=5)
+
 
 class TestMusicPadAppGUI(unittest.TestCase):
     def test_app_startup_controls_and_hotkeys(self) -> None:
@@ -1232,6 +1291,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 try:
                     self.assertEqual(len(app.local_tracks), 1)
                     self.assertEqual(app.local_tracks[0].title, "valid")
+                    app._flush_pending_save()
                     saved_after = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertEqual(len(saved_after["tracks"]), 1)
                     self.assertEqual(saved_after["tracks"][0]["title"], "valid")
@@ -1556,6 +1616,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(audio_lfs[0].cget("text"), "Нормалізація гучності")
 
                     # Check Tab 2: Hotkeys table
+                    app.settings_notebook.select(3)
+                    app.update()
                     hk_items = app.special_hotkeys_tree.get_children()
                     self.assertEqual(len(hk_items), 8)
                     first_action = app.special_hotkeys_tree.item(hk_items[0], 'values')[0]
@@ -1563,6 +1625,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertTrue(app.auto_stop_var.get())
 
                     # Check Tab 3: Interface controls
+                    app.settings_notebook.select(4)
+                    app.update()
                     self.assertEqual(app.lang_var.get(), 'За замовчуванням')
                     self.assertEqual(app.tb_style_var.get(), 'Темний')
                     self.assertEqual(app.pos_refresh_rate_var.get(), 60)
@@ -1571,6 +1635,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertTrue(app.remember_playback_state_var.get())
 
                     # Check Tab 4: Devices (4 separate ComboBoxes)
+                    app.settings_notebook.select(5)
+                    app.update()
                     self.assertTrue(hasattr(app, 'combo_phys_mic'))
                     self.assertTrue(hasattr(app, 'combo_track_source'))
                     self.assertTrue(hasattr(app, 'combo_headphones'))
@@ -1620,6 +1686,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # 2. Open settings and verify widget
                     app._open_settings()
+                    app.settings_notebook.select(4)
                     app.update()
                     self.assertTrue(hasattr(app, "chk_hide_to_tray"))
                     self.assertEqual(app.chk_hide_to_tray.cget("text"), "Ховати в трей при закритті")
@@ -1678,6 +1745,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app._apply_language()
                     if hasattr(app, "_open_settings"):
                         app._open_settings()
+                        app.settings_notebook.select(4)
+                        app.update_idletasks()
                         self.assertEqual(app.chk_hide_to_tray.cget("text"), "Hide to tray on close")
                         app._close_settings_dialog()
                 finally:
@@ -1691,6 +1760,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 try:
                     app.update()
                     app._open_settings()
+                    app.settings_notebook.select(3)
                     app.update()
 
                     # 1. Verify 8 special hotkey items exist in tree
@@ -1754,6 +1824,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # 5. Verify config saving and loading ignores obsolete keys
                     app._save_state()
+                    app._flush_pending_save()
                     raw_data = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertNotIn("numpad_alt", raw_data.get("settings_custom", {}))
                     self.assertNotIn("auto_keys", raw_data.get("settings_custom", {}))
@@ -1776,6 +1847,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 try:
                     app.update()
                     app._open_settings()
+                    app.settings_notebook.select(5)
                     app.update()
 
                     # Verify 4 device comboboxes
@@ -1804,6 +1876,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                         app.monitor_var.set(mon_choice)
 
                     app._apply_settings()
+                    app._flush_pending_save()
 
                     # Verify persistence in config file
                     self.assertTrue(cfg_file.is_file())
@@ -1965,6 +2038,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # ComboBox in Settings verifies light listbox popup
                     app._open_settings()
+                    app.settings_notebook.select(5)
                     app.update()
                     cb = app.combo_track_source
                     app.tk.eval(f"ttk::combobox::PopdownWindow {cb}")
@@ -2306,6 +2380,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 try:
                     app.update()
                     app._open_settings()
+                    app.settings_notebook.select(4)
                     app.update()
 
                     # 1. Group 1: General (formerly "Мова")
@@ -2404,6 +2479,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                         tab_names,
                         ["Audio", "Noise Suppression", "Voice Boost", "Hotkeys", "Interface", "Devices"],
                     )
+                    nb.select(4)
+                    app.update()
                     self.assertEqual(app.grp_general.cget("text"), "General")
                     self.assertEqual(app.lbl_lang.cget("text"), "Language: ")
                     self.assertEqual(app.grp_toolbar.cget("text"), "Toolbar")
@@ -2419,6 +2496,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.btn_settings_apply.cget("text"), "Apply")
 
                     # Hotkeys tab translated to English
+                    nb.select(3)
+                    app.update()
                     self.assertEqual(app.grp_special_hotkeys.cget("text"), "Special hotkeys")
                     self.assertEqual(app.special_hotkeys_tree.heading("action")["text"], "Action")
                     self.assertEqual(app.special_hotkeys_tree.heading("shortcut")["text"], "Shortcut")
@@ -2460,6 +2539,8 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     self.assertEqual(app.special_hotkeys_dict["Зупинити відтворення"], "")
 
                     # Devices tab translated to English
+                    nb.select(5)
+                    app.update()
                     self.assertEqual(app.g_routing_mode.cget("text"), "Routing Mode & MusicPad Driver")
                     self.assertEqual(app.rad_routing_injection.cget("text"), "Microphone Injection (recommended, no VB-Cable)")
                     self.assertEqual(app.rad_routing_cable.cget("text"), "Virtual Cable (fallback mode)")
@@ -2562,6 +2643,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
 
                     # 2. Assign F9 to "Зупинити відтворення" in Settings -> Hotkeys while F9 stays held down
                     app._open_settings()
+                    app.settings_notebook.select(3)
                     app.update()
                     items = app.special_hotkeys_tree.get_children()
                     app.special_hotkeys_tree.selection_set(items[0])
@@ -2696,6 +2778,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                     app1.is_paused = True
                     app1.remember_playback_state_var.set(True)
                     app1._save_state()
+                    app1._flush_pending_save()
 
                     # Inspect JSON written to disk
                     saved_data = json.loads(cfg_file.read_text(encoding="utf-8"))
@@ -2725,6 +2808,7 @@ class TestMusicPadAppGUI(unittest.TestCase):
                         # Part 2: If unchecked, clean default state
                         app2.remember_playback_state_var.set(False)
                         app2._save_state()
+                        app2._flush_pending_save()
                         saved_data2 = json.loads(cfg_file.read_text(encoding="utf-8"))
                         self.assertIsNone(saved_data2["playback_state"])
                     finally:
@@ -3076,6 +3160,434 @@ class TestMusicPadAppGUI(unittest.TestCase):
                 finally:
                     app._exit()
 
+    def test_settings_draft_apply_only_lifecycle_and_skip_redundant_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_draft.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    with patch.object(app, "_apply_language", wraps=app._apply_language) as spy_lang, patch.object(
+                        app, "_apply_theme", wraps=app._apply_theme
+                    ) as spy_theme:
+                        # 1. Opening Settings skips _apply_language and starts with Apply disabled
+                        app._open_settings()
+                        app.update()
+                        self.assertEqual(spy_lang.call_count, 0)
+                        self.assertEqual(str(app.btn_settings_apply.cget("state")), "disabled")
+
+                        # 2. Mutating Voice FX, Normalization, Hotkey, and Language in draft must NOT apply live
+                        app.settings_notebook.select(1)  # Noise Reduction
+                        app.update()
+                        app.deepfilter_enabled_var.set(True)
+                        app.white_noise_removal_var.set(True)
+                        # Simulate clicking checkbutton commands directly if bound
+                        nr_checks = [
+                            w
+                            for lf in app.tab_noise_reduction.winfo_children()
+                            if isinstance(lf, main.ttk.LabelFrame)
+                            for w in lf.winfo_children()
+                            if isinstance(w, main.ttk.Checkbutton)
+                        ]
+                        for chk in nr_checks:
+                            chk.invoke()
+                            chk.invoke()
+                        app.settings_notebook.select(2)  # Voice Boost
+                        app.update()
+                        app.voice_boost_enabled_var.set(True)
+                        app.voice_boost_db_var.set(8.0)
+
+                        app.settings_notebook.select(3)  # Hotkeys
+                        app.update()
+                        hk_items = app.special_hotkeys_tree.get_children()
+                        app.special_hotkeys_tree.selection_set(hk_items[1])  # Pause/Resume ("Space")
+                        app._clear_special_hotkey()
+
+                        app.settings_notebook.select(4)  # Interface
+                        app.update()
+                        app.lang_var.set("English")
+                        app.norm_volume_val.set("91,0 дБ")
+                        app.update()
+
+                        self.assertEqual(str(app.btn_settings_apply.cget("state")), "normal")
+                        self.assertFalse(app.engine.deepfilter_enabled)
+                        self.assertFalse(app.engine.white_noise_removal)
+                        self.assertFalse(app.engine.voice_boost_enabled)
+                        self.assertEqual(app.cat_title_lbl.cget("text"), "Мої звуки")
+                        self.assertEqual(spy_lang.call_count, 0)
+
+                        # 3. Cancel discards all draft changes
+                        app._cancel_settings()
+                        app.update()
+                        self.assertFalse(app._settings_window.winfo_viewable())
+                        self.assertFalse(app.deepfilter_enabled_var.get())
+                        self.assertFalse(app.white_noise_removal_var.get())
+                        self.assertFalse(app.voice_boost_enabled_var.get())
+                        self.assertEqual(app.norm_volume_val.get(), "89,0 дБ")
+                        self.assertEqual(app.lang_var.get(), "За замовчуванням")
+                        self.assertEqual(app.special_hotkeys_dict["Призупинити/продовжити відтворення"], "Space")
+
+                        # 4. Reopen, change only Voice FX (no language/theme change), and Apply
+                        app._open_settings()
+                        app.update()
+                        self.assertEqual(str(app.btn_settings_apply.cget("state")), "disabled")
+                        app.settings_notebook.select(1)
+                        app.update()
+                        app.white_noise_removal_var.set(True)
+                        app.settings_notebook.select(2)
+                        app.update()
+                        app.voice_boost_enabled_var.set(True)
+                        app.voice_boost_db_var.set(6.0)
+                        app.update()
+                        self.assertEqual(str(app.btn_settings_apply.cget("state")), "normal")
+
+                        app._apply_settings()
+                        app.update()
+                        self.assertEqual(spy_lang.call_count, 0)
+                        self.assertEqual(spy_theme.call_count, 0)
+                        self.assertTrue(app.engine.white_noise_removal)
+                        self.assertTrue(app.engine.voice_boost_enabled)
+                        self.assertAlmostEqual(app.engine.voice_boost_db, 6.0)
+                        self.assertEqual(str(app.btn_settings_apply.cget("state")), "disabled")
+
+                        # 5. Reset modifies draft only (not live status or engine) until Cancel/Apply, and OK commits Theme + closes
+                        app.status_var.set("Steady status")
+                        app._reset_settings_to_defaults()
+                        self.assertFalse(app.white_noise_removal_var.get())
+                        self.assertTrue(app.engine.white_noise_removal)
+                        self.assertEqual(app.status_var.get(), "Steady status")
+                        app._cancel_settings()
+                        self.assertTrue(app.white_noise_removal_var.get())
+                        self.assertTrue(app.engine.white_noise_removal)
+
+                        app._open_settings()
+                        app.settings_notebook.select(4)
+                        app.update()
+                        app.tb_style_var.set("Світлий")
+                        self.assertEqual(app.theme, "dark")
+                        app._ok_settings()
+                        app.update()
+                        self.assertFalse(app._settings_window.winfo_viewable())
+                        self.assertEqual(app.theme, "light")
+                        self.assertEqual(spy_theme.call_count, 1)
+                finally:
+                    app._exit()
+
+    def test_devices_and_routing_deferred_until_apply_and_cancel_discards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_dev_draft.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app.output_map = {"Out A (0)": 0, "Out B (1)": 1}
+                    app.input_map = {"Mic A (2)": 2, "Mic B (3)": 3}
+                    app.monitor_map = {"(Без моніторингу)": None, "Mon A (0)": 0, "Mon B (1)": 1}
+                    app.output_var.set("Out A (0)")
+                    app.mix_mic_var.set("Mic A (2)")
+                    app.input_var.set("Mic A (2)")
+                    app.monitor_var.set("Mon A (0)")
+                    app.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+                    app._commit_settings_snapshot()
+
+                    app._open_settings()
+                    app.settings_notebook.select(5)  # Devices tab
+                    app.update()
+
+                    with patch.object(app.engine, "set_output_device", wraps=app.engine.set_output_device) as spy_out, patch.object(
+                        app.engine, "set_monitor_device", wraps=app.engine.set_monitor_device
+                    ) as spy_mon, patch.object(
+                        app.engine, "set_routing_mode", wraps=app.engine.set_routing_mode
+                    ) as spy_mode, patch.object(
+                        app, "_save_state", wraps=app._save_state
+                    ) as spy_save:
+                        # Changing devices and routing in draft updates UI preview only
+                        app.routing_mode_var.set(ROUTING_MODE_INJECTION)
+                        app._on_routing_mode_changed()
+                        self.assertEqual(str(app.cb_settings_cable.cget("state")), "disabled")
+                        app.output_var.set("Out B (1)")
+                        app._output_changed()
+                        app.monitor_var.set("Mon B (1)")
+                        app._monitor_changed()
+                        app.mix_mic_var.set("Mic B (3)")
+                        app._mix_mic_changed()
+                        app.update()
+
+                        self.assertEqual(spy_out.call_count, 0)
+                        self.assertEqual(spy_mon.call_count, 0)
+                        self.assertEqual(spy_mode.call_count, 0)
+                        self.assertEqual(spy_save.call_count, 0)
+                        self.assertEqual(str(app.btn_settings_apply.cget("state")), "normal")
+
+                        # Cancel reverts all device/routing draft changes
+                        app._cancel_settings()
+                        app.update()
+                        self.assertEqual(app.routing_mode_var.get(), ROUTING_MODE_VIRTUAL_CABLE)
+                        self.assertEqual(app.output_var.get(), "Out A (0)")
+                        self.assertEqual(app.monitor_var.get(), "Mon A (0)")
+                        self.assertEqual(app.mix_mic_var.get(), "Mic A (2)")
+                        self.assertEqual(spy_out.call_count, 0)
+                        self.assertEqual(spy_mon.call_count, 0)
+                        self.assertEqual(spy_mode.call_count, 0)
+
+                        # Reopen, change only monitor device, Apply -> only set_monitor_device fires
+                        app._open_settings()
+                        app.update()
+                        app.monitor_var.set("Mon B (1)")
+                        app._apply_settings()
+                        app.update()
+                        spy_mon.assert_called_once_with(1)
+                        self.assertEqual(spy_out.call_count, 0)
+                        self.assertEqual(spy_mode.call_count, 0)
+                        self.assertEqual(spy_save.call_count, 1)
+                finally:
+                    app._exit()
+
+    def test_lazy_settings_tabs_and_caching_across_open_and_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_lazy_tabs.json"
+            with patch.object(main.MusicPadApp, "_config_path", return_value=cfg_file):
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app._open_settings()
+                    app.update()
+
+                    # Only tab 0 (Audio) is built on first open; tabs 1..5 are unbuilt
+                    self.assertGreater(len(app.tab_audio.winfo_children()), 0)
+                    self.assertEqual(len(app.tab_noise_reduction.winfo_children()), 0)
+                    self.assertEqual(len(app.tab_voice_boost.winfo_children()), 0)
+                    self.assertEqual(len(app.tab_hotkeys.winfo_children()), 0)
+                    self.assertEqual(len(app.tab_interface.winfo_children()), 0)
+                    self.assertEqual(len(app.tab_devices.winfo_children()), 0)
+
+                    initial_audio_child = str(app.tab_audio.winfo_children()[0])
+
+                    # Switching to Interface builds only Interface (Devices stays unbuilt)
+                    app.settings_notebook.select(4)
+                    app.update()
+                    self.assertGreater(len(app.tab_interface.winfo_children()), 0)
+                    self.assertEqual(len(app.tab_devices.winfo_children()), 0)
+                    initial_iface_child = str(app.tab_interface.winfo_children()[0])
+
+                    # Close & reopen + Apply without language change preserves built widgets
+                    app._cancel_settings()
+                    app._open_settings()
+                    app.update()
+                    self.assertEqual(str(app.tab_audio.winfo_children()[0]), initial_audio_child)
+                    self.assertEqual(str(app.tab_interface.winfo_children()[0]), initial_iface_child)
+                    self.assertEqual(len(app.tab_devices.winfo_children()), 0)
+
+                    app.remember_playback_state_var.set(False)
+                    app._apply_settings()
+                    app.update()
+                    self.assertEqual(str(app.tab_audio.winfo_children()[0]), initial_audio_child)
+                    self.assertEqual(str(app.tab_interface.winfo_children()[0]), initial_iface_child)
+                    self.assertEqual(len(app.tab_devices.winfo_children()), 0)
+
+                    # Language change rebuilds built tabs in English; unvisited Devices builds in English on visit
+                    app.lang_var.set("English")
+                    app._apply_settings()
+                    app.update()
+                    self.assertEqual(len(app.tab_devices.winfo_children()), 0)
+                    self.assertEqual(app.grp_general.cget("text"), "General")
+
+                    app.settings_notebook.select(5)
+                    app.update()
+                    self.assertGreater(len(app.tab_devices.winfo_children()), 0)
+                    self.assertEqual(app.g_routing_mode.cget("text"), "Routing Mode & MusicPad Driver")
+                finally:
+                    app._exit()
+
+    def test_async_driver_status_refresh_devices_and_coalesced_save(self) -> None:
+        devs_initial = [
+            {"index": 0, "name": "Headphones A", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0, "default_samplerate": 48000.0},
+            {"index": 1, "name": "Mic One", "max_input_channels": 2, "max_output_channels": 0, "hostapi": 0, "default_samplerate": 48000.0},
+            {"index": 2, "name": "Mic Two", "max_input_channels": 2, "max_output_channels": 0, "hostapi": 0, "default_samplerate": 48000.0},
+        ]
+        devs_refreshed = devs_initial + [
+            {"index": 3, "name": "Refreshed Mic", "max_input_channels": 2, "max_output_channels": 0, "hostapi": 0, "default_samplerate": 48000.0},
+        ]
+        ep1 = CaptureEndpoint(
+            guid="{guid-mic-1}",
+            endpoint_name="Mic One",
+            adapter_name="USB Audio 1",
+            enhancements_enabled=True,
+            exclusive_allowed=False,
+            efx_clsid="",
+        )
+        ep2 = CaptureEndpoint(
+            guid="{guid-mic-2}",
+            endpoint_name="Mic Two",
+            adapter_name="USB Audio 2",
+            enhancements_enabled=True,
+            exclusive_allowed=False,
+            efx_clsid="",
+        )
+
+        gate_mic1 = threading.Event()
+        mic1_entered = threading.Event()
+        mic2_done = threading.Event()
+        dev_gate = threading.Event()
+        dev_entered = threading.Event()
+        current_devs = [devs_initial]
+        status_threads: list[int] = []
+        dev_threads: list[int] = []
+
+        def fake_list_eps() -> list[CaptureEndpoint]:
+            return [ep1, ep2]
+
+        def fake_match(label: str, endpoints: list[CaptureEndpoint]):
+            if "Mic Two" in label:
+                return ep2
+            return ep1
+
+        def gated_driver_status(target_guid: str) -> DriverStatus:
+            status_threads.append(threading.get_ident())
+            if target_guid == ep1.guid:
+                mic1_entered.set()
+                gate_mic1.wait(timeout=2.0)
+                return DriverStatus(
+                    state="not_installed",
+                    installed_endpoint_guid="",
+                    target_endpoint_guid=ep1.guid,
+                    reason="Stale Mic One Not Installed",
+                )
+            st = DriverStatus(
+                state="active",
+                installed_endpoint_guid=ep2.guid,
+                target_endpoint_guid=ep2.guid,
+                reason="Fresh Mic Two Active",
+            )
+            mic2_done.set()
+            return st
+
+        def gated_list_devices() -> list[dict]:
+            if len(current_devs[0]) > 3:
+                dev_threads.append(threading.get_ident())
+                dev_entered.set()
+                dev_gate.wait(timeout=2.0)
+            return list(current_devs[0])
+
+        main_tid = threading.get_ident()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "state_async_io.json"
+            with patch.object(AudioEngine, "list_devices", side_effect=gated_list_devices), patch.object(
+                AudioEngine, "find_cable_output", return_value=None
+            ), patch.object(
+                AudioEngine, "find_physical_mic", return_value=1
+            ), patch.object(
+                AudioEngine, "find_default_monitor", return_value=0
+            ), patch(
+                "main.list_capture_endpoints", side_effect=fake_list_eps
+            ), patch(
+                "main.find_endpoint_for_sounddevice", side_effect=fake_match
+            ), patch(
+                "main.get_driver_status", side_effect=gated_driver_status
+            ), patch.object(
+                main.MusicPadApp, "_config_path", return_value=cfg_file
+            ), patch.object(
+                main.MusicPadApp, "_is_mocked_env", return_value=False
+            ), patch.object(
+                main.MusicPadApp, "_start_hotkey_listener"
+            ), patch.object(
+                AudioEngine, "_start_worker"
+            ), patch(
+                "main.messagebox.showerror"
+            ):
+                gate_mic1.set()  # Allow initial startup sync calls
+                app = main.MusicPadApp()
+                try:
+                    app.update()
+                    app._open_settings()
+                    gate_mic1.clear()
+                    status_threads.clear()
+                    app.settings_notebook.select(5)
+                    app.update()
+
+                    # 1. Changing draft Target Microphone updates Driver Status asynchronously with staleness guard
+                    mic1_entered.clear()
+                    mic2_done.clear()
+                    app.mix_mic_var.set("Mic One (1)")
+                    app._mix_mic_changed()  # Returns immediately before gate_mic1 is set!
+                    self.assertTrue(mic1_entered.wait(timeout=1.5))
+
+                    app.mix_mic_var.set("Mic Two (2)")
+                    app._mix_mic_changed()
+                    self.assertTrue(mic2_done.wait(timeout=1.5))
+                    time.sleep(0.05)
+                    app._drain_ui_queue()
+                    self.assertIn("Fresh Mic Two Active", app.driver_status_var.get())
+                    self.assertTrue(all(tid != main_tid for tid in status_threads))
+
+                    # Release stale Mic One -> must NOT overwrite Fresh Mic Two Active
+                    gate_mic1.set()
+                    time.sleep(0.05)
+                    app._drain_ui_queue()
+                    self.assertIn("Fresh Mic Two Active", app.driver_status_var.get())
+
+                    # 2. Refresh Devices runs off main thread and updates dropdowns without restarting engine streams
+                    current_devs[0] = devs_refreshed
+                    with patch.object(app.engine, "set_output_device") as spy_out, patch.object(
+                        app.engine, "set_monitor_device"
+                    ) as spy_mon, patch.object(app.engine, "stop") as spy_stop:
+                        app.btn_refresh_devices.invoke()
+                        self.assertTrue(dev_entered.wait(timeout=1.5))
+                        self.assertNotIn("Refreshed Mic (3)", list(app.combo_phys_mic["values"]))
+                        dev_gate.set()
+                        deadline = time.time() + 1.5
+                        while time.time() < deadline and "Refreshed Mic (3)" not in list(app.combo_phys_mic["values"]):
+                            app._drain_ui_queue()
+                            time.sleep(0.02)
+                        self.assertIn("Refreshed Mic (3)", list(app.combo_phys_mic["values"]))
+                        self.assertTrue(all(tid != main_tid for tid in dev_threads))
+                        self.assertEqual(spy_out.call_count, 0)
+                        self.assertEqual(spy_mon.call_count, 0)
+                        self.assertEqual(spy_stop.call_count, 0)
+
+                    # 3. _save_state() snapshots on UI thread, serializes & replaces atomically off main thread,
+                    # coalesces rapid saves, and _exit() flushes synchronously
+                    write_gate = threading.Event()
+                    first_write_started = threading.Event()
+                    write_threads: list[int] = []
+                    counts_written: list[int] = []
+                    orig_atomic = main.MusicPadApp._write_state_atomic
+
+                    def wrapped_atomic(self_app, target_path, data):
+                        write_threads.append(threading.get_ident())
+                        counts_written.append(int(data.get("playback_count", -1)))
+                        if len(counts_written) == 1:
+                            first_write_started.set()
+                            write_gate.wait(timeout=2.0)
+                        orig_atomic(self_app, target_path, data)
+
+                    with patch.object(main.MusicPadApp, "_write_state_atomic", wrapped_atomic):
+                        app.playback_count = 101
+                        app._save_state()
+                        self.assertTrue(first_write_started.wait(timeout=1.5))
+
+                        app.playback_count = 102
+                        app._save_state()
+                        app.playback_count = 103
+                        app._save_state()
+                        self.assertTrue(all(tid != main_tid for tid in write_threads))
+
+                        write_gate.set()
+                        app._flush_pending_save()
+                        self.assertEqual(counts_written[-1], 103)
+                        self.assertLessEqual(len(counts_written), 2)
+                        saved_json = json.loads(cfg_file.read_text(encoding="utf-8"))
+                        self.assertEqual(saved_json.get("playback_count"), 103)
+
+                        # Exit flushes final state synchronously
+                        app.playback_count = 204
+                        app._exit()
+                        saved_after_exit = json.loads(cfg_file.read_text(encoding="utf-8"))
+                        self.assertEqual(saved_after_exit.get("playback_count"), 204)
+                finally:
+                    if not getattr(app, "_exiting", False):
+                        app._exit()
+
     def test_compiled_exe_window_and_self_test(self) -> None:
         import subprocess
 
@@ -3317,13 +3829,17 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertEqual(app.routing_mode_var.get(), ROUTING_MODE_VIRTUAL_CABLE)
 
                     app._open_settings()
-                    app.update_idletasks()
+                    app.settings_notebook.select(5)
+                    app.update()
                     self.assertTrue(hasattr(app, "cb_settings_cable"))
 
-                    # Switch to injection mode -> cable combobox becomes disabled
+                    # Switch to injection mode -> cable combobox becomes disabled in draft UI,
+                    # while engine remains virtual_cable until Apply is clicked
                     app.routing_mode_var.set(ROUTING_MODE_INJECTION)
                     app._on_routing_mode_changed()
                     self.assertEqual(str(app.cb_settings_cable.cget("state")), "disabled")
+                    self.assertEqual(app._ensure_engine().routing_mode, ROUTING_MODE_VIRTUAL_CABLE)
+                    app._apply_settings()
                     self.assertEqual(app._ensure_engine().routing_mode, ROUTING_MODE_INJECTION)
 
                     # Test UAC helper install callback (mocked)
@@ -3339,6 +3855,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                         mock_info.assert_called_once()
 
                     app._save_state()
+                    app._flush_pending_save()
                     self.assertTrue(cfg_file.is_file())
                     saved_data = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertEqual(saved_data.get("routing_mode"), ROUTING_MODE_INJECTION)
@@ -3410,13 +3927,13 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertFalse(app.voice_boost_enabled_var.get())
                     self.assertEqual(app.voice_boost_db_var.get(), 0.0)
 
-                    # Toggle on and change parameters via live _on_voice_fx_changed
+                    # Toggle on and change parameters -> must NOT apply until _apply_settings()
                     app.deepfilter_enabled_var.set(True)
                     app.deepfilter_wet_var.set(75.0)
                     app.white_noise_removal_var.set(True)
                     app.voice_boost_enabled_var.set(True)
                     app.voice_boost_db_var.set(6.0)
-                    app._on_voice_fx_changed()
+                    app._apply_settings()
 
                     self.assertTrue(app.engine.deepfilter_enabled)
                     self.assertAlmostEqual(app.engine.deepfilter_wet, 0.75)
@@ -3426,6 +3943,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
 
                     # Persist state
                     app._save_state()
+                    app._flush_pending_save()
                     saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                     sc = saved.get("settings_custom", {})
                     self.assertTrue(sc.get("deepfilter_enabled"))
@@ -3540,11 +4058,11 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     app = main.MusicPadApp()
                     try:
                         app.deepfilter_enabled_var.set(False)
-                        app._on_voice_fx_changed()
+                        app._apply_settings()
                         app.engine.set_deepfilter_engine_for_test(MockFailingEngine())
                         with patch.object(main.messagebox, "showwarning") as mock_warn:
                             app.deepfilter_enabled_var.set(True)
-                            app._on_voice_fx_changed()
+                            app._apply_settings()
                             for _ in range(30):
                                 app.update()
                                 if not app.deepfilter_enabled_var.get() and mock_warn.called:
@@ -3846,6 +4364,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     # Persistence
                     app._current_window_geom = {"width": 1080, "height": 780, "x": 120, "y": 80}
                     app._save_state()
+                    app._flush_pending_save()
                     self.assertTrue(cfg_file.is_file())
                     saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertEqual(saved.get("window_geometry"), {"width": 1080, "height": 780, "x": 120, "y": 80})
@@ -4444,6 +4963,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     self.assertIn("Без альбомів", app.btn_yt_filter.cget("text"))
 
                     # Verify saved state has yt_search_filter
+                    app._flush_pending_save()
                     data = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertEqual(data.get("yt_search_filter"), "no_albums")
 
@@ -4888,6 +5408,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     # Change track count to 20
                     app.yt_search_limit_var.set(20)
                     app._save_state()
+                    app._flush_pending_save()
 
                     # Verify saved to state file
                     with open(cfg_file, "r", encoding="utf-8") as f:
@@ -5016,6 +5537,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                     # Test persistence in state.json
                     app.yt_priority_var.set(True)
                     app._save_state()
+                    app._flush_pending_save()
 
                     raw_saved = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertTrue(raw_saved.get("yt_search_priority"))
@@ -5429,6 +5951,7 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
         try:
             app.wait_for_audio_ready(timeout=5.0)
             app.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+            app._committed_settings["routing_mode"] = ROUTING_MODE_VIRTUAL_CABLE
             not_inst_status = DriverStatus(
                 state="not_installed",
                 installed_endpoint_guid="",
@@ -5436,9 +5959,12 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                 reason="Драйвер MusicPad не встановлено",
             )
             with patch.object(app, "_refresh_driver_status", return_value=not_inst_status):
-                with patch("tkinter.messagebox.askyesno", return_value=False):
+                with patch("tkinter.messagebox.askyesno", return_value=False) as mock_ask:
                     app.routing_mode_var.set(ROUTING_MODE_INJECTION)
                     app._on_routing_mode_changed()
+                    self.assertFalse(mock_ask.called)
+                    app._apply_settings()
+                    self.assertTrue(mock_ask.called)
                     # User cancelled -> reverts to ROUTING_MODE_VIRTUAL_CABLE
                     self.assertEqual(app.routing_mode_var.get(), ROUTING_MODE_VIRTUAL_CABLE)
 
@@ -5450,11 +5976,14 @@ class TestInjectionRoutingAndUi(unittest.TestCase):
                 reason="Драйвер встановлено на інший мікрофон (потрібно перенести)",
             )
             app.routing_mode_var.set(ROUTING_MODE_INJECTION)
+            app._committed_settings["routing_mode"] = ROUTING_MODE_INJECTION
             with patch.object(app, "_refresh_driver_status", return_value=wrong_status):
                 with patch("tkinter.messagebox.askyesno", return_value=True) as mock_ask:
                     with patch.object(app, "_install_driver_uac_action") as mock_inst_action:
                         app.mix_mic_var.set("New Mic")
                         app._mix_mic_changed()
+                        self.assertFalse(mock_ask.called)
+                        app._apply_settings()
                         mock_ask.assert_called_once()
                         mock_inst_action.assert_called_once()
 
@@ -5708,6 +6237,7 @@ class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
                         self.assertNotIn("https://www.youtube.com/watch?v=dQw4w9WgXcQ", app.yt_search_history)
 
                     # 2. Verify persisted in state file and reloaded
+                    app._flush_pending_save()
                     saved_json = json.loads(cfg_file.read_text(encoding="utf-8"))
                     self.assertEqual(
                         saved_json.get("yt_search_history"),
@@ -5761,7 +6291,9 @@ class TestYouTubeSearchBarAndSuggestions(unittest.TestCase):
                             [r["text"] for r in app._yt_suggestion_rows if r["is_history"]],
                             ["silent hill 4 ost", "silent hill 3 ost", "silent hill 1 ost"],
                         )
-                        saved_after_del = json.loads(cfg_file.read_text(encoding="utf-8"))
+                        saved_after_del = json.loads(
+                            (app._flush_pending_save() or cfg_file).read_text(encoding="utf-8")
+                        )
                         self.assertNotIn("Silent Hill 2 OST", saved_after_del.get("yt_search_history", []))
                 finally:
                     app._exit()

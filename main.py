@@ -1684,6 +1684,9 @@ class MusicPadApp(tk.Tk):
         self._saved_output_name: Optional[str] = None
         self._saved_mic_name: Optional[str] = None
         self._saved_monitor_name: Optional[str] = None
+        self._driver_status_req_id: int = 0
+        self._devices_refresh_req_id: int = 0
+        self._init_save_sync_state()
 
         self._build_variables()
         self._build_ui()
@@ -1713,6 +1716,9 @@ class MusicPadApp(tk.Tk):
         self.after(20, self._start_background_warmup)
 
     def _is_english(self) -> bool:
+        committed = getattr(self, "_committed_settings", None)
+        if isinstance(committed, dict) and "lang" in committed:
+            return str(committed["lang"]).strip().lower() in ("english", "en")
         if not hasattr(self, "lang_var"):
             return False
         return str(self.lang_var.get()).strip().lower() in ("english", "en")
@@ -1758,8 +1764,12 @@ class MusicPadApp(tk.Tk):
                 return
 
     def _apply_language(self) -> None:
+        if hasattr(self, "_committed_settings") and hasattr(self, "lang_var"):
+            self._committed_settings["lang"] = self.lang_var.get()
         is_en = self._is_english()
         self._sync_localized_track_source()
+        if hasattr(self, "_committed_settings") and hasattr(self, "track_source_var"):
+            self._committed_settings["track_source"] = self.track_source_var.get()
         # 1. Menu bar
         if hasattr(self, "menu_frame"):
             self._build_menu()
@@ -1885,23 +1895,18 @@ class MusicPadApp(tk.Tk):
                 for i in range(min(len(tabs), len(tab_keys))):
                     self.settings_notebook.tab(i, text=self._tr(tab_keys[i]))
 
-            if hasattr(self, "_build_tab_audio"):
-                self._build_tab_audio()
-
-            if hasattr(self, "_build_tab_noise_reduction"):
-                self._build_tab_noise_reduction()
-
-            if hasattr(self, "_build_tab_voice_boost"):
-                self._build_tab_voice_boost()
-
-            if hasattr(self, "_build_tab_hotkeys"):
-                self._build_tab_hotkeys()
-
-            if hasattr(self, "_build_tab_interface"):
-                self._build_tab_interface()
-
-            if hasattr(self, "_build_tab_devices"):
-                self._build_tab_devices()
+            built_tabs = getattr(self, "_built_settings_tabs", None)
+            builders = (
+                (0, "_build_tab_audio"),
+                (1, "_build_tab_noise_reduction"),
+                (2, "_build_tab_voice_boost"),
+                (3, "_build_tab_hotkeys"),
+                (4, "_build_tab_interface"),
+                (5, "_build_tab_devices"),
+            )
+            for idx, builder_name in builders:
+                if (built_tabs is None or idx in built_tabs) and hasattr(self, builder_name):
+                    getattr(self, builder_name)()
 
             if hasattr(self, "btn_settings_reset"):
                 self.btn_settings_reset.configure(text=self._tr("btn_reset"))
@@ -2796,7 +2801,7 @@ class MusicPadApp(tk.Tk):
             hasattr(self, "deepfilter_enabled_var") and self.deepfilter_enabled_var.get()
         ):
             self._deferred_deepfilter_pending = False
-            self._on_voice_fx_changed()
+            self._on_voice_fx_changed(from_apply=True)
 
         # Execute queued playback action (only latest action)
         action = self._queued_playback_action
@@ -4072,6 +4077,171 @@ class MusicPadApp(tk.Tk):
         if not hasattr(self, "driver_status_var"):
             self.driver_status_var = tk.StringVar(value="Не встановлено")
 
+        self._syncing_settings_draft = False
+        self._settings_dialog_active = False
+        self._pending_track_hotkey_clears: set[str] = set()
+        self._committed_settings = self._capture_settings_snapshot()
+        self._attach_settings_draft_traces()
+
+    _SETTINGS_VAR_KEYS: tuple[tuple[str, str], ...] = (
+        ("norm_volume", "norm_volume_val"),
+        ("norm_mode", "norm_mode_var"),
+        ("deepfilter_enabled", "deepfilter_enabled_var"),
+        ("deepfilter_wet", "deepfilter_wet_var"),
+        ("white_noise_removal", "white_noise_removal_var"),
+        ("voice_boost_enabled", "voice_boost_enabled_var"),
+        ("voice_boost_db", "voice_boost_db_var"),
+        ("auto_stop", "auto_stop_var"),
+        ("lang", "lang_var"),
+        ("date_format", "date_format_var"),
+        ("tb_style", "tb_style_var"),
+        ("tb_scale", "tb_scale_var"),
+        ("tb_size", "tb_size_var"),
+        ("tb_color", "tb_color_var"),
+        ("pos_refresh_rate", "pos_refresh_rate_var"),
+        ("show_mic_level", "show_mic_level_var"),
+        ("linear_volume_slider", "linear_volume_slider_var"),
+        ("allow_resume_other_modes", "allow_resume_other_modes_var"),
+        ("hotkey_switch_mode", "hotkey_switch_mode_var"),
+        ("launch_on_startup", "launch_on_startup_var"),
+        ("start_minimized", "start_minimized_var"),
+        ("show_tray_icon", "show_tray_icon_var"),
+        ("minimize_to_tray", "minimize_to_tray_var"),
+        ("minimize_instead_of_close", "minimize_instead_of_close_var"),
+        ("always_on_top", "always_on_top_var"),
+        ("disable_track_sorting", "disable_track_sorting_var"),
+        ("alternate_row_colors", "alternate_row_colors_var"),
+        ("typing_starts_search", "typing_starts_search_var"),
+        ("tts_input_priority", "tts_input_priority_var"),
+        ("remember_playback_state", "remember_playback_state_var"),
+        ("hide_to_tray", "hide_to_tray_var"),
+        ("check_device_config_on_launch", "check_device_config_on_launch_var"),
+        ("track_source", "track_source_var"),
+        ("routing_mode", "routing_mode_var"),
+        ("target_mic_guid", "target_mic_guid_var"),
+        ("output", "output_var"),
+        ("mix_mic", "mix_mic_var"),
+        ("monitor", "monitor_var"),
+    )
+
+    @staticmethod
+    def _normalize_tb_style_to_theme(style_val: str) -> str:
+        return "light" if str(style_val).strip() in ("Світлий", "Light") else "dark"
+
+    def _capture_settings_snapshot(self) -> dict[str, Any]:
+        snap: dict[str, Any] = {}
+        for key, attr in self._SETTINGS_VAR_KEYS:
+            var = getattr(self, attr, None)
+            if var is not None:
+                try:
+                    snap[key] = var.get()
+                except Exception:
+                    snap[key] = None
+        snap["special_hotkeys"] = dict(getattr(self, "special_hotkeys_dict", {}))
+        snap["recording_devices_checked"] = dict(getattr(self, "recording_devices_checked", {}))
+        return snap
+
+    def _commit_settings_snapshot(self) -> None:
+        self._committed_settings = self._capture_settings_snapshot()
+
+    def _attach_settings_draft_traces(self) -> None:
+        if getattr(self, "_settings_traces_attached", False):
+            return
+        self._settings_traces_attached = True
+
+        def _on_var_changed(*_args: Any) -> None:
+            if getattr(self, "_syncing_settings_draft", False) or getattr(self, "_loading_state", False):
+                return
+            self._update_apply_button_state()
+
+        for _, attr in self._SETTINGS_VAR_KEYS:
+            var = getattr(self, attr, None)
+            if var is not None and hasattr(var, "trace_add"):
+                try:
+                    var.trace_add("write", _on_var_changed)
+                except Exception:
+                    pass
+
+    def _is_settings_dirty(self) -> bool:
+        committed = getattr(self, "_committed_settings", None)
+        if not isinstance(committed, dict):
+            return False
+        if getattr(self, "_pending_track_hotkey_clears", None):
+            return True
+        current = self._capture_settings_snapshot()
+        for key, val in current.items():
+            c_val = committed.get(key)
+            if key == "tb_style":
+                if self._normalize_tb_style_to_theme(str(val or "")) != self._normalize_tb_style_to_theme(str(c_val or "")):
+                    return True
+            elif key in ("deepfilter_wet", "voice_boost_db"):
+                try:
+                    if abs(float(val or 0.0) - float(c_val or 0.0)) > 1e-4:
+                        return True
+                except (TypeError, ValueError):
+                    if val != c_val:
+                        return True
+            elif val != c_val:
+                return True
+        return False
+
+    def _update_apply_button_state(self) -> None:
+        btn = getattr(self, "btn_settings_apply", None)
+        if btn is None:
+            return
+        try:
+            if btn.winfo_exists():
+                btn.configure(state="normal" if self._is_settings_dirty() else "disabled")
+        except Exception:
+            pass
+
+    def _refresh_settings_ui_previews(self) -> None:
+        if hasattr(self, "lbl_df_wet_val") and self.lbl_df_wet_val is not None:
+            try:
+                if self.lbl_df_wet_val.winfo_exists():
+                    self.lbl_df_wet_val.configure(text=f"{int(self.deepfilter_wet_var.get())}%")
+            except Exception:
+                pass
+        if hasattr(self, "lbl_vb_val") and self.lbl_vb_val is not None:
+            try:
+                if self.lbl_vb_val.winfo_exists():
+                    db = float(self.voice_boost_db_var.get())
+                    mult = 10.0 ** (db / 20.0)
+                    self.lbl_vb_val.configure(text=f"+{db:.1f} дБ ({mult:.1f}x)")
+            except Exception:
+                pass
+        self._sync_virtual_cable_combo_state()
+
+    def _restore_draft_from_committed(self) -> None:
+        committed = getattr(self, "_committed_settings", None)
+        if not isinstance(committed, dict):
+            return
+        self._syncing_settings_draft = True
+        try:
+            for key, attr in self._SETTINGS_VAR_KEYS:
+                if key in committed:
+                    var = getattr(self, attr, None)
+                    if var is not None:
+                        try:
+                            var.set(committed[key])
+                        except Exception:
+                            pass
+            if "special_hotkeys" in committed and isinstance(committed["special_hotkeys"], dict):
+                self.special_hotkeys_dict = dict(committed["special_hotkeys"])
+            if "recording_devices_checked" in committed and isinstance(committed["recording_devices_checked"], dict):
+                self.recording_devices_checked = dict(committed["recording_devices_checked"])
+            if hasattr(self, "hide_to_tray") and hasattr(self, "hide_to_tray_var"):
+                self.hide_to_tray_var.set(self.hide_to_tray.get())
+            if hasattr(self, "input_var") and hasattr(self, "mix_mic_var"):
+                self.input_var.set(self.mix_mic_var.get())
+            self._pending_track_hotkey_clears.clear()
+        finally:
+            self._syncing_settings_draft = False
+        self._sync_special_hotkeys_tree()
+        self._refresh_settings_ui_previews()
+        self._on_minimize_tray_toggle()
+        self._update_apply_button_state()
+
     def _create_scrollable_tab(self, notebook: ttk.Notebook, tab_title: str) -> ttk.Frame:
         tab_container = ttk.Frame(notebook)
         notebook.add(tab_container, text=tab_title)
@@ -4147,12 +4317,17 @@ class MusicPadApp(tk.Tk):
         self.tab_interface = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_interface") if hasattr(self, "_tr") else "Інтерфейс")
         self.tab_devices = self._create_scrollable_tab(self.settings_notebook, self._tr("tab_devices") if hasattr(self, "_tr") else "Пристрої")
 
-        self._build_tab_audio()
-        self._build_tab_noise_reduction()
-        self._build_tab_voice_boost()
-        self._build_tab_hotkeys()
-        self._build_tab_interface()
-        self._build_tab_devices()
+        self._built_settings_tabs: set[int] = set()
+        self._settings_tab_builders = (
+            self._build_tab_audio,
+            self._build_tab_noise_reduction,
+            self._build_tab_voice_boost,
+            self._build_tab_hotkeys,
+            self._build_tab_interface,
+            self._build_tab_devices,
+        )
+        self.settings_notebook.bind("<<NotebookTabChanged>>", lambda _e: self._on_settings_tab_changed())
+        self._ensure_settings_tab_built(0)
 
         # Dynamic mousewheel scrolling on the settings window
         def _on_settings_mousewheel(event: tk.Event) -> None:
@@ -4279,7 +4454,7 @@ class MusicPadApp(tk.Tk):
                 if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
                     sb.pack_forget()
 
-    def _on_voice_fx_changed(self) -> None:
+    def _on_voice_fx_changed(self, *, from_apply: bool = False) -> None:
         if not hasattr(self, "engine") or self.engine is None:
             if hasattr(self, "output_map") and hasattr(self, "_ensure_engine"):
                 try:
@@ -4288,16 +4463,32 @@ class MusicPadApp(tk.Tk):
                     pass
             return
 
-        df_enabled = self.deepfilter_enabled_var.get() if hasattr(self, "deepfilter_enabled_var") else False
+        committed = getattr(self, "_committed_settings", None)
+        use_committed = not from_apply and isinstance(committed, dict)
+        if use_committed:
+            df_enabled = bool(committed.get("deepfilter_enabled", False))
+            df_wet = float(committed.get("deepfilter_wet", 100.0)) / 100.0
+            wn_enabled = bool(committed.get("white_noise_removal", False))
+            vb_enabled = bool(committed.get("voice_boost_enabled", False))
+            vb_db = float(committed.get("voice_boost_db", 0.0))
+        else:
+            df_enabled = self.deepfilter_enabled_var.get() if hasattr(self, "deepfilter_enabled_var") else False
+            df_wet = (self.deepfilter_wet_var.get() / 100.0) if hasattr(self, "deepfilter_wet_var") else 1.0
+            wn_enabled = self.white_noise_removal_var.get() if hasattr(self, "white_noise_removal_var") else False
+            vb_enabled = self.voice_boost_enabled_var.get() if hasattr(self, "voice_boost_enabled_var") else False
+            vb_db = self.voice_boost_db_var.get() if hasattr(self, "voice_boost_db_var") else 0.0
+
         if not getattr(self, "_audio_ready", True) and getattr(self, "_deferred_deepfilter_pending", False):
             df_enabled = False
-        df_wet = (self.deepfilter_wet_var.get() / 100.0) if hasattr(self, "deepfilter_wet_var") else 1.0
         if hasattr(self.engine, "set_deepfilter_state"):
             def _on_df_complete(success: bool, err: Optional[str]) -> None:
                 if not success and err:
                     def _show_ui_err() -> None:
                         if hasattr(self, "deepfilter_enabled_var"):
                             self.deepfilter_enabled_var.set(False)
+                        if isinstance(getattr(self, "_committed_settings", None), dict):
+                            self._committed_settings["deepfilter_enabled"] = False
+                        self._update_apply_button_state()
                         msg_template = self._tr("err_deepfilter_load") if hasattr(self, "_tr") else "Не вдалося завантажити модель DeepFilterNet: {err}"
                         msg = msg_template.format(err=err) if "{err}" in msg_template else f"{msg_template}: {err}"
                         try:
@@ -4318,20 +4509,11 @@ class MusicPadApp(tk.Tk):
 
             self.engine.set_deepfilter_state(df_enabled, df_wet, on_complete=_on_df_complete)
 
-        wn_enabled = self.white_noise_removal_var.get() if hasattr(self, "white_noise_removal_var") else False
         if hasattr(self.engine, "set_white_noise_removal"):
             self.engine.set_white_noise_removal(wn_enabled)
 
-        vb_enabled = self.voice_boost_enabled_var.get() if hasattr(self, "voice_boost_enabled_var") else False
-        vb_db = self.voice_boost_db_var.get() if hasattr(self, "voice_boost_db_var") else 0.0
         if hasattr(self.engine, "set_voice_boost"):
             self.engine.set_voice_boost(vb_enabled, vb_db)
-
-        if hasattr(self, "_save_state") and not getattr(self, "_loading_state", False):
-            try:
-                self._save_state()
-            except Exception:
-                pass
 
     def _build_tab_noise_reduction(self) -> None:
         if not hasattr(self, "tab_noise_reduction"):
@@ -4363,7 +4545,6 @@ class MusicPadApp(tk.Tk):
             g1,
             text=self._tr("chk_deepfilter_enable") if hasattr(self, "_tr") else "Увімкнути DeepFilterNet",
             variable=self.deepfilter_enabled_var,
-            command=self._on_voice_fx_changed,
         )
         chk_df.pack(anchor="w", pady=(2, 4))
 
@@ -4384,7 +4565,6 @@ class MusicPadApp(tk.Tk):
                 self.deepfilter_wet_var.set(v)
                 if hasattr(self, "lbl_df_wet_val") and self.lbl_df_wet_val.winfo_exists():
                     self.lbl_df_wet_val.configure(text=f"{v}%")
-                self._on_voice_fx_changed()
             except Exception:
                 pass
 
@@ -4429,7 +4609,6 @@ class MusicPadApp(tk.Tk):
             if hasattr(self, "_tr")
             else "Увімкнути усунення білого шуму (DC-фільтр + занулення тиші)",
             variable=self.white_noise_removal_var,
-            command=self._on_voice_fx_changed,
         )
         chk_wn.pack(anchor="w", pady=2)
 
@@ -4472,7 +4651,6 @@ class MusicPadApp(tk.Tk):
             g,
             text=self._tr("chk_voice_boost_enable") if hasattr(self, "_tr") else "Увімкнути підсилення голосу",
             variable=self.voice_boost_enabled_var,
-            command=self._on_voice_fx_changed,
         )
         chk_vb.pack(anchor="w", pady=(2, 6))
 
@@ -4499,7 +4677,6 @@ class MusicPadApp(tk.Tk):
                 mult = 10.0 ** (db / 20.0)
                 if hasattr(self, "lbl_vb_val") and self.lbl_vb_val.winfo_exists():
                     self.lbl_vb_val.configure(text=f"+{db:.1f} дБ ({mult:.1f}x)")
-                self._on_voice_fx_changed()
             except Exception:
                 pass
 
@@ -4706,9 +4883,7 @@ class MusicPadApp(tk.Tk):
         return sources
 
     def _track_source_changed(self, _event: Optional[tk.Event] = None) -> None:
-        src = self.track_source_var.get()
-        self.status_var.set(self._tr("status_track_source_changed", src))
-        self._save_state()
+        self._update_apply_button_state()
 
     def _build_tab_devices(self) -> None:
         f = self.tab_devices
@@ -4896,11 +5071,11 @@ class MusicPadApp(tk.Tk):
         self.btn_refresh_devices = ttk.Button(
             b_frame,
             text=self._tr("btn_refresh_devices"),
-            command=self._load_devices,
+            command=self._refresh_devices_async,
         )
         self.btn_refresh_devices.pack(side="right")
 
-        self._refresh_driver_status(notify_on_issue=False)
+        self._refresh_driver_status_async()
 
         if hasattr(f, "_canvas") and f._canvas.winfo_exists():
             f.update_idletasks()
@@ -4912,39 +5087,54 @@ class MusicPadApp(tk.Tk):
                 if bbox and (bbox[3] - bbox[1]) <= max(f._canvas.winfo_height(), 10):
                     sb.pack_forget()
 
+    @staticmethod
+    def _pick_mic_guid_from_endpoints(
+        mic_label: str,
+        cur_guid: str,
+        endpoints: list[Any],
+    ) -> str:
+        active_guids = {ep.guid.lower() for ep in endpoints}
+        ep = find_endpoint_for_sounddevice(mic_label, endpoints)
+        if ep is not None:
+            return str(ep.guid)
+        if cur_guid and cur_guid.lower() in active_guids:
+            return cur_guid
+        if endpoints:
+            return str(endpoints[0].guid)
+        return ""
+
     def _resolve_selected_mic_guid(self) -> str:
         mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
+        cur_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
         try:
             endpoints = list_capture_endpoints()
         except Exception:
             endpoints = []
-        active_guids = {ep.guid.lower() for ep in endpoints}
-        ep = find_endpoint_for_sounddevice(mic_label, endpoints)
-        if ep is not None:
-            self.target_mic_guid_var.set(ep.guid)
-            return ep.guid
-        cur_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
-        if cur_guid and cur_guid.lower() in active_guids:
-            return cur_guid
-        if endpoints:
-            self.target_mic_guid_var.set(endpoints[0].guid)
-            return endpoints[0].guid
-        return ""
+        chosen = self._pick_mic_guid_from_endpoints(mic_label, cur_guid, endpoints)
+        if chosen and hasattr(self, "target_mic_guid_var"):
+            self.target_mic_guid_var.set(chosen)
+        return chosen
 
-    def _refresh_driver_status(self, notify_on_issue: bool = False) -> DriverStatus:
-        target_guid = self._resolve_selected_mic_guid()
+    def _fetch_driver_status_for_guid(self, target_guid: str) -> DriverStatus:
         try:
-            status = get_driver_status(target_guid)
+            return get_driver_status(target_guid)
         except Exception as exc:
-            status = DriverStatus(
+            return DriverStatus(
                 state="not_installed",
                 installed_endpoint_guid="",
                 target_endpoint_guid=target_guid,
                 reason=self._tr("drv_not_installed_err", exc),
             )
-        localized_msg = self._translate_driver_reason(status.message)
-        if hasattr(self, "driver_status_var"):
-            self.driver_status_var.set(localized_msg)
+
+    def _query_driver_status_worker(self, mic_label: str, cur_guid: str) -> tuple[str, DriverStatus]:
+        try:
+            endpoints = list_capture_endpoints()
+        except Exception:
+            endpoints = []
+        target_guid = self._pick_mic_guid_from_endpoints(mic_label, cur_guid, endpoints) or cur_guid
+        return target_guid, self._fetch_driver_status_for_guid(target_guid)
+
+    def _sync_virtual_cable_combo_state(self) -> None:
         if hasattr(self, "combo_virtual_cable") and self.combo_virtual_cable is not None:
             try:
                 if self.combo_virtual_cable.winfo_exists():
@@ -4952,6 +5142,33 @@ class MusicPadApp(tk.Tk):
                     self.combo_virtual_cable.configure(state="disabled" if is_inj else "readonly")
             except Exception:
                 pass
+
+    def _apply_driver_status_ui(
+        self,
+        target_guid: str,
+        status: DriverStatus,
+        *,
+        notify_on_issue: bool = False,
+        preserve_clean_if_initial: bool = False,
+    ) -> None:
+        was_dirty = self._is_settings_dirty() if preserve_clean_if_initial else True
+        prev_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
+        if target_guid and hasattr(self, "target_mic_guid_var") and prev_guid != target_guid:
+            self.target_mic_guid_var.set(target_guid)
+            if (
+                preserve_clean_if_initial
+                and not was_dirty
+                and not prev_guid
+                and isinstance(getattr(self, "_committed_settings", None), dict)
+            ):
+                self._committed_settings["target_mic_guid"] = target_guid
+                self._update_apply_button_state()
+        mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
+        self._last_driver_status_cache = (mic_label, target_guid, status)
+        localized_msg = self._translate_driver_reason(status.message)
+        if hasattr(self, "driver_status_var"):
+            self.driver_status_var.set(localized_msg)
+        self._sync_virtual_cable_combo_state()
         if (
             notify_on_issue
             and hasattr(self, "routing_mode_var")
@@ -4959,60 +5176,53 @@ class MusicPadApp(tk.Tk):
             and status.state != "active"
         ):
             self.notify_error(self._tr("drv_err_notify", localized_msg))
+
+    def _refresh_driver_status(self, notify_on_issue: bool = False) -> DriverStatus:
+        target_guid = self._resolve_selected_mic_guid()
+        status = self._fetch_driver_status_for_guid(target_guid)
+        self._apply_driver_status_ui(target_guid, status, notify_on_issue=notify_on_issue)
         return status
 
-    def _on_routing_mode_changed(self) -> None:
-        mode = (
-            self.routing_mode_var.get()
-            if hasattr(self, "routing_mode_var")
-            else ROUTING_MODE_VIRTUAL_CABLE
+    def _apply_async_driver_status(self, req_id: int, target_guid: str, status: DriverStatus) -> None:
+        if getattr(self, "_exiting", False):
+            return
+        if req_id != getattr(self, "_driver_status_req_id", 0):
+            return
+        self._apply_driver_status_ui(
+            target_guid,
+            status,
+            notify_on_issue=False,
+            preserve_clean_if_initial=True,
         )
-        target_guid = self._resolve_selected_mic_guid()
-        status = self._refresh_driver_status(notify_on_issue=False)
-        localized_msg = self._translate_driver_reason(status.message)
-        is_loading = getattr(self, "_loading_state", False)
 
-        if mode == ROUTING_MODE_INJECTION and not is_loading and status.state != "active":
-            if status.state in ("not_installed", "wrong_endpoint"):
-                prompt = (
-                    self._tr("drv_uac_install_prompt")
-                    if status.state == "not_installed"
-                    else self._tr("drv_uac_move_prompt")
-                )
-                confirm = messagebox.askyesno(
-                    self._tr("drv_uac_title"),
-                    prompt,
-                    parent=self._settings_window if getattr(self, "_settings_window", None) else self,
-                )
-                if confirm:
-                    self._install_driver_uac_action()
-                    status = self._refresh_driver_status(notify_on_issue=False)
-                    localized_msg = self._translate_driver_reason(status.message)
-                else:
-                    if status.state == "not_installed":
-                        self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
-                        mode = ROUTING_MODE_VIRTUAL_CABLE
-            elif status.state in ("inactive", "outdated"):
-                confirm = messagebox.askyesno(
-                    self._tr("drv_uac_repair_title"),
-                    self._tr("drv_uac_repair_prompt", localized_msg),
-                    parent=self._settings_window if getattr(self, "_settings_window", None) else self,
-                )
-                if confirm:
-                    self._repair_driver_uac_action()
-                    status = self._refresh_driver_status(notify_on_issue=False)
-                    localized_msg = self._translate_driver_reason(status.message)
+    def _refresh_driver_status_async(self) -> None:
+        req_id = getattr(self, "_driver_status_req_id", 0) + 1
+        self._driver_status_req_id = req_id
+        self._sync_virtual_cable_combo_state()
+        mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
+        cur_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
 
+        def _worker() -> None:
+            resolved_guid, status = self._query_driver_status_worker(mic_label, cur_guid)
+            self._safe_ui_call(self._apply_async_driver_status, req_id, resolved_guid, status)
+
+        threading.Thread(target=_worker, name="musicpad-driver-status", daemon=True).start()
+
+    def _on_routing_mode_changed(self) -> None:
+        self._refresh_settings_ui_previews()
+        self._refresh_driver_status_async()
+        self._update_apply_button_state()
+
+    def _commit_routing_mode_to_engine(self, target_guid: str, mode: str) -> None:
         if hasattr(self, "engine"):
             if hasattr(self.engine, "set_target_endpoint_guid"):
                 self.engine.set_target_endpoint_guid(target_guid)
             if hasattr(self.engine, "set_routing_mode"):
                 self.engine.set_routing_mode(mode)
-        if mode == ROUTING_MODE_INJECTION:
-            self.status_var.set(self._tr("status_routing_injection", localized_msg))
-        else:
-            self.status_var.set(self._tr("status_routing_cable"))
-        self._save_state()
+        if isinstance(getattr(self, "_committed_settings", None), dict):
+            self._committed_settings["routing_mode"] = mode
+            self._committed_settings["target_mic_guid"] = target_guid
+        self._refresh_settings_ui_previews()
 
     @staticmethod
     def _unpack_uac_result(res: Any) -> tuple[bool, str]:
@@ -5041,7 +5251,11 @@ class MusicPadApp(tk.Tk):
             self.engine.reinitialize_audio_subsystem()
         if ok:
             self.routing_mode_var.set(ROUTING_MODE_INJECTION)
-            self._on_routing_mode_changed()
+            self._commit_routing_mode_to_engine(target_guid, ROUTING_MODE_INJECTION)
+            status = self._refresh_driver_status(notify_on_issue=False)
+            self.status_var.set(self._tr("status_routing_injection", self._translate_driver_reason(status.message)))
+            self._save_state()
+            self._update_apply_button_state()
             self._show_driver_info(self._tr("drv_installed_info"))
         else:
             self._refresh_driver_status(notify_on_issue=False)
@@ -5073,7 +5287,11 @@ class MusicPadApp(tk.Tk):
             self.engine.reinitialize_audio_subsystem()
         if ok:
             self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
-            self._on_routing_mode_changed()
+            self._commit_routing_mode_to_engine(target_guid, ROUTING_MODE_VIRTUAL_CABLE)
+            self._refresh_driver_status(notify_on_issue=False)
+            self.status_var.set(self._tr("status_routing_cable"))
+            self._save_state()
+            self._update_apply_button_state()
             self._show_driver_info(self._tr("drv_uninstalled_info"))
         else:
             self._refresh_driver_status(notify_on_issue=False)
@@ -5096,6 +5314,7 @@ class MusicPadApp(tk.Tk):
         self.btn_settings_cancel.pack(side="right", padx=(4, 0))
         self.btn_settings_ok = ttk.Button(self.settings_bottom_bar, text=self._tr("btn_ok"), command=self._ok_settings)
         self.btn_settings_ok.pack(side="right")
+        self._update_apply_button_state()
 
     def _on_minimize_tray_toggle(self) -> None:
         if not hasattr(self, "chk_min_instead_close"):
@@ -5224,8 +5443,7 @@ class MusicPadApp(tk.Tk):
                 self._set_capturing_hotkey(False)
                 self.special_hotkeys_dict[action] = ""
                 self.special_hotkeys_tree.item(item_id, values=(display_action, ""))
-                self._save_state()
-                self._apply_special_hotkeys()
+                self._update_apply_button_state()
                 dlg.destroy()
                 return "break"
 
@@ -5269,11 +5487,7 @@ class MusicPadApp(tk.Tk):
                     return "break"
 
                 if conflict_is_track:
-                    for tr in getattr(self, "local_tracks", []):
-                        if tr.hotkey.strip().upper() == hk.upper():
-                            tr.hotkey = ""
-                    self._filter_tracks()
-                    self._save_state()
+                    self._pending_track_hotkey_clears.add(hk.upper())
                 else:
                     self.special_hotkeys_dict[conflict_name] = ""
                     for child in self.special_hotkeys_tree.get_children():
@@ -5285,8 +5499,7 @@ class MusicPadApp(tk.Tk):
 
             self.special_hotkeys_dict[action] = hk
             self.special_hotkeys_tree.item(item_id, values=(display_action, hk))
-            self._save_state()
-            self._apply_special_hotkeys()
+            self._update_apply_button_state()
             dlg.destroy()
             return "break"
 
@@ -5307,8 +5520,7 @@ class MusicPadApp(tk.Tk):
         action = self._resolve_special_hotkey_action(item_id)
         self.special_hotkeys_dict[action] = ""
         self.special_hotkeys_tree.item(item_id, values=(self._special_hotkey_label(action), ""))
-        self._save_state()
-        self._apply_special_hotkeys()
+        self._update_apply_button_state()
 
     @staticmethod
     def _hotkey_to_tk_sequences(hk: str) -> list[str]:
@@ -5403,26 +5615,32 @@ class MusicPadApp(tk.Tk):
             self.mix_mic_var.set(dev_name)
             self.input_var.set(dev_name)
 
-    def _update_settings_devices_view(self) -> None:
-        if hasattr(self, "combo_virtual_cable") and hasattr(self, "output_map"):
-            self.combo_virtual_cable["values"] = list(self.output_map)
-        if hasattr(self, "output_combo") and hasattr(self, "output_map"):
-            self.output_combo["values"] = list(self.output_map)
+    def _update_settings_devices_view(self, *, refresh_driver: bool = True) -> None:
+        for attr, vals_src in (
+            ("combo_virtual_cable", "output_map"),
+            ("output_combo", "output_map"),
+            ("combo_phys_mic", "input_map"),
+            ("settings_mic_combo", "input_map"),
+            ("combo_headphones", "monitor_map"),
+            ("monitor_combo", "monitor_map"),
+        ):
+            w = getattr(self, attr, None)
+            if w is not None and hasattr(self, vals_src):
+                try:
+                    if w.winfo_exists():
+                        w["values"] = list(getattr(self, vals_src))
+                except Exception:
+                    pass
 
-        if hasattr(self, "combo_phys_mic") and hasattr(self, "input_map"):
-            self.combo_phys_mic["values"] = list(self.input_map)
-        if hasattr(self, "settings_mic_combo") and hasattr(self, "input_map"):
-            self.settings_mic_combo["values"] = list(self.input_map)
+        if hasattr(self, "combo_track_source") and self.combo_track_source is not None:
+            try:
+                if self.combo_track_source.winfo_exists():
+                    self.combo_track_source["values"] = self._get_track_sources()
+            except Exception:
+                pass
 
-        if hasattr(self, "combo_track_source"):
-            self.combo_track_source["values"] = self._get_track_sources()
-
-        if hasattr(self, "combo_headphones") and hasattr(self, "monitor_map"):
-            self.combo_headphones["values"] = list(self.monitor_map)
-        if hasattr(self, "monitor_combo") and hasattr(self, "monitor_map"):
-            self.monitor_combo["values"] = list(self.monitor_map)
-
-        self._refresh_driver_status(notify_on_issue=False)
+        if refresh_driver:
+            self._refresh_driver_status_async()
 
         if not hasattr(self, "rec_devices_tree") or self.rec_devices_tree is None or not self.rec_devices_tree.winfo_exists():
             return
@@ -5446,117 +5664,232 @@ class MusicPadApp(tk.Tk):
         self._update_settings_devices_view()
         self._on_minimize_tray_toggle()
 
+    def _is_settings_window_open(self) -> bool:
+        if getattr(self, "_settings_dialog_active", False):
+            win = getattr(self, "_settings_window", None)
+            if win is not None:
+                try:
+                    return bool(win.winfo_exists())
+                except Exception:
+                    return False
+        win = getattr(self, "_settings_window", None)
+        if win is None:
+            return False
+        try:
+            return bool(win.winfo_exists() and win.winfo_viewable())
+        except Exception:
+            return False
+
     def _reset_settings_to_defaults(self) -> None:
-        self.norm_volume_val.set("89,0 дБ")
-        self.norm_mode_var.set("dynamic")
+        self._syncing_settings_draft = True
+        try:
+            self.norm_volume_val.set("89,0 дБ")
+            self.norm_mode_var.set("dynamic")
 
-        self.special_hotkeys_dict = {
-            "Зупинити відтворення": "",
-            "Призупинити/продовжити відтворення": "Space",
-            "Скасувати": "Ctrl+Z",
-            "Копіювати": "Ctrl+C",
-            "Вставити": "Ctrl+V",
-            "Видалити вибрані записи": "Del",
-            "Пошук": "Ctrl+F",
-            "Вихід": "Alt+F4",
-        }
-        self.auto_stop_var.set(True)
-        self.hide_to_tray.set(True)
-        if hasattr(self, "hide_to_tray_var"):
-            self.hide_to_tray_var.set(True)
+            self.special_hotkeys_dict = {
+                "Зупинити відтворення": "",
+                "Призупинити/продовжити відтворення": "Space",
+                "Скасувати": "Ctrl+Z",
+                "Копіювати": "Ctrl+C",
+                "Вставити": "Ctrl+V",
+                "Видалити вибрані записи": "Del",
+                "Пошук": "Ctrl+F",
+                "Вихід": "Alt+F4",
+            }
+            self._pending_track_hotkey_clears.clear()
+            self.auto_stop_var.set(True)
+            if hasattr(self, "hide_to_tray_var"):
+                self.hide_to_tray_var.set(True)
 
-        self.lang_var.set("За замовчуванням")
-        self.date_format_var.set("Мова за замовчуванням")
-        self.tb_style_var.set("Темний")
-        self.tb_scale_var.set("100%")
-        self.tb_size_var.set("Малий")
-        self.tb_color_var.set("Синій")
-        self.pos_refresh_rate_var.set(60)
-        self.show_mic_level_var.set(False)
-        self.linear_volume_slider_var.set(True)
-        self.allow_resume_other_modes_var.set(False)
-        self.hotkey_switch_mode_var.set("«за замовчуванням» і динаміками")
-        self.launch_on_startup_var.set(False)
-        self.start_minimized_var.set(False)
-        self.show_tray_icon_var.set(True)
-        self.minimize_to_tray_var.set(False)
-        self.minimize_instead_of_close_var.set(False)
-        self.always_on_top_var.set(False)
-        self.disable_track_sorting_var.set(False)
-        self.alternate_row_colors_var.set(False)
-        self.typing_starts_search_var.set(True)
-        self.tts_input_priority_var.set(False)
-        self.remember_playback_state_var.set(True)
-        self.check_device_config_on_launch_var.set(True)
-        if hasattr(self, "track_source_var"):
-            self.track_source_var.set(DEFAULT_TRACK_SOURCE)
-        if hasattr(self, "routing_mode_var"):
-            self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
-        if hasattr(self, "deepfilter_enabled_var"):
-            self.deepfilter_enabled_var.set(False)
-        if hasattr(self, "deepfilter_wet_var"):
-            self.deepfilter_wet_var.set(100.0)
-        if hasattr(self, "white_noise_removal_var"):
-            self.white_noise_removal_var.set(False)
-        if hasattr(self, "voice_boost_enabled_var"):
-            self.voice_boost_enabled_var.set(False)
-        if hasattr(self, "voice_boost_db_var"):
-            self.voice_boost_db_var.set(0.0)
-        self._on_voice_fx_changed()
+            self.lang_var.set("За замовчуванням")
+            self.date_format_var.set("Мова за замовчуванням")
+            self.tb_style_var.set("Темний")
+            self.tb_scale_var.set("100%")
+            self.tb_size_var.set("Малий")
+            self.tb_color_var.set("Синій")
+            self.pos_refresh_rate_var.set(60)
+            self.show_mic_level_var.set(False)
+            self.linear_volume_slider_var.set(True)
+            self.allow_resume_other_modes_var.set(False)
+            self.hotkey_switch_mode_var.set("«за замовчуванням» і динаміками")
+            self.launch_on_startup_var.set(False)
+            self.start_minimized_var.set(False)
+            self.show_tray_icon_var.set(True)
+            self.minimize_to_tray_var.set(False)
+            self.minimize_instead_of_close_var.set(False)
+            self.always_on_top_var.set(False)
+            self.disable_track_sorting_var.set(False)
+            self.alternate_row_colors_var.set(False)
+            self.typing_starts_search_var.set(True)
+            self.tts_input_priority_var.set(False)
+            self.remember_playback_state_var.set(True)
+            self.check_device_config_on_launch_var.set(True)
+            if hasattr(self, "track_source_var"):
+                self.track_source_var.set(self._tr("default_track_source") if hasattr(self, "_tr") else DEFAULT_TRACK_SOURCE)
+            if hasattr(self, "routing_mode_var"):
+                self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+            if hasattr(self, "deepfilter_enabled_var"):
+                self.deepfilter_enabled_var.set(False)
+            if hasattr(self, "deepfilter_wet_var"):
+                self.deepfilter_wet_var.set(100.0)
+            if hasattr(self, "white_noise_removal_var"):
+                self.white_noise_removal_var.set(False)
+            if hasattr(self, "voice_boost_enabled_var"):
+                self.voice_boost_enabled_var.set(False)
+            if hasattr(self, "voice_boost_db_var"):
+                self.voice_boost_db_var.set(0.0)
+        finally:
+            self._syncing_settings_draft = False
 
-        self._sync_settings_to_dialog()
-        self._apply_language()
-        self.status_var.set(self._tr("settings_reset"))
+        self._sync_special_hotkeys_tree()
+        self._refresh_settings_ui_previews()
+        self._on_minimize_tray_toggle()
+        self._update_apply_button_state()
 
     def _apply_settings(self) -> None:
+        committed = getattr(self, "_committed_settings", {})
+        if isinstance(committed, dict) and committed and not self._is_settings_dirty():
+            self._update_apply_button_state()
+            return
+
+        prev_is_en = self._is_english()
         if hasattr(self, "tb_style_var"):
-            new_theme = "light" if self.tb_style_var.get() in ("Світлий", "Light") else "dark"
+            new_theme = self._normalize_tb_style_to_theme(self.tb_style_var.get())
             if new_theme != self.theme:
                 self.theme = new_theme
                 self._apply_theme()
                 self._apply_dark_title_bar(self)
                 if hasattr(self, "_settings_window") and self._settings_window is not None and self._settings_window.winfo_exists():
                     self._apply_dark_title_bar(self._settings_window)
+
         if hasattr(self, "lang_var"):
-            self._apply_language()
+            new_is_en = str(self.lang_var.get()).strip().lower() in ("english", "en")
+            if isinstance(committed, dict):
+                committed["lang"] = self.lang_var.get()
+            if new_is_en != prev_is_en:
+                self._apply_language()
+
         if hasattr(self, "always_on_top_var"):
-            self.attributes("-topmost", self.always_on_top_var.get())
-        target_guid = self._resolve_selected_mic_guid()
-        if hasattr(self, "routing_mode_var") and hasattr(self, "engine"):
-            if hasattr(self.engine, "set_target_endpoint_guid"):
-                self.engine.set_target_endpoint_guid(target_guid)
-            if hasattr(self.engine, "set_routing_mode"):
-                self.engine.set_routing_mode(self.routing_mode_var.get())
-        if hasattr(self, "output_var") and hasattr(self, "engine"):
-            out_name = self.output_var.get()
-            if hasattr(self, "output_map") and out_name in self.output_map:
-                self.engine.set_output_device(self.output_map[out_name])
-        if hasattr(self, "mix_mic_var") and hasattr(self, "engine"):
-            mic_name = self.mix_mic_var.get()
-            if hasattr(self, "input_map") and mic_name in self.input_map:
-                if getattr(self, "mic_enabled", None) and self.mic_enabled.get():
-                    self.engine.set_input_device(self.input_map[mic_name])
-        if hasattr(self, "monitor_var") and hasattr(self, "engine"):
-            mon_name = self.monitor_var.get()
-            if hasattr(self, "monitor_map") and mon_name in self.monitor_map:
-                self.engine.set_monitor_device(self.monitor_map[mon_name])
+            new_topmost = bool(self.always_on_top_var.get())
+            if new_topmost != bool(committed.get("always_on_top", False)):
+                self.attributes("-topmost", new_topmost)
+
+        if getattr(self, "_pending_track_hotkey_clears", None):
+            cleared_hks = set(self._pending_track_hotkey_clears)
+            for tr in getattr(self, "local_tracks", []):
+                if tr.hotkey.strip().upper() in cleared_hks:
+                    tr.hotkey = ""
+            self._filter_tracks()
+            self._pending_track_hotkey_clears.clear()
+
+        if getattr(self, "special_hotkeys_dict", {}) != committed.get("special_hotkeys"):
+            self._apply_special_hotkeys()
+
+        mode_changed = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() != committed.get("routing_mode")
+        mic_changed = hasattr(self, "mix_mic_var") and self.mix_mic_var.get() != committed.get("mix_mic")
+        out_changed = hasattr(self, "output_var") and self.output_var.get() != committed.get("output")
+        mon_changed = hasattr(self, "monitor_var") and self.monitor_var.get() != committed.get("monitor")
+        if mode_changed or mic_changed or out_changed or mon_changed:
+            prev_guid = committed.get("target_mic_guid", "")
+            target_guid = prev_guid
+            if (mode_changed or mic_changed) and hasattr(self, "routing_mode_var"):
+                mode = self.routing_mode_var.get()
+                is_loading = getattr(self, "_loading_state", False)
+                mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
+                cached = getattr(self, "_last_driver_status_cache", None)
+                if mode == ROUTING_MODE_INJECTION and not is_loading:
+                    status = self._refresh_driver_status(notify_on_issue=False)
+                    target_guid = (
+                        self.target_mic_guid_var.get().strip()
+                        if hasattr(self, "target_mic_guid_var")
+                        else status.target_endpoint_guid
+                    )
+                    localized_msg = self._translate_driver_reason(status.message)
+                    if status.state != "active":
+                        if status.state in ("not_installed", "wrong_endpoint"):
+                            prompt = (
+                                self._tr("drv_uac_install_prompt")
+                                if status.state == "not_installed"
+                                else self._tr("drv_uac_move_prompt")
+                            )
+                            confirm = messagebox.askyesno(
+                                self._tr("drv_uac_title"),
+                                prompt,
+                                parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+                            )
+                            if confirm:
+                                self._install_driver_uac_action()
+                                target_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else target_guid
+                            elif status.state == "not_installed":
+                                self.routing_mode_var.set(ROUTING_MODE_VIRTUAL_CABLE)
+                                self._refresh_settings_ui_previews()
+                        elif status.state in ("inactive", "outdated"):
+                            confirm = messagebox.askyesno(
+                                self._tr("drv_uac_repair_title"),
+                                self._tr("drv_uac_repair_prompt", localized_msg),
+                                parent=self._settings_window if getattr(self, "_settings_window", None) else self,
+                            )
+                            if confirm:
+                                self._repair_driver_uac_action()
+                elif mode == ROUTING_MODE_INJECTION or mic_changed:
+                    if cached and cached[0] == mic_label and cached[1]:
+                        target_guid = cached[1]
+                        if hasattr(self, "target_mic_guid_var"):
+                            self.target_mic_guid_var.set(target_guid)
+                    else:
+                        target_guid = self._resolve_selected_mic_guid()
+                    self._refresh_driver_status_async()
+            final_mode = self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else committed.get("routing_mode", ROUTING_MODE_VIRTUAL_CABLE)
+            final_mode_changed = final_mode != committed.get("routing_mode")
+            if hasattr(self, "engine"):
+                if target_guid != prev_guid and (final_mode == ROUTING_MODE_INJECTION or mic_changed) and hasattr(self.engine, "set_target_endpoint_guid"):
+                    self.engine.set_target_endpoint_guid(target_guid)
+                if final_mode_changed and hasattr(self.engine, "set_routing_mode"):
+                    self.engine.set_routing_mode(final_mode)
+            if out_changed and hasattr(self, "output_var") and hasattr(self, "engine"):
+                out_name = self.output_var.get()
+                if hasattr(self, "output_map") and out_name in self.output_map:
+                    self.engine.set_output_device(self.output_map[out_name])
+            if mic_changed and hasattr(self, "mix_mic_var") and hasattr(self, "engine"):
+                mic_name = self.mix_mic_var.get()
+                if hasattr(self, "input_map") and mic_name in self.input_map:
+                    self.input_var.set(mic_name)
+                    if getattr(self, "mic_enabled", None) and self.mic_enabled.get():
+                        self.engine.set_input_device(self.input_map[mic_name])
+            if mon_changed and hasattr(self, "monitor_var") and hasattr(self, "engine"):
+                mon_name = self.monitor_var.get()
+                if hasattr(self, "monitor_map") and mon_name in self.monitor_map:
+                    self.engine.set_monitor_device(self.monitor_map[mon_name])
+
         if hasattr(self, "hide_to_tray_var"):
             self.hide_to_tray.set(self.hide_to_tray_var.get())
-        self._on_voice_fx_changed()
-        self._refresh_driver_status(notify_on_issue=False)
+
+        voice_fx_changed = (
+            (hasattr(self, "deepfilter_enabled_var") and bool(self.deepfilter_enabled_var.get()) != bool(committed.get("deepfilter_enabled", False)))
+            or (hasattr(self, "deepfilter_wet_var") and abs(float(self.deepfilter_wet_var.get()) - float(committed.get("deepfilter_wet", 100.0))) > 1e-4)
+            or (hasattr(self, "white_noise_removal_var") and bool(self.white_noise_removal_var.get()) != bool(committed.get("white_noise_removal", False)))
+            or (hasattr(self, "voice_boost_enabled_var") and bool(self.voice_boost_enabled_var.get()) != bool(committed.get("voice_boost_enabled", False)))
+            or (hasattr(self, "voice_boost_db_var") and abs(float(self.voice_boost_db_var.get()) - float(committed.get("voice_boost_db", 0.0))) > 1e-4)
+        )
+        if voice_fx_changed:
+            self._on_voice_fx_changed(from_apply=True)
+
+        self._commit_settings_snapshot()
         self._save_state()
+        self._update_apply_button_state()
         self.status_var.set(self._tr("settings_saved"))
 
     def _ok_settings(self) -> None:
-        self._apply_settings()
+        if self._is_settings_dirty():
+            self._apply_settings()
         self._close_settings_dialog()
 
     def _cancel_settings(self) -> None:
-        if hasattr(self, "hide_to_tray_var"):
-            self.hide_to_tray_var.set(self.hide_to_tray.get())
+        self._restore_draft_from_committed()
         self._close_settings_dialog()
 
     def _close_settings_dialog(self) -> None:
+        self._settings_dialog_active = False
         if self._settings_window is not None and self._settings_window.winfo_exists():
             try:
                 self._settings_window.grab_release()
@@ -5602,12 +5935,38 @@ class MusicPadApp(tk.Tk):
         )
         self._apply_special_hotkeys()
 
+    def _ensure_settings_tab_built(self, tab_idx: int) -> None:
+        builders = getattr(self, "_settings_tab_builders", None)
+        built = getattr(self, "_built_settings_tabs", None)
+        if not builders or built is None:
+            return
+        if 0 <= tab_idx < len(builders) and tab_idx not in built:
+            built.add(tab_idx)
+            builders[tab_idx]()
+
+    def _on_settings_tab_changed(self) -> None:
+        nb = getattr(self, "settings_notebook", None)
+        if nb is None:
+            return
+        try:
+            if not nb.winfo_exists():
+                return
+            sel = nb.select()
+            if sel:
+                idx = int(nb.index(sel))
+                self._ensure_settings_tab_built(idx)
+        except Exception:
+            pass
+
     def _open_settings(self) -> None:
         if self._settings_window is None or not self._settings_window.winfo_exists():
             self._build_settings_dialog()
         assert self._settings_window is not None
+        self._settings_dialog_active = True
+        self._on_settings_tab_changed()
+        self._restore_draft_from_committed()
         self._sync_settings_to_dialog()
-        self._apply_language()
+        self._update_apply_button_state()
 
         self._apply_dark_title_bar(self._settings_window)
 
@@ -6357,115 +6716,210 @@ class MusicPadApp(tk.Tk):
                 pass
         self._apply_dark_title_bar(self)
 
-    def _load_devices(self) -> None:
-        try:
-            devices = AudioEngine.list_devices()
-            hostapis = {d.get("hostapi", 0) for d in devices if isinstance(d, dict)}
-            use_mme_filter = len(hostapis) > 1 and any(
-                d.get("hostapi", 0) == 0 and d.get("max_output_channels", 0) > 0 for d in devices
+    def _collect_device_snapshot(self) -> dict[str, Any]:
+        devices = AudioEngine.list_devices()
+        hostapis = {d.get("hostapi", 0) for d in devices if isinstance(d, dict)}
+        use_mme_filter = len(hostapis) > 1 and any(
+            d.get("hostapi", 0) == 0 and d.get("max_output_channels", 0) > 0 for d in devices
+        )
+        output_devices = [
+            (i, d)
+            for i, d in enumerate(devices)
+            if d.get("max_output_channels", 0) > 0 and (not use_mme_filter or d.get("hostapi", 0) == 0)
+        ]
+        input_devices = [
+            (i, d)
+            for i, d in enumerate(devices)
+            if d.get("max_input_channels", 0) > 0 and (not use_mme_filter or d.get("hostapi", 0) == 0)
+        ]
+        output_map = {f"{d['name']} ({i})": i for i, d in output_devices}
+        input_map = {f"{d['name']} ({i})": i for i, d in input_devices}
+        monitor_map: dict[str, Optional[int]] = {"(Без моніторингу)": None}
+        monitor_map.update(output_map)
+        cable = AudioEngine.find_cable_output()
+        phys_mic = AudioEngine.find_physical_mic()
+        default_mon = AudioEngine.find_default_monitor(exclude_device=cable)
+        return {
+            "output_devices": output_devices,
+            "input_devices": input_devices,
+            "output_map": output_map,
+            "input_map": input_map,
+            "monitor_map": monitor_map,
+            "cable": cable,
+            "phys_mic": phys_mic,
+            "default_mon": default_mon,
+        }
+
+    def _apply_device_snapshot(self, snap: dict[str, Any], *, sync_driver: bool = False) -> None:
+        self.output_devices = snap["output_devices"]
+        self.input_devices = snap["input_devices"]
+        self.output_map = snap["output_map"]
+        self.input_map = snap["input_map"]
+        self.monitor_map = snap["monitor_map"]
+        cable = snap["cable"]
+        phys_mic = snap["phys_mic"]
+        default_mon = snap["default_mon"]
+
+        for attr, vals in (
+            ("output_combo", list(self.output_map)),
+            ("combo_virtual_cable", list(self.output_map)),
+            ("input_combo", list(self.input_map)),
+            ("mix_mic_combo", list(self.input_map)),
+            ("combo_phys_mic", list(self.input_map)),
+            ("monitor_combo", list(self.monitor_map)),
+            ("combo_headphones", list(self.monitor_map)),
+        ):
+            w = getattr(self, attr, None)
+            if w is not None and hasattr(w, "configure"):
+                w["values"] = vals
+        if hasattr(self, "combo_track_source") and hasattr(self.combo_track_source, "configure"):
+            self.combo_track_source["values"] = self._get_track_sources()
+        if hasattr(self, "_update_settings_devices_view"):
+            self._update_settings_devices_view(refresh_driver=False)
+
+        if hasattr(self, "track_source_var"):
+            avail_sources = self._get_track_sources()
+            if not self.track_source_var.get() or self.track_source_var.get() not in avail_sources:
+                self.track_source_var.set(avail_sources[0])
+
+        selected_out = next(
+            (name for name, index in self.output_map.items() if index == cable),
+            next(iter(self.output_map), ""),
+        )
+        saved_out = getattr(self, "_saved_output_name", None)
+        if saved_out and saved_out in self.output_map and self.output_var.get() not in self.output_map:
+            self.output_var.set(saved_out)
+        elif self.output_var.get() not in self.output_map:
+            self.output_var.set(saved_out if (saved_out and saved_out in self.output_map) else selected_out)
+
+        saved_mic = getattr(self, "_saved_mic_name", None)
+        if saved_mic and saved_mic in self.input_map and "cable output" not in saved_mic.lower() and self.mix_mic_var.get() not in self.input_map:
+            self.mix_mic_var.set(saved_mic)
+            self.input_var.set(saved_mic)
+        elif self.input_map:
+            best_input = next(
+                (name for name, index in self.input_map.items() if index == phys_mic),
+                next(iter(self.input_map)),
             )
-            self.output_devices = [
-                (i, d)
-                for i, d in enumerate(devices)
-                if d.get("max_output_channels", 0) > 0 and (not use_mme_filter or d.get("hostapi", 0) == 0)
-            ]
-            self.input_devices = [
-                (i, d)
-                for i, d in enumerate(devices)
-                if d.get("max_input_channels", 0) > 0 and (not use_mme_filter or d.get("hostapi", 0) == 0)
-            ]
-            self.output_map = {f"{d['name']} ({i})": i for i, d in self.output_devices}
-            self.input_map = {f"{d['name']} ({i})": i for i, d in self.input_devices}
-            if hasattr(self, "output_combo") and hasattr(self.output_combo, "configure"):
-                self.output_combo["values"] = list(self.output_map)
-            if hasattr(self, "combo_virtual_cable") and hasattr(self.combo_virtual_cable, "configure"):
-                self.combo_virtual_cable["values"] = list(self.output_map)
-            if hasattr(self, "input_combo") and hasattr(self.input_combo, "configure"):
-                self.input_combo["values"] = list(self.input_map)
-            if hasattr(self, "mix_mic_combo") and hasattr(self.mix_mic_combo, "configure"):
-                self.mix_mic_combo["values"] = list(self.input_map)
-            if hasattr(self, "combo_phys_mic") and hasattr(self.combo_phys_mic, "configure"):
-                self.combo_phys_mic["values"] = list(self.input_map)
-            if hasattr(self, "combo_track_source") and hasattr(self.combo_track_source, "configure"):
-                self.combo_track_source["values"] = self._get_track_sources()
-            self.monitor_map = {"(Без моніторингу)": None}
-            self.monitor_map.update(self.output_map)
-            if hasattr(self, "monitor_combo") and hasattr(self.monitor_combo, "configure"):
-                self.monitor_combo["values"] = list(self.monitor_map)
-            if hasattr(self, "combo_headphones") and hasattr(self.combo_headphones, "configure"):
-                self.combo_headphones["values"] = list(self.monitor_map)
-            if hasattr(self, "_update_settings_devices_view"):
-                self._update_settings_devices_view()
+            if self.input_var.get() not in self.input_map:
+                self.input_var.set(best_input)
+            if self.mix_mic_var.get() not in self.input_map:
+                self.mix_mic_var.set(best_input)
 
-            if hasattr(self, "track_source_var"):
-                avail_sources = self._get_track_sources()
-                if not self.track_source_var.get() or self.track_source_var.get() not in avail_sources:
-                    self.track_source_var.set(avail_sources[0])
-
-            cable = AudioEngine.find_cable_output()
-            selected_out = next(
-                (name for name, index in self.output_map.items() if index == cable),
-                next(iter(self.output_map), ""),
-            )
-            saved_out = getattr(self, "_saved_output_name", None)
-            if saved_out and saved_out in self.output_map:
-                self.output_var.set(saved_out)
-            elif self.output_var.get() not in self.output_map:
-                self.output_var.set(selected_out)
-
-            saved_mic = getattr(self, "_saved_mic_name", None)
-            if saved_mic and saved_mic in self.input_map and "cable output" not in saved_mic.lower():
-                self.mix_mic_var.set(saved_mic)
-                self.input_var.set(saved_mic)
-            elif self.input_map:
-                phys_mic = AudioEngine.find_physical_mic()
-                best_input = next(
-                    (name for name, index in self.input_map.items() if index == phys_mic),
-                    next(iter(self.input_map)),
-                )
-                if self.input_var.get() not in self.input_map:
-                    self.input_var.set(best_input)
-                if self.mix_mic_var.get() not in self.input_map:
-                    self.mix_mic_var.set(best_input)
-
-            saved_mon = getattr(self, "_saved_monitor_name", None)
-            if saved_mon and saved_mon in self.monitor_map:
-                self.monitor_var.set(saved_mon)
-            elif self.monitor_var.get() not in self.monitor_map:
-                default_mon = AudioEngine.find_default_monitor(exclude_device=cable)
-                headphone = next(
-                    (name for name, index in self.output_map.items() if index == default_mon),
-                    next(
-                        (
-                            name
-                            for name in self.output_map
-                            if "headphone" in name.lower() or "навуш" in name.lower()
-                        ),
-                        "(Без моніторингу)",
+        saved_mon = getattr(self, "_saved_monitor_name", None)
+        if saved_mon and saved_mon in self.monitor_map and self.monitor_var.get() not in self.monitor_map:
+            self.monitor_var.set(saved_mon)
+        elif self.monitor_var.get() not in self.monitor_map:
+            headphone = next(
+                (name for name, index in self.output_map.items() if index == default_mon),
+                next(
+                    (
+                        name
+                        for name in self.output_map
+                        if "headphone" in name.lower() or "навуш" in name.lower()
                     ),
-                )
-                self.monitor_var.set(headphone)
+                    "(Без моніторингу)",
+                ),
+            )
+            self.monitor_var.set(headphone)
+
+        if sync_driver:
             self._resolve_selected_mic_guid()
             self._refresh_driver_status(notify_on_issue=False)
-            if not self.status_var.get():
-                self.status_var.set(
-                    "VB-Cable знайдено."
-                    if cable is not None
-                    else "VB-Cable не знайдено: можна вибрати інший пристрій."
-                )
+        if not self._is_settings_window_open():
+            self._commit_settings_snapshot()
+        if not self.status_var.get():
+            self.status_var.set(
+                "VB-Cable знайдено."
+                if cable is not None
+                else "VB-Cable не знайдено: можна вибрати інший пристрій."
+            )
+
+    def _load_devices(self) -> None:
+        try:
+            snap = self._collect_device_snapshot()
+            # Preserve exact startup behavior where explicit _saved_* selections apply even if non-empty default existed
+            if getattr(self, "_saved_output_name", None) in snap["output_map"]:
+                self.output_var.set(str(self._saved_output_name))
+            saved_mic = getattr(self, "_saved_mic_name", None)
+            if saved_mic and saved_mic in snap["input_map"] and "cable output" not in saved_mic.lower():
+                self.mix_mic_var.set(saved_mic)
+                self.input_var.set(saved_mic)
+            if getattr(self, "_saved_monitor_name", None) in snap["monitor_map"]:
+                self.monitor_var.set(str(self._saved_monitor_name))
+            self._apply_device_snapshot(snap, sync_driver=True)
         except AudioEngineError as exc:
             self.notify_error(str(exc))
 
+    def _apply_refreshed_devices(
+        self,
+        req_id: int,
+        snap: Optional[dict[str, Any]],
+        resolved_guid: str,
+        status: Optional[DriverStatus],
+        err_msg: Optional[str] = None,
+    ) -> None:
+        if getattr(self, "_exiting", False):
+            return
+        if req_id != getattr(self, "_devices_refresh_req_id", 0):
+            return
+        if err_msg is not None:
+            self.notify_error(err_msg)
+            return
+        if snap is not None:
+            self._apply_device_snapshot(snap, sync_driver=False)
+        if status is not None:
+            self._apply_driver_status_ui(
+                resolved_guid,
+                status,
+                notify_on_issue=False,
+                preserve_clean_if_initial=True,
+            )
+
+    def _refresh_devices_async(self) -> None:
+        req_id = getattr(self, "_devices_refresh_req_id", 0) + 1
+        self._devices_refresh_req_id = req_id
+        mic_label = self.mix_mic_var.get() if hasattr(self, "mix_mic_var") else ""
+        cur_guid = self.target_mic_guid_var.get().strip() if hasattr(self, "target_mic_guid_var") else ""
+
+        def _worker() -> None:
+            try:
+                snap = self._collect_device_snapshot()
+                resolved_guid, status = self._query_driver_status_worker(mic_label, cur_guid)
+                self._safe_ui_call(
+                    self._apply_refreshed_devices,
+                    req_id,
+                    snap,
+                    resolved_guid,
+                    status,
+                    None,
+                )
+            except AudioEngineError as exc:
+                self._safe_ui_call(self._apply_refreshed_devices, req_id, None, "", None, str(exc))
+            except Exception as exc:
+                self._safe_ui_call(self._apply_refreshed_devices, req_id, None, "", None, str(exc))
+
+        threading.Thread(target=_worker, name="musicpad-device-refresh", daemon=True).start()
+
     def _ensure_engine(self) -> AudioEngine:
-        out_dev = self.output_map.get(self.output_var.get())
-        in_dev = self.input_map.get(self.mix_mic_var.get()) if self.mic_enabled.get() else None
-        mon_dev = self.monitor_map.get(self.monitor_var.get())
-        routing_mode = (
-            self.routing_mode_var.get()
-            if hasattr(self, "routing_mode_var")
-            else ROUTING_MODE_VIRTUAL_CABLE
-        )
-        target_guid = self._resolve_selected_mic_guid()
+        committed = getattr(self, "_committed_settings", None)
+        use_committed = self._is_settings_window_open() and isinstance(committed, dict)
+        out_name = committed.get("output", self.output_var.get()) if use_committed else self.output_var.get()
+        mic_name = committed.get("mix_mic", self.mix_mic_var.get()) if use_committed else self.mix_mic_var.get()
+        mon_name = committed.get("monitor", self.monitor_var.get()) if use_committed else self.monitor_var.get()
+        out_dev = self.output_map.get(out_name)
+        in_dev = self.input_map.get(mic_name) if self.mic_enabled.get() else None
+        mon_dev = self.monitor_map.get(mon_name)
+        if use_committed:
+            routing_mode = str(committed.get("routing_mode", ROUTING_MODE_VIRTUAL_CABLE))
+            target_guid = str(committed.get("target_mic_guid", "") or self._resolve_selected_mic_guid())
+        else:
+            routing_mode = (
+                self.routing_mode_var.get()
+                if hasattr(self, "routing_mode_var")
+                else ROUTING_MODE_VIRTUAL_CABLE
+            )
+            target_guid = self._resolve_selected_mic_guid()
         if not hasattr(self, "engine"):
             self.engine = AudioEngine(
                 out_dev,
@@ -9208,7 +9662,10 @@ class MusicPadApp(tk.Tk):
     def _on_position(self, pos_seconds: float) -> None:
         if self._seeking_drag:
             return
-        self.after(0, lambda: self._update_position_ui(pos_seconds))
+        if hasattr(self, "_ui_queue"):
+            self._safe_ui_call(self._update_position_ui, pos_seconds)
+        else:
+            self.after(0, lambda: self._update_position_ui(pos_seconds))
 
     def _update_position_ui(self, pos_seconds: float) -> None:
         if self._seeking_drag:
@@ -9254,62 +9711,24 @@ class MusicPadApp(tk.Tk):
             self._save_state()
 
     def _output_changed(self, _event: Optional[tk.Event] = None) -> None:
-        if hasattr(self, "engine"):
-            self.engine.set_output_device(self.output_map.get(self.output_var.get()))
-        self.status_var.set(f"Пристрій відтворення змінено: {self.output_var.get()}")
-        self._save_state()
+        self._update_apply_button_state()
 
     def _input_changed(self, _event: Optional[tk.Event] = None) -> None:
         chosen = self.input_var.get()
         if chosen in self.input_map and self.mix_mic_var.get() != chosen:
             self.mix_mic_var.set(chosen)
-        ep_guid = self._resolve_selected_mic_guid()
-        if hasattr(self, "engine"):
-            self.engine.set_target_endpoint_guid(ep_guid)
-            if self.mic_enabled.get():
-                self.engine.set_input_device(self.input_map.get(chosen))
-        status = self._refresh_driver_status(notify_on_issue=False)
-        self.status_var.set(f"Мікрофон змінено: {chosen}")
-        self._save_state()
-        is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
-        if is_inj and not getattr(self, "_loading_state", False) and status.state == "wrong_endpoint":
-            confirm = messagebox.askyesno(
-                "Перенесення Драйвера MusicPad (UAC)",
-                f"Драйвер MusicPad наразі встановлено на інший мікрофон.\n\n"
-                f"Перенести драйвер на щойно вибраний мікрофон ({chosen})?",
-                parent=self._settings_window if getattr(self, "_settings_window", None) else self,
-            )
-            if confirm:
-                self._install_driver_uac_action()
+        self._refresh_driver_status_async()
+        self._update_apply_button_state()
 
     def _mix_mic_changed(self, _event: Optional[tk.Event] = None) -> None:
         chosen = self.mix_mic_var.get()
         if chosen in self.input_map and self.input_var.get() != chosen:
             self.input_var.set(chosen)
-        ep_guid = self._resolve_selected_mic_guid()
-        if hasattr(self, "engine"):
-            self.engine.set_target_endpoint_guid(ep_guid)
-            if self.mic_enabled.get():
-                self.engine.set_input_device(self.input_map.get(chosen))
-                self.status_var.set("Мікрофон змінено та застосовано.")
-        status = self._refresh_driver_status(notify_on_issue=False)
-        self._save_state()
-        is_inj = hasattr(self, "routing_mode_var") and self.routing_mode_var.get() == ROUTING_MODE_INJECTION
-        if is_inj and not getattr(self, "_loading_state", False) and status.state == "wrong_endpoint":
-            confirm = messagebox.askyesno(
-                "Перенесення Драйвера MusicPad (UAC)",
-                f"Драйвер MusicPad наразі встановлено на інший мікрофон.\n\n"
-                f"Перенести драйвер на щойно вибраний мікрофон ({chosen})?",
-                parent=self._settings_window if getattr(self, "_settings_window", None) else self,
-            )
-            if confirm:
-                self._install_driver_uac_action()
+        self._refresh_driver_status_async()
+        self._update_apply_button_state()
 
     def _monitor_changed(self, _event: Optional[tk.Event] = None) -> None:
-        if hasattr(self, "engine"):
-            self.engine.set_monitor_device(self.monitor_map.get(self.monitor_var.get()))
-            self.status_var.set("Моніторинг змінено та застосовано.")
-        self._save_state()
+        self._update_apply_button_state()
 
     def _assign_hotkey_dialog(self) -> None:
         selected = self._selected_track()
@@ -9450,8 +9869,14 @@ class MusicPadApp(tk.Tk):
                     still_waiting.add(w_hk)
                     active_now.add(w_hk)
 
-            pause_hk = self.special_hotkeys_dict.get("Призупинити/продовжити відтворення", "").strip()
-            stop_hk = self.special_hotkeys_dict.get("Зупинити відтворення", "").strip()
+            committed_hk = (
+                self._committed_settings.get("special_hotkeys")
+                if isinstance(getattr(self, "_committed_settings", None), dict)
+                else None
+            )
+            hk_map = committed_hk if isinstance(committed_hk, dict) else self.special_hotkeys_dict
+            pause_hk = hk_map.get("Призупинити/продовжити відтворення", "").strip()
+            stop_hk = hk_map.get("Зупинити відтворення", "").strip()
 
             global_actions: list[tuple[str, Any]] = [
                 ("F10", self._toggle_mute_hotkey),
@@ -9521,23 +9946,107 @@ class MusicPadApp(tk.Tk):
             "• Робота у фоні та системному треї",
         )
 
-    def _save_state(self) -> None:
+    def _init_save_sync_state(self) -> None:
+        if not hasattr(self, "_save_lock"):
+            self._save_lock = threading.Lock()
+            self._save_cond = threading.Condition(self._save_lock)
+            self._pending_save_payload: Optional[tuple[Path, dict[str, Any]]] = None
+            self._save_in_flight: bool = False
+            self._save_worker_stop: bool = False
+            self._save_worker_thread: Optional[threading.Thread] = None
+
+    def _write_state_atomic(self, target_path: Path, data: dict[str, Any]) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp_path = target_path.with_name(
+            f".{target_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            tmp_path.write_text(payload, encoding="utf-8")
+            os.replace(tmp_path, target_path)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+    def _save_worker_loop(self) -> None:
+        while True:
+            with self._save_cond:
+                while self._pending_save_payload is None:
+                    if self._save_worker_stop:
+                        return
+                    self._save_cond.wait(timeout=0.5)
+                payload = self._pending_save_payload
+                self._pending_save_payload = None
+                self._save_in_flight = True
+            try:
+                target_path, data = payload
+                self._write_state_atomic(target_path, data)
+            except Exception:
+                pass
+            finally:
+                with self._save_cond:
+                    self._save_in_flight = False
+                    self._save_cond.notify_all()
+
+    def _flush_pending_save(self, stop_worker: bool = False, timeout: float = 3.0) -> None:
+        self._init_save_sync_state()
+        deadline = time.monotonic() + timeout
+        worker: Optional[threading.Thread] = None
+        with self._save_cond:
+            while self._pending_save_payload is not None or self._save_in_flight:
+                worker = self._save_worker_thread
+                if (worker is None or not worker.is_alive()) and not self._save_in_flight:
+                    payload = self._pending_save_payload
+                    self._pending_save_payload = None
+                    if payload is not None:
+                        self._save_in_flight = True
+                        self._save_cond.release()
+                        try:
+                            self._write_state_atomic(payload[0], payload[1])
+                        except Exception:
+                            pass
+                        finally:
+                            self._save_cond.acquire()
+                            self._save_in_flight = False
+                            self._save_cond.notify_all()
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._save_cond.wait(timeout=min(0.05, remaining))
+            if stop_worker:
+                self._save_worker_stop = True
+                self._save_cond.notify_all()
+                worker = self._save_worker_thread
+        if stop_worker and worker is not None and worker.is_alive():
+            worker.join(timeout=1.0)
+
+    def _save_state(self, sync: bool = False) -> None:
         if self._is_mocked_env():
             return
         try:
+            committed = getattr(self, "_committed_settings", None)
+            s = (
+                dict(committed)
+                if (self._is_settings_window_open() and isinstance(committed, dict))
+                else self._capture_settings_snapshot()
+            )
             data = {
                 "folder": self.folder_var.get(),
-                "output": self.output_var.get(),
-                "mix_mic": self.mix_mic_var.get(),
-                "monitor": self.monitor_var.get(),
-                "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
-                "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
+                "output": s.get("output", self.output_var.get()),
+                "mix_mic": s.get("mix_mic", self.mix_mic_var.get()),
+                "monitor": s.get("monitor", self.monitor_var.get()),
+                "routing_mode": s.get("routing_mode", ROUTING_MODE_VIRTUAL_CABLE),
+                "target_mic_guid": s.get("target_mic_guid", ""),
                 "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
                 "yt_search_priority": bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False,
                 "yt_search_limit": int(self.yt_search_limit_var.get()) if hasattr(self, "yt_search_limit_var") else 35,
                 "yt_search_history": list(getattr(self, "yt_search_history", [])[:50]),
                 "mute_track_to_others": self.mute_track_to_others_var.get() if hasattr(self, "mute_track_to_others_var") else False,
-                "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
+                "track_source": s.get("track_source", DEFAULT_TRACK_SOURCE),
                 "volume": self.volume_var.get(),
                 "mic_volume": self.mic_volume_var.get(),
                 "mic_enabled": self.mic_enabled.get(),
@@ -9561,7 +10070,7 @@ class MusicPadApp(tk.Tk):
                     for t in self.local_tracks
                 ],
             }
-            if hasattr(self, "remember_playback_state_var") and self.remember_playback_state_var.get():
+            if s.get("remember_playback_state", False):
                 active = getattr(getattr(self, "engine", None), "_active_track", None)
                 sel = self._selected_track()
                 curr_track = None
@@ -9614,42 +10123,42 @@ class MusicPadApp(tk.Tk):
 
             if hasattr(self, "norm_volume_val"):
                 data["settings_custom"] = {
-                    "norm_volume": self.norm_volume_val.get(),
-                    "norm_mode": self.norm_mode_var.get(),
-                    "deepfilter_enabled": self.deepfilter_enabled_var.get() if hasattr(self, "deepfilter_enabled_var") else False,
-                    "deepfilter_wet": self.deepfilter_wet_var.get() if hasattr(self, "deepfilter_wet_var") else 100.0,
-                    "white_noise_removal": self.white_noise_removal_var.get() if hasattr(self, "white_noise_removal_var") else False,
-                    "voice_boost_enabled": self.voice_boost_enabled_var.get() if hasattr(self, "voice_boost_enabled_var") else False,
-                    "voice_boost_db": self.voice_boost_db_var.get() if hasattr(self, "voice_boost_db_var") else 0.0,
-                    "special_hotkeys": getattr(self, "special_hotkeys_dict", {}),
-                    "auto_stop": self.auto_stop_var.get(),
-                    "lang": self.lang_var.get(),
-                    "date_format": self.date_format_var.get(),
-                    "tb_style": self.tb_style_var.get(),
-                    "tb_scale": self.tb_scale_var.get(),
-                    "tb_size": self.tb_size_var.get(),
-                    "tb_color": self.tb_color_var.get(),
-                    "pos_refresh_rate": self.pos_refresh_rate_var.get(),
-                    "show_mic_level": self.show_mic_level_var.get(),
-                    "linear_volume_slider": self.linear_volume_slider_var.get(),
-                    "allow_resume_other_modes": self.allow_resume_other_modes_var.get(),
-                    "hotkey_switch_mode": self.hotkey_switch_mode_var.get(),
-                    "launch_on_startup": self.launch_on_startup_var.get(),
-                    "start_minimized": self.start_minimized_var.get(),
-                    "show_tray_icon": self.show_tray_icon_var.get(),
-                    "minimize_to_tray": self.minimize_to_tray_var.get(),
-                    "minimize_instead_of_close": self.minimize_instead_of_close_var.get(),
-                    "always_on_top": self.always_on_top_var.get(),
-                    "disable_track_sorting": self.disable_track_sorting_var.get(),
-                    "alternate_row_colors": self.alternate_row_colors_var.get(),
-                    "typing_starts_search": self.typing_starts_search_var.get(),
-                    "tts_input_priority": self.tts_input_priority_var.get(),
-                    "remember_playback_state": self.remember_playback_state_var.get(),
-                    "check_device_config_on_launch": self.check_device_config_on_launch_var.get(),
-                    "recording_devices_checked": getattr(self, "recording_devices_checked", {}),
-                    "track_source": self.track_source_var.get() if hasattr(self, "track_source_var") else DEFAULT_TRACK_SOURCE,
-                    "routing_mode": self.routing_mode_var.get() if hasattr(self, "routing_mode_var") else ROUTING_MODE_VIRTUAL_CABLE,
-                    "target_mic_guid": self.target_mic_guid_var.get() if hasattr(self, "target_mic_guid_var") else "",
+                    "norm_volume": s.get("norm_volume", self.norm_volume_val.get()),
+                    "norm_mode": s.get("norm_mode", self.norm_mode_var.get()),
+                    "deepfilter_enabled": bool(s.get("deepfilter_enabled", False)),
+                    "deepfilter_wet": float(s.get("deepfilter_wet", 100.0)),
+                    "white_noise_removal": bool(s.get("white_noise_removal", False)),
+                    "voice_boost_enabled": bool(s.get("voice_boost_enabled", False)),
+                    "voice_boost_db": float(s.get("voice_boost_db", 0.0)),
+                    "special_hotkeys": dict(s.get("special_hotkeys", {})),
+                    "auto_stop": bool(s.get("auto_stop", True)),
+                    "lang": s.get("lang", self.lang_var.get()),
+                    "date_format": s.get("date_format", self.date_format_var.get()),
+                    "tb_style": s.get("tb_style", self.tb_style_var.get()),
+                    "tb_scale": s.get("tb_scale", self.tb_scale_var.get()),
+                    "tb_size": s.get("tb_size", self.tb_size_var.get()),
+                    "tb_color": s.get("tb_color", self.tb_color_var.get()),
+                    "pos_refresh_rate": int(s.get("pos_refresh_rate", 60)),
+                    "show_mic_level": bool(s.get("show_mic_level", False)),
+                    "linear_volume_slider": bool(s.get("linear_volume_slider", True)),
+                    "allow_resume_other_modes": bool(s.get("allow_resume_other_modes", False)),
+                    "hotkey_switch_mode": s.get("hotkey_switch_mode", self.hotkey_switch_mode_var.get()),
+                    "launch_on_startup": bool(s.get("launch_on_startup", False)),
+                    "start_minimized": bool(s.get("start_minimized", False)),
+                    "show_tray_icon": bool(s.get("show_tray_icon", True)),
+                    "minimize_to_tray": bool(s.get("minimize_to_tray", False)),
+                    "minimize_instead_of_close": bool(s.get("minimize_instead_of_close", False)),
+                    "always_on_top": bool(s.get("always_on_top", False)),
+                    "disable_track_sorting": bool(s.get("disable_track_sorting", False)),
+                    "alternate_row_colors": bool(s.get("alternate_row_colors", False)),
+                    "typing_starts_search": bool(s.get("typing_starts_search", True)),
+                    "tts_input_priority": bool(s.get("tts_input_priority", False)),
+                    "remember_playback_state": bool(s.get("remember_playback_state", True)),
+                    "check_device_config_on_launch": bool(s.get("check_device_config_on_launch", True)),
+                    "recording_devices_checked": dict(s.get("recording_devices_checked", {})),
+                    "track_source": s.get("track_source", DEFAULT_TRACK_SOURCE),
+                    "routing_mode": s.get("routing_mode", ROUTING_MODE_VIRTUAL_CABLE),
+                    "target_mic_guid": s.get("target_mic_guid", ""),
                     "yt_search_filter": self.yt_filter_var.get() if hasattr(self, "yt_filter_var") else "all",
                     "yt_search_priority": bool(self.yt_priority_var.get()) if hasattr(self, "yt_priority_var") else False,
                 }
@@ -9666,10 +10175,22 @@ class MusicPadApp(tk.Tk):
                 except Exception:
                     pass
 
-            self._config_path().write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            target_path = self._config_path()
+            self._init_save_sync_state()
+            with self._save_cond:
+                self._pending_save_payload = (target_path, data)
+                if not sync and not self._save_worker_stop:
+                    if self._save_worker_thread is None or not self._save_worker_thread.is_alive():
+                        self._save_worker_thread = threading.Thread(
+                            target=self._save_worker_loop,
+                            name="musicpad-state-writer",
+                            daemon=True,
+                        )
+                        self._save_worker_thread.start()
+                    self._save_cond.notify_all()
+                    return
+                self._save_cond.notify_all()
+            self._flush_pending_save()
         except Exception:
             pass
 
@@ -9821,7 +10342,7 @@ class MusicPadApp(tk.Tk):
                     sc_t_guid = str(sc["target_mic_guid"]).strip().lower()
                     if not active_eps or sc_t_guid in active_eps:
                         self.target_mic_guid_var.set(str(sc["target_mic_guid"]))
-                self._on_voice_fx_changed()
+                self._on_voice_fx_changed(from_apply=True)
             folder = data.get("folder")
             folder_valid = bool(folder and folder != "Папку не вибрано" and Path(folder).is_dir())
             if folder_valid:
@@ -9938,6 +10459,7 @@ class MusicPadApp(tk.Tk):
             pass
         finally:
             self._loading_state = False
+            self._commit_settings_snapshot()
 
     def _toggle_theme(self) -> None:
         self.theme = "light" if self.theme == "dark" else "dark"
@@ -9946,6 +10468,8 @@ class MusicPadApp(tk.Tk):
                 self.tb_style_var.set("Light" if self.theme == "light" else "Dark")
             else:
                 self.tb_style_var.set("Світлий" if self.theme == "light" else "Темний")
+            if isinstance(getattr(self, "_committed_settings", None), dict):
+                self._committed_settings["tb_style"] = self.tb_style_var.get()
         self._apply_theme()
         self._apply_dark_title_bar(self)
         if hasattr(self, "_settings_window") and self._settings_window is not None and self._settings_window.winfo_exists():
@@ -10064,7 +10588,8 @@ class MusicPadApp(tk.Tk):
         if self._exiting:
             return
         self._exiting = True
-        self._save_state()
+        self._save_state(sync=True)
+        self._flush_pending_save(stop_worker=True)
         if hasattr(self, "engine"):
             try:
                 self.engine.stop()
